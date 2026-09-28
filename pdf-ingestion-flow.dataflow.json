@@ -1,0 +1,119 @@
+{
+  "schema_version": 1,
+  "diagram_type": "dataflow",
+  "meta": {
+    "title": "PDF Ingestion to Knowledge Graph",
+    "output": "pdf-ingestion-flow.html",
+    "viewBox": [1200, 560],
+    "quality_profile": "showcase",
+    "views": [
+      { "id": "load-chunk", "label": "Load & Chunk", "focus": ["pdf", "loader", "chunker"], "note": "How a PDF is loaded and split into overlapping text chunks." },
+      { "id": "extract", "label": "LLM Extraction", "focus": ["chunker", "llm", "extractor", "resolver"], "note": "LLM extracts entities and relationships from each chunk, then deduplication runs." },
+      { "id": "store", "label": "Graph Storage", "focus": ["resolver", "graphstore", "ladybugdb"], "note": "Canonical nodes and edges are merged into the LadybugDB graph." }
+    ]
+  },
+  "stages": [
+    { "label": "Source" },
+    { "label": "Load" },
+    { "label": "Extract" },
+    { "label": "Resolve" },
+    { "label": "Store" }
+  ],
+  "nodes": [
+    { "id": "pdf",       "type": "external",    "label": "PDF File",       "sublabel": "or CSV / HTML / MD",    "stage": 0, "row": 1, "tag": "source" },
+    { "id": "loader",    "type": "backend",     "label": "Document Loader","sublabel": "pypdf + pdfplumber",   "stage": 1, "row": 1, "tag": "Document" },
+    { "id": "chunker",   "type": "backend",     "label": "Chunker",        "sublabel": "800-token sliding window","stage": 2, "row": 0, "tag": "list[Chunk]" },
+    { "id": "llm",       "type": "cloud",       "label": "LLM API",        "sublabel": "Gemini / OpenAI / Anthropic","stage": 2, "row": 2, "tag": "JSON schema" },
+    { "id": "extractor", "type": "backend",     "label": "Graph Extractor","sublabel": "entity + relation NER","stage": 2, "row": 1, "tag": "Extraction" },
+    { "id": "resolver",  "type": "backend",     "label": "Entity Resolver","sublabel": "slug + fuzzy dedup",   "stage": 3, "row": 1, "tag": "CanonicalGraph" },
+    { "id": "graphstore","type": "backend",     "label": "Graph Store",    "sublabel": "MERGE upsert · batch 500","stage": 4, "row": 0, "tag": "Cypher" },
+    { "id": "ladybugdb", "type": "database",    "label": "LadybugDB",      "sublabel": "embedded · 256 MB pool","stage": 4, "row": 2, "tag": ".lbug file" }
+  ],
+  "flows": [
+    {
+      "id": "pdf-to-loader",
+      "from": "pdf", "to": "loader",
+      "label": "raw bytes",
+      "classification": "file input",
+      "variant": "emphasis"
+    },
+    {
+      "id": "loader-to-chunker",
+      "from": "loader", "to": "chunker",
+      "label": "Document pages",
+      "classification": "plain text per page",
+      "variant": "emphasis"
+    },
+    {
+      "id": "chunker-to-extractor",
+      "from": "chunker", "to": "extractor",
+      "label": "text chunks",
+      "classification": "800-token windows",
+      "variant": "emphasis"
+    },
+    {
+      "id": "extractor-to-llm",
+      "from": "extractor", "to": "llm",
+      "label": "extraction prompt",
+      "classification": "domain-agnostic schema",
+      "variant": "default"
+    },
+    {
+      "id": "llm-to-extractor",
+      "from": "llm", "to": "extractor",
+      "label": "entities + relations JSON",
+      "classification": "constrained JSON schema",
+      "variant": "default"
+    },
+    {
+      "id": "extractor-to-resolver",
+      "from": "extractor", "to": "resolver",
+      "label": "raw extraction",
+      "classification": "validated triples",
+      "variant": "emphasis"
+    },
+    {
+      "id": "resolver-to-graphstore",
+      "from": "resolver", "to": "graphstore",
+      "label": "canonical subgraph",
+      "classification": "nodes + edges",
+      "variant": "emphasis"
+    },
+    {
+      "id": "graphstore-to-db",
+      "from": "graphstore", "to": "ladybugdb",
+      "label": "UNWIND MERGE",
+      "classification": "idempotent Cypher",
+      "variant": "emphasis"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "emerald",
+      "title": "Ingestion Pipeline",
+      "items": [
+        "pypdf extracts prose; pdfplumber handles ruled tables — best-quality per page",
+        "800-token sliding-window chunking with 100-token overlap preserves context at boundaries",
+        "Each chunk triggers one LLM call with a JSON schema for constrained decoding"
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "Extraction & Deduplication",
+      "items": [
+        "recover_json() applies 6-step defensive parsing: fence → balanced-brace → repair → truncation",
+        "Entity resolver runs 3-stage dedup: exact name → exact alias → token-blocked fuzzy (min score 0.88)",
+        "slugify() produces a stable primary key: casefold + accent-strip + punct-to-hyphen"
+      ]
+    },
+    {
+      "dot": "orange",
+      "title": "Graph Storage",
+      "items": [
+        "MERGE on entity id (slug) and (src, dst, rel_type) for edges — fully idempotent",
+        "Batched UNWIND transactions of 500 rows each inside explicit BEGIN … COMMIT blocks",
+        "Re-ingesting the same document produces 0 new nodes or edges"
+      ]
+    }
+  ]
+}

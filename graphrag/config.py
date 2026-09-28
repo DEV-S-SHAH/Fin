@@ -1,0 +1,91 @@
+"""Runtime configuration for the graph and the extraction pipeline."""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+
+BYTES_PER_MB = 1024 * 1024
+
+
+@dataclass(frozen=True)
+class GraphRAGConfig:
+    """Knobs for graph creation, chunking, extraction, and retrieval.
+
+    The defaults match the operating envelope requested for this deployment:
+    an in-process graph with a 256 MB buffer pool, and 800-token chunks with a
+    100-token sliding overlap.
+    """
+
+    buffer_pool_size_mb: int = 256
+    max_num_threads: int = 0  # 0 -> let the engine choose
+
+    chunk_tokens: int = 800
+    chunk_overlap_tokens: int = 100
+
+    # Retrieval breadth. Hop 1 is the immediate neighbourhood; hop 2 adds the
+    # second ring, which is where most multi-hop relations become visible.
+    hops: int = 2
+    max_context_nodes: int = 120
+    max_context_edges: int = 240
+
+    # LLM wiring. ``provider`` is resolved at construction time unless pinned.
+    provider: str | None = None
+    model: str | None = None
+    temperature: float = 0.0
+    max_retries: int = 3
+
+    # Extraction guards. Guards exist to keep a hallucinating model from
+    # growing the graph without bound; they are not domain knowledge.
+    max_entities_per_chunk: int = 40
+    max_relationships_per_chunk: int = 60
+    min_entity_name_length: int = 2
+    min_description_length: int = 8
+
+    @property
+    def buffer_pool_size(self) -> int:
+        """Buffer pool size in bytes, as the engine expects."""
+        return self.buffer_pool_size_mb * BYTES_PER_MB
+
+    @property
+    def stride_tokens(self) -> int:
+        """Forward distance of the sliding window."""
+        if self.chunk_overlap_tokens >= self.chunk_tokens:
+            raise ValueError(
+                "chunk_overlap_tokens must be smaller than chunk_tokens "
+                f"(got {self.chunk_overlap_tokens} >= {self.chunk_tokens})"
+            )
+        return self.chunk_tokens - self.chunk_overlap_tokens
+
+    @classmethod
+    def from_env(cls, **overrides: object) -> GraphRAGConfig:
+        """Build a config from ``GRAPHRAG_*`` environment variables."""
+        env: dict[str, object] = {}
+        for name in (
+            "buffer_pool_size_mb",
+            "max_num_threads",
+            "chunk_tokens",
+            "chunk_overlap_tokens",
+            "hops",
+            "max_context_nodes",
+            "max_context_edges",
+            "temperature",
+            "max_retries",
+        ):
+            raw = os.environ.get(f"GRAPHRAG_{name.upper()}")
+            if raw is not None:
+                env[name] = int(raw) if _is_int(raw) else float(raw)
+        for name in ("provider", "model"):
+            raw = os.environ.get(f"GRAPHRAG_{name.upper()}")
+            if raw:
+                env[name] = raw
+        env.update({k: v for k, v in overrides.items() if v is not None})
+        return cls(**env)  # type: ignore[arg-type]
+
+
+def _is_int(raw: str) -> bool:
+    try:
+        int(raw)
+    except ValueError:
+        return False
+    return True

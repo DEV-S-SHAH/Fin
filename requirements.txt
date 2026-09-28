@@ -1,0 +1,24 @@
+# Runtime dependencies for the sandbox SEC graph engine and its query server.
+#
+# Pinned to the versions this was built and verified against. Regenerate with:
+#   .venv/bin/python -m pip freeze > requirements.txt
+#
+# Python 3.13 (the LadybugDB and pandas wheels below are 3.13-built).
+
+# Graph store. LadybugDB is the embedded property-graph engine behind
+# sandbox_engine/ddl.py, loader.py and benchmarks.py.
+ladybug==0.20.4
+
+# Parse stage: pandas for table extraction, lxml for read_html flavor="lxml",
+# beautifulsoup4 for strip_markup()'s visibility-aware text extraction.
+pandas==3.0.6
+lxml==6.1.3
+beautifulsoup4==4.15.0
+
+# Staging: Arrow/Parquet spill between the parse and load stages.
+pyarrow==25.0.1
+
+# Query server: the OpenAI-compatible client used for GraphRAG answers, and
+# typer for the CLI entry point in sandbox_engine/cli.py.
+openai==3.19.2
+typer==0.27.2

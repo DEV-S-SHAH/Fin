@@ -1,0 +1,79 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Count 3 /Kids [5 0 R 7 0 R 9 0 R] >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Length 397 >>
+stream
+BT
+/F1 11 Tf
+15 TL
+56 742 Td
+(Technical standard for interoperable telemetry, revision 4. Section 2.1 defines the Frame) Tj
+T* (Checkpoint. Every Frame carries a Sequence Number and a Frame Type. A Collector validates) Tj
+T* (the Frame Checkpoint before accepting a Frame. The Frame Type determines which Payload) Tj
+T* (Schema applies. Rejected Frames are counted by the Rejection Counter.) Tj
+ET
+endstream
+endobj
+5 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 4 0 R >>
+endobj
+6 0 obj
+<< /Length 409 >>
+stream
+BT
+/F1 11 Tf
+15 TL
+56 742 Td
+(Section 3.2 specifies transport. The Telemetry Gateway forwards Frames over the Message Bus.) Tj
+T* (The Message Bus guarantees at-least-once delivery. Duplicate Frames are discarded by the) Tj
+T* (Deduplication Window. The Retention Policy governs how long the Archive keeps a Frame.) Tj
+T* (Operators tune the Deduplication Window and the Retention Policy independently.) Tj
+ET
+endstream
+endobj
+7 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 6 0 R >>
+endobj
+8 0 obj
+<< /Length 352 >>
+stream
+BT
+/F1 11 Tf
+15 TL
+56 742 Td
+(Section 5 addresses conformance. A Conformance Suite exercises the Collector against the) Tj
+T* (Reference Vectors. Any Device failing the Reference Vectors fails conformance. The Audit Log) Tj
+T* (records every rejection emitted by the Frame Checkpoint. Certification bodies publish the) Tj
+T* (Audit Log annually.) Tj
+ET
+endstream
+endobj
+9 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 8 0 R >>
+endobj
+xref
+0 10
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000133 00000 n 
+0000000203 00000 n 
+0000000651 00000 n 
+0000000777 00000 n 
+0000001237 00000 n 
+0000001363 00000 n 
+0000001766 00000 n 
+trailer
+<< /Size 10 /Root 1 0 R >>
+startxref
+1892
+%%EOF

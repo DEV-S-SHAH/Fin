@@ -1,0 +1,49 @@
+# ── Secrets ──────────────────────────────────────────────────────────────────
+# .env is deliberately NOT ignored. This is a private repository and the
+# NVIDIA credential is committed on purpose so a fresh clone can answer
+# questions with no second setup step. Both ./.env and ./sandbox_engine/.env
+# are therefore tracked.
+#
+# To stop tracking them later:
+#   git rm --cached .env sandbox_engine/.env
+# and add these two lines back:
+#   .env
+#   .env.*
+#
+# If this repository is ever made public, or a collaborator is added, rotate
+# the key at build.nvidia.com first -- git history keeps the old value even
+# after the files are deleted.
+
+# ── Dataset ──────────────────────────────────────────────────────────────────
+# The corpus is 59M of SEC filings. Only the three filings the sandbox scope
+# ingests are committed, so a fresh clone can run the pipeline immediately
+# without downloading anything.
+data/*
+!data/aapl-sec/
+data/aapl-sec/*
+!data/aapl-sec/10-K_2025-10-31_aapl-20250927.htm
+!data/aapl-sec/10-Q_2025-08-01_aapl-20250628.htm
+!data/aapl-sec/8-K_2025-10-30_aapl-20251030.htm
+
+# Ladybug databases and Parquet spill are build artefacts: `python -m
+# sandbox_engine --reset` recreates them from the fixtures above.
+*.lbug
+*.lbug/
+graph.db/
+sandbox_engine/_run/
+sandbox_engine/_run2/
+sandbox_engine/staging_parquet/
+*.parquet
+
+# ── Python ───────────────────────────────────────────────────────────────────
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ── OS ───────────────────────────────────────────────────────────────────────
+.DS_Store
