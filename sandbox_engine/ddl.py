@@ -22,9 +22,11 @@ reachable from it, so a query scoped to one tenant is a query anchored on
 
 ``REPORTS_METRIC`` carries one ``value``, so a 10-K showing three years of Net
 Sales needs three distinct ``Metric`` nodes. The reporting period is therefore
-part of the metric identity and is written into ``canonical_name``::
+part of the metric identity and is written into ``canonical_name``, keyed on the
+period's own end date::
 
-    "Net Sales" (FY2025)   "Net Sales" (FY2024)   "Net Sales" (FY2023)
+    "Net Sales" (FY-2025-09-27)  "Net Sales" (FY-2024-09-28)
+    "Net Sales" (3M-2025-12-27)  "Net Sales" (3M-2026-03-28)
 
 A prefix match still groups the taxonomy and no content hash is exposed to
 query authors. See :data:`~sandbox_engine.config.PERIOD_SCOPED_METRICS` to trade

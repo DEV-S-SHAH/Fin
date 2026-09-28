@@ -4,7 +4,7 @@
     python -m sandbox_engine --parse-only            # stop after the Parquet spill
     python -m sandbox_engine --load-only             # build the graph from a spill
     python -m sandbox_engine --verify-only           # re-run benchmarks, no ingest
-    python -m sandbox_engine --files a.htm b.htm     # override the 3-file scope
+    python -m sandbox_engine --files a.htm b.htm     # override the document-tree scope
 
 The stage split is real, not cosmetic: ``--parse-only`` and ``--load-only`` run
 in separate processes against the same staging directory, which is how you
@@ -48,7 +48,7 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="canonical-entity registry path override; the dedup "
                              "state that makes a re-ingest a no-op")
     parser.add_argument("--files", nargs="*", default=None,
-                        help="ingest these files instead of the 3-file scope")
+                        help="ingest these files instead of the document-tree scope")
     parser.add_argument("--reset", action="store_true",
                         help="delete the database and the staging spill first")
     parser.add_argument("--parse-only", action="store_true",
@@ -63,6 +63,9 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="form type the benchmarks target")
     parser.add_argument("--fiscal-year", type=int, default=None,
                         help="fiscal year the benchmarks target (default: newest)")
+    parser.add_argument("--period", default=None,
+                        help="exact period key the benchmarks target, e.g. "
+                             "3M-2026-03-28 (default: newest reported quarter)")
     parser.add_argument("--copy-threshold", type=int, default=COPY_THRESHOLD,
                         help="rows at or above which COPY is used instead of UNWIND")
     parser.add_argument("--batch-rows", type=int, default=50_000,
@@ -114,17 +117,22 @@ def _parse_stage(
     started = time.perf_counter()
     filings: list[dict[str, Any]] = []
     for path in files:
+        t_step = time.perf_counter()
         result = parser.ingest_file(path)
+        base_parse_sec = time.perf_counter() - t_step
+        t_step = time.perf_counter()
         # The Universal Financial Graph Schema layer is added here rather than
         # inside ``ingest_file`` so the two graphs stay separable. This CLI has
         # its own loop rather than calling ``ingestion.parse_all``, so the call
         # has to be repeated; the alternative is having the CLI delegate to
         # ``parse_all`` and lose the per-filing registry handoff below.
         apply_ufgs(result, path)
+        ufgs_sec = time.perf_counter() - t_step
         buffer.add_result(result)
         filings.append(
             {
                 "file": path.name,
+                "company": path.parents[2].name,
                 "form_type": result.filing["form_type"],
                 "fiscal_year": result.filing["fiscal_year"],
                 "fiscal_period": result.filing["fiscal_period"],
@@ -136,6 +144,8 @@ def _parse_stage(
                 "metadata_sources": result.stats["sources"],
                 "bytes": result.stats["bytes"],
                 "elapsed": round(result.elapsed, 3),
+                "base_parse_sec": round(base_parse_sec, 3),
+                "ufgs_sec": round(ufgs_sec, 3),
             }
         )
         log.info(
@@ -155,14 +165,30 @@ def _parse_stage(
 
 
 def _print_summary(report: dict[str, Any]) -> None:
+    timing = report.get("timing")
+    if timing:
+        print("\nStage timing (seconds)")
+        print(f"  scope      : {timing['scope']:.3f}")
+        print(f"  parse+ufgs : {timing['parse']:.3f}")
+        print(f"  pipe+load  : {timing['load']:.3f}")
+        print(f"  benchmarks : {timing['benchmarks']:.3f}")
+        print(f"  total      : {timing['total']:.3f}")
+
     parse = report.get("parse")
     if parse:
         print(f"\nParsed {len(parse['filings'])} filing(s) in {parse['seconds']}s")
+        print(f"  {'FILE':<30} {'CO':<8} {'FORM':<5} {'FY':<4} "
+              f"{'PARSE':>7} {'UFGS':>6} {'TOTAL':>7}")
         for filing in parse["filings"]:
             counts = filing["counts"]
             print(
-                f"  {filing['form_type']:5} FY{filing['fiscal_year']} "
-                f"{filing['ticker']:5} "
+                f"  {filing['file']:<30} {filing['company']:<8} "
+                f"{filing['form_type']:<5} FY{filing['fiscal_year']} "
+                f"{filing['base_parse_sec']:>6.2f}s {filing['ufgs_sec']:>5.2f}s "
+                f"{filing['base_parse_sec'] + filing['ufgs_sec']:>6.2f}s"
+            )
+            print(
+                f"  {'':<30} {'':<8} {'':<5} {'':<4} "
                 f"metrics={counts['metrics']:5} segments={counts['segments']:3} "
                 f"events={counts['events']:3} chunks={counts['chunks']:5}"
             )
@@ -217,13 +243,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         paths.reset()
 
     report: dict[str, Any] = {"version": VERSION, "db": str(paths.db)}
+    timing: dict[str, float] = {"scope": 0.0, "parse": 0.0, "load": 0.0,
+                                "benchmarks": 0.0, "total": 0.0}
+    report["timing"] = timing
+    t_start = time.perf_counter()
 
     if not args.load_only and not args.verify_only:
+        t_step = time.perf_counter()
         files = _select_files(args, paths)
+        timing["scope"] = time.perf_counter() - t_step
         log.info("scope: %s", ", ".join(path.name for path in files))
         report["parse"] = _parse_stage(
             files, paths.staging, args.batch_rows, paths.registry
         )
+        timing["parse"] = report["parse"]["seconds"]
         report["distinct"] = report["parse"]["buffer"]["distinct_per_table"]
     else:
         # --load-only / --verify-only: recover the distinct-identity baseline
@@ -241,6 +274,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         report["distinct"] = distinct
 
     if not args.parse_only:
+        t_step = time.perf_counter()
         try:
             with BulkLoader(paths.db, copy_threshold=args.copy_threshold) as loader:
                 report["load"] = loader.load(
@@ -250,8 +284,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         except WalRecoveryError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 2
+        timing["load"] = report["load"].get("seconds", time.perf_counter() - t_step)
 
     if not args.parse_only:
+        t_step = time.perf_counter()
         with BulkLoader(paths.db) as loader:
             results = run_all(
                 loader.connection,
@@ -259,8 +295,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 form_type=args.form_type,
                 fiscal_year=args.fiscal_year,
                 concept=args.concept,
+                period=args.period,
             )
+        timing["benchmarks"] = time.perf_counter() - t_step
         report["benchmarks"] = [result.as_dict() for result in results]
+
+    timing["total"] = time.perf_counter() - t_start
 
     paths.report.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
     _print_summary(report)

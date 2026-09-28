@@ -1,27 +1,31 @@
-"""Paths, test scope, and tunables for the sandbox pipeline.
+"""Paths, document scope, and tunables for the sandbox pipeline.
 
 This module holds every value the rest of the sandbox treats as configuration,
 and nothing else. It has no imports from the rest of the package, so it can be
 read to learn the whole shape of the run in one pass.
 
-Test scope
-----------
+Document scope
+--------------
 
-The sandbox ingests exactly three filings, one of each form type, resolved from
-``data/``. This is a hard limit, enforced in :func:`resolve_scope`, which walks
-:class:`Scope` entries and never returns more than ``Scope.limit`` paths. The
-full 75-filing corpus is out of scope for the sandbox on purpose: a verification
-harness that runs in a few seconds can be re-run after every change, and one
-that takes an hour will not be.
+The scope is the document tree itself. Filings are stored at
 
-Why one filing per form type: the three forms exercise genuinely different
-paths through the parser. A 10-K carries three comparative years of every
-statement line, so its metric nodes are period-scoped and conflict resolution
-has something to resolve. A 10-Q carries a three-month and a six-month column
-under the *same* period-end date, which only stays separable because the
-duration banner above the date row is read. An 8-K has no financial statements
-at all and only produces ``Event`` nodes. A scope with three 10-Qs would prove
-none of that.
+    sandbox_engine/data/<company>/<year>/<form>/<filing>.htm
+
+where ``<company>`` is the issuer's folder name (``apple``), ``<year>`` is the
+reporting calendar year (``2026``), and ``<form>`` is one of ``10k``, ``10q``
+or ``8k``. :func:`resolve_scope` walks that tree and returns every ``.htm`` it
+finds, so the pipeline is universal: any issuer can be ingested by dropping its
+documents into the same shape, and the resolve step never has to know a company
+by name. Adding data needs no config edit and no ``Scope`` list -- the folders
+*are* the scope.
+
+The three form folders exercise genuinely different paths through the parser. A
+10-K carries three comparative years of every statement line, so its metric
+nodes are period-scoped and conflict resolution has something to resolve. A
+10-Q carries a three-month and a six-month column under the *same* period-end
+date, which only stays separable because the duration banner above the date row
+is read. An 8-K has no financial statements at all and only produces ``Event``
+nodes.
 """
 
 from __future__ import annotations
@@ -38,10 +42,10 @@ __all__ = [
     "MAX_CHUNK_CHARS",
     "MAX_EVENTS",
     "MIN_CHUNK_CHARS",
+    "DATA_DIR",
+    "FORM_FOLDERS",
     "Paths",
     "PERIOD_SCOPED_METRICS",
-    "Scope",
-    "SCOPE",
     "VERSION",
     "default_paths",
     "resolve_scope",
@@ -80,13 +84,19 @@ MIN_CHUNK_CHARS = 40
 MAX_EVENTS = 32
 
 #: ``True`` makes the reporting period part of ``Metric`` identity, written
-#: into ``canonical_name`` as ``"Net Sales (FY2025)"``.
+#: into ``canonical_name`` as ``"Net Sales (3M-2026-03-28)"``.
 #:
 #: This is a deliberate trade of node count for comparative data.
 #: ``REPORTS_METRIC`` carries a single ``value``, so a 10-K showing three years
 #: of Net Sales needs three distinct ``Metric`` nodes. With ``False`` you get a
 #: clean one-node-per-concept taxonomy and the comparative columns overwrite
 #: each other, losing two years of every line.
+#:
+#: The period is keyed on its end date rather than the fiscal year and quarter
+#: it implies, because a fiscal year holds up to four quarters: ``3M-FY2026``
+#: names three different quarters at once, so the three filings reporting them
+#: attach three values to one node. A table whose header printed only a year
+#: has no date to key on and falls back to ``3M-FY2026``.
 PERIOD_SCOPED_METRICS = True
 
 #: Similarity score at which two labels are considered the same concept.
@@ -119,86 +129,43 @@ ENTITY_FUZZY_MATCH = False
 #: defect from one that returns rows for a year nobody ingested.
 ABSENT_YEAR = 2019
 
+#: The document tree beneath the repository root, in the shape described in the
+#: module docstring: ``<company>/<year>/<form>/<filing>.htm``.
+DATA_DIR = Path("sandbox_engine") / "data"
 
-@dataclass(frozen=True)
-class Scope:
-    """One filing to ingest, as a preference-ordered list of path fragments.
-
-    ``candidates`` is ordered most-specific first. The first fragment that
-    exists wins; if none does exactly, the last fragment is treated as a glob
-    prefix and the first alphabetical match is used. That is what lets a
-    renamed or re-dated filing still resolve without editing this file.
-    """
-
-    form_type: str
-    candidates: tuple[str, ...]
-    label: str = ""
+#: The lowercase form folders under each ``<company>/<year>`` directory, in the
+#: order filings are ingested. The folder is what labels the form -- the resolve
+#: step never has to open the document to know what it is.
+FORM_FOLDERS: tuple[str, ...] = ("10k", "10q", "8k")
 
 
-#: The three test filings: one 10-K, one 10-Q, one 8-K.
-SCOPE: tuple[Scope, ...] = (
-    Scope(
-        form_type="10-K",
-        label="annual report, three comparative years",
-        candidates=(
-            "data/aapl-sec/10-K_2025-10-31_aapl-20250927.htm",
-            "data/aapl-sec/10-K_2025",
-            "data/aapl-sec/10-K",
-        ),
-    ),
-    Scope(
-        form_type="10-Q",
-        label="quarterly report, 3M and 6M columns",
-        candidates=(
-            "data/aapl-sec/10-Q_2025-08-01_aapl-20250628.htm",
-            "data/aapl-sec/10-Q_2025-08",
-            "data/aapl-sec/10-Q_2025",
-        ),
-    ),
-    Scope(
-        form_type="8-K",
-        label="current report, events only",
-        candidates=(
-            "data/aapl-sec/8-K_2025-10-30_aapl-20251030.htm",
-            "data/aapl-sec/8-K_2025-10-30",
-            "data/aapl-sec/8-K_2025-10",
-        ),
-    ),
-)
+def resolve_scope(root: str | Path) -> list[Path]:
+    """Return every filing under ``DATA_DIR``, ordered by form folder.
 
-#: Hard cap on resolved filings. :func:`resolve_scope` will not exceed this even
-#: if ``SCOPE`` is extended, which is what makes "limit ingestion strictly to 3
-#: test files" a property of the code rather than a property of this edit.
-SCOPE_LIMIT = 3
-
-
-def resolve_scope(root: Path, scope: tuple[Scope, ...] = SCOPE) -> list[Path]:
-    """Resolve the test scope to existing paths, at most :data:`SCOPE_LIMIT`.
+    This is a filesystem walk, not a list of paths, so the scope is whatever
+    the document tree contains. Adding a company means creating its folder and
+    dropping in documents; removing one means deleting the folder. The resolver
+    never names a company, which is what makes the pipeline universal -- the
+    folder *is* the company.
 
     Raises:
-        FileNotFoundError: a scope entry matched no file. Failing loudly beats
-            ingesting two of three forms, which would leave a benchmark passing
-            for the wrong reason.
+        FileNotFoundError: the data tree holds no filings at all. A pipeline
+            that ingests nothing must say so loudly rather than report an empty
+            artifact as success.
     """
     root = Path(root)
-    resolved: list[Path] = []
-    for entry in scope:
-        if len(resolved) >= SCOPE_LIMIT:
-            break
-        for candidate in entry.candidates:
-            path = root / candidate
-            if path.is_file():
-                resolved.append(path)
-                break
-        else:
-            matches = sorted(root.glob(entry.candidates[-1] + "*"))
-            if not matches:
-                raise FileNotFoundError(
-                    f"no filing for {entry.form_type}; tried "
-                    f"{', '.join(entry.candidates)} under {root}"
-                )
-            resolved.append(matches[0])
-    return resolved
+    data_root = root / DATA_DIR
+    if not data_root.is_dir():
+        raise FileNotFoundError(f"no document tree at {data_root}")
+    filings: list[Path] = []
+    for form in FORM_FOLDERS:
+        filings.extend(sorted(data_root.glob(f"*/*/{form}/*.htm")))
+    if not filings:
+        raise FileNotFoundError(
+            f"no filings under {data_root}; expected "
+            f"<company>/<year>/[{','.join(FORM_FOLDERS)}]/*.htm"
+        )
+    return filings
 
 
 @dataclass(frozen=True)

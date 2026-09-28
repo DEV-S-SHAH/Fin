@@ -36,6 +36,7 @@ the tables.
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
 import re
 from dataclasses import dataclass, field
@@ -923,27 +924,42 @@ def extract_fiscal_periods(
     fiscal_period = metadata.get("fiscal_period") or "FY"
     ticker = metadata.get("ticker") or ""
 
-    # Prefer the longest duration context: that is the annual period, and its
-    # end date is the fiscal year end. A 10-K's longest context is the year;
-    # a 10-Q's is the year-to-date, which is the right answer for that filing.
-    best: dict[str, Any] | None = None
-    best_span = -1
-    for fact in facts:
-        if fact.get("period_type") != "duration":
-            continue
-        start, end = fact.get("period_start"), fact.get("period_end")
-        if not start or not end:
-            continue
-        try:
-            span = (int(end[:4]) - int(start[:4])) * 365 + \
-                   (int(end[5:7]) - int(start[5:7])) * 30
-        except (TypeError, ValueError):
-            continue
-        if span > best_span:
-            best_span, best = span, fact
+    # Start and end must describe the *same* span. Reading the end from the
+    # cover and the start from an unrelated context pairs this quarter's end
+    # with last year's start, which is how a 10-Q ends up wearing a 12-month
+    # window. So the end is fixed first and the start is taken from a context
+    # that actually ends there.
+    period_end = metadata.get("period_end") or metadata.get("period_end_date") or ""
 
-    period_end = metadata.get("period_end_date") or (best or {}).get("period_end", "")
-    period_start = (best or {}).get("period_start", "") or ""
+    def _span_days(fact: dict[str, Any]) -> int:
+        try:
+            start = dt.date.fromisoformat(str(fact.get("period_start"))[:10])
+            end = dt.date.fromisoformat(str(fact.get("period_end"))[:10])
+        except (TypeError, ValueError):
+            return -1
+        return (end - start).days
+
+    spans = [
+        fact
+        for fact in facts
+        if fact.get("period_type") == "duration"
+        and fact.get("period_start")
+        and fact.get("period_end")
+        and (not period_end or str(fact.get("period_end"))[:10] == period_end[:10])
+    ]
+    spans = [f for f in spans if _span_days(f) >= 0]
+
+    if spans:
+        # A 10-K's period is the year; a 10-Q's is the quarter, and the quarter
+        # is the *shortest* span ending on the period end (a Q3 filing also
+        # carries a nine-month column, which is longer and not the filing's
+        # own period). 8-Ks never reach here.
+        spans.sort(key=_span_days, reverse=(form_type == "10-K"))
+        period_start = str(spans[0].get("period_start"))[:10]
+        if not period_end:
+            period_end = str(spans[0].get("period_end"))[:10]
+    else:
+        period_start = ""
     if not period_end:
         period_end = metadata.get("filing_date") or ""
 
@@ -976,8 +992,6 @@ def _reporting_lag(period_end: str | None, filing_date: str | None) -> int | Non
     not equally current. Returns ``None`` rather than 0 when either date is
     unreadable -- 0 would claim the filing landed the day the period closed.
     """
-    import datetime as dt
-
     def _d(value: str | None) -> dt.date | None:
         try:
             return dt.date.fromisoformat(str(value)[:10])

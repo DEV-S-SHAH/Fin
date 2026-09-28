@@ -72,8 +72,9 @@ __all__ = [
     "BenchmarkResult",
     "CONCEPT_RE",
     "PERIOD_SUFFIX_RE",
+    "duration_of",
+    "period_end_of",
     "period_of",
-    "reporting_suffix",
     "run_all",
 ]
 
@@ -99,15 +100,22 @@ def concept_of(canonical_name: str) -> str:
     return PERIOD_SUFFIX_RE.sub("", canonical_name or "").strip()
 
 
-def reporting_suffix(form_type: str, fiscal_year: int) -> str:
-    """Period key of a filing's own reporting period.
+#: ``"3M-2026-03-28"`` splits into its duration and its end date. Period keys
+#: are keyed on the date precisely so the two can be pulled apart: the date
+#: identifies the measurement, the duration says how much of it was measured.
+PERIOD_PARTS_RE = re.compile(r"^(?P<duration>\d+M|FY)-(?P<end>\d{4}-\d{2}-\d{2})$")
 
-    A 10-K's reporting period is the year; a 10-Q's is the quarter, which is the
-    shortest duration a quarterly report states. This is what distinguishes "the
-    quarter Apple just reported" from the prior-year comparative the same table
-    shows beside it.
-    """
-    return f"3M-FY{fiscal_year}" if str(form_type).upper().startswith("10-Q") else f"FY{fiscal_year}"
+
+def duration_of(period: str) -> str:
+    """``"3M"`` out of ``"3M-2026-03-28"``; ``""`` if the key is a bare date."""
+    match = PERIOD_PARTS_RE.match(period or "")
+    return match.group("duration") if match else ""
+
+
+def period_end_of(period: str) -> str:
+    """``"2026-03-28"`` out of ``"3M-2026-03-28"``; the key itself if bare."""
+    match = PERIOD_PARTS_RE.match(period or "")
+    return match.group("end") if match else (period or "")
 
 
 # ---------------------------------------------------------------------------
@@ -309,13 +317,17 @@ ORDER BY m.canonical_name
 
 
 def benchmark_lookup(
-    runner: _Runner, form_type: str, fiscal_year: int, concept: str
+    runner: _Runner, form_type: str, fiscal_year: int, period: str, concept: str
 ) -> BenchmarkResult:
-    """B2: the reporting-period value for one concept, via the tenancy root."""
+    """B2: the value for one concept in one named period, via the tenancy root.
+
+    Scoped to an exact period rather than a fiscal year because a fiscal year
+    holds up to four quarters: "net sales for FY2026" is four figures, and a
+    year-scoped lookup either picks one arbitrarily or reports a conflict.
+    """
     rows = runner.rows(
         B2_CYPHER, {"form": form_type, "year": fiscal_year, "concept": concept}
     )
-    reporting = reporting_suffix(form_type, fiscal_year)
     periods = [
         {
             "metric": row[0],
@@ -334,14 +346,24 @@ def benchmark_lookup(
         failures.append(
             f"no metric matching {concept!r} on the {form_type} FY{fiscal_year} filing"
         )
-    match = next((item for item in periods if item["period"] == reporting), None)
-    if periods and match is None:
+    matches = [item for item in periods if item["period"] == period]
+    if periods and not matches:
         failures.append(
-            f"no row for the reporting period {reporting}; periods present: "
+            f"no row for period {period}; periods present: "
             f"{sorted({item['period'] for item in periods})}"
         )
+    match = matches[0] if matches else None
     if match is not None and match["value"] is None:
-        failures.append(f"{reporting} value is null")
+        failures.append(f"{period} value is null")
+    # One period is one measurement, so it has one value. Two figures under the
+    # same period key means two filings attached to one node and the graph now
+    # answers with whichever landed first.
+    if len({item["value"] for item in matches}) > 1:
+        failures.append(
+            f"period {period} carries conflicting values "
+            f"{sorted(str(item['value']) for item in matches)}; the period key is "
+            f"not identifying the measurement"
+        )
     # A prior-year comparative must be visible, or the period scoping is lossy.
     if periods and len(periods) < 2:
         failures.append(
@@ -350,12 +372,12 @@ def benchmark_lookup(
         )
 
     return _Runner.verdict(
-        "B2", f"point lookup: {concept} on {form_type} FY{fiscal_year}", failures,
+        "B2", f"point lookup: {concept} {period} on {form_type} FY{fiscal_year}", failures,
         {
             "form_type": form_type,
             "fiscal_year": fiscal_year,
             "concept": concept,
-            "reporting_period": reporting,
+            "reporting_period": period,
             "reporting_value": match["value"] if match else None,
             "currency": match["currency"] if match else None,
             "periods": periods,
@@ -378,12 +400,14 @@ ORDER BY m.canonical_name
 
 
 def benchmark_period_separation(
-    runner: _Runner, form_type: str, fiscal_year: int, concept: str
+    runner: _Runner, form_type: str, fiscal_year: int, period: str, concept: str
 ) -> BenchmarkResult:
-    """B3: same date, two durations, two distinct nodes with two distinct values.
+    """B3: same end date, two durations, two distinct nodes, two distinct values.
 
     This is the benchmark that catches a regression in period detection. See the
     module docstring for why the 10-Q's 3M and 9M columns are the test case.
+    Durations are matched on the end date they share, which is exactly what the
+    date-keyed period identity makes checkable.
     """
     rows = runner.rows(
         B3_CYPHER, {"form": form_type, "year": fiscal_year, "concept": concept}
@@ -394,39 +418,47 @@ def benchmark_period_separation(
             None if value is None else float(value)
         )
 
-    current = [p for p in by_period if p.endswith(f"-FY{fiscal_year}")]
-    ytd = sorted(p for p in current if p.startswith(("3M-", "6M-", "9M-")))
-    prior = sorted(p for p in by_period if p.endswith(f"-FY{fiscal_year - 1}"))
+    end = period_end_of(period)
+    same_end = sorted(
+        (p for p in by_period if period_end_of(p) == end),
+        key=lambda p: (duration_of(p), p),
+    )
+    ytd = [p for p in same_end if duration_of(p)]
+    prior = sorted(
+        (p for p in by_period if period_end_of(p) not in (end, "") and duration_of(p)),
+        key=str,
+    )
 
     failures: list[str] = []
-    if len(ytd) < 2:
+    if len({duration_of(p) for p in ytd}) < 2:
         failures.append(
-            f"expected >= 2 current-year durations for {concept!r}, found "
+            f"expected >= 2 durations ending {end} for {concept!r}, found "
             f"{ytd or sorted(by_period)}; the 3M and year-to-date columns are "
             f"collapsing into one period"
         )
     # Distinct values are the point: identical numbers would mean one column was
     # read twice under two names.
-    for period in ytd:
-        values = by_period[period]
+    for key in ytd:
+        values = by_period[key]
         if len(set(values)) != 1 and len(values) != len(set(values)):
-            failures.append(f"{period}: one node carries conflicting values {values}")
+            failures.append(f"{key}: one node carries conflicting values {values}")
     if not prior:
         failures.append(
-            f"no FY{fiscal_year - 1} comparative for {concept!r}; the prior-year "
-            f"column was not captured"
+            f"no comparative for {concept!r}; the prior-period column was not "
+            f"captured"
         )
 
     return _Runner.verdict(
         "B3",
-        f"comparative-period separation: {concept} on {form_type} FY{fiscal_year}",
+        f"comparative-period separation: {concept} {period} on {form_type} FY{fiscal_year}",
         failures,
         {
             "form_type": form_type,
             "fiscal_year": fiscal_year,
             "concept": concept,
-            "durations_current_year": ytd,
-            "durations_prior_year": prior,
+            "period": period,
+            "durations_ending_here": ytd,
+            "comparatives": prior,
             "values_by_period": {
                 period: by_period[period] for period in sorted(by_period)
             },
@@ -568,6 +600,7 @@ def run_all(
     form_type: str = "10-Q",
     fiscal_year: int | None = None,
     concept: str = "Net Sales",
+    period: str | None = None,
 ) -> list[BenchmarkResult]:
     """Run B1-B5 and return the results in order.
 
@@ -581,6 +614,11 @@ def run_all(
     filing would invalidate. If no such filing exists, the benchmarks that need
     one fail with that reason rather than being skipped -- a silently skipped
     verification is worse than a failing one.
+
+    *period* defaults to the shortest duration ending on the newest date that
+    filing reports for *concept* -- the filing's own quarter, which is what a
+    reader means by "the quarter it just reported". A year alone cannot name it,
+    since a year holds up to four quarters.
     """
     runner = _Runner(connection)
     if fiscal_year is None:
@@ -591,14 +629,36 @@ def run_all(
         )
         fiscal_year = int(discovered) if discovered is not None else 0
 
-    log.info("running benchmarks against %s FY%s", form_type, fiscal_year)
+    if not period:
+        discovered = runner.rows(
+            "MATCH (f:Filing)-[e:REPORTS_METRIC]->(m:Metric) "
+            "WHERE f.form_type = $form AND f.fiscal_year = $year "
+            "AND m.canonical_name CONTAINS $concept "
+            "RETURN DISTINCT m.canonical_name",
+            {"form": form_type, "year": fiscal_year, "concept": concept},
+        )
+        keys = [period_of(row[0]) for row in discovered]
+        # Only date-keyed periods can be ordered by recency. A key still on the
+        # bare-year fallback ("3M-FY2026") sorts above every date and would
+        # become the target while naming no date at all.
+        dated = [k for k in keys if duration_of(k)]
+        end = max((period_end_of(k) for k in dated), default="")
+        period = min(
+            (k for k in dated if period_end_of(k) == end),
+            key=lambda k: (len(duration_of(k)), k),
+            default="",
+        )
+
+    log.info("running benchmarks against %s FY%s period %s", form_type, fiscal_year, period)
     return [
         _Runner.timed(lambda: benchmark_shape(runner, distinct or {})),
         _Runner.timed(
-            lambda: benchmark_lookup(runner, form_type, fiscal_year, concept)
+            lambda: benchmark_lookup(runner, form_type, fiscal_year, period, concept)
         ),
         _Runner.timed(
-            lambda: benchmark_period_separation(runner, form_type, fiscal_year, concept)
+            lambda: benchmark_period_separation(
+                runner, form_type, fiscal_year, period, concept
+            )
         ),
         _Runner.timed(lambda: benchmark_segment_fanout(runner, concept)),
         _Runner.timed(lambda: benchmark_negative_control(runner)),

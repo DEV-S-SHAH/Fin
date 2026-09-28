@@ -69,8 +69,9 @@ The scope partition
 carries a single ``value`` and a 10-K shows three periods of every line. So the
 registry is partitioned by ``(kind, scope)`` and resolution never crosses a
 partition boundary. That is a structural guarantee rather than a tuned number:
-no threshold, however low, can merge ``Net Sales (FY2025)`` into
-``Net Sales (FY2024)``, which lives in a different partition entirely.
+no threshold, however low, can merge ``Net Sales (3M-2025-12-27)``
+into ``Net Sales (3M-2026-03-28)``, which lives in a different partition
+entirely.
 
 Cross-period facts are not the only hazard. A *beginning* and an *ending*
 balance share both a kind and a period, so partitioning does nothing for them,
@@ -1029,8 +1030,8 @@ class ConceptRegistry:
     and both are the point:
 
     * A metric's period is part of its identity, so resolution never crosses a
-      period boundary. ``Net Sales (FY2025)`` and ``Net Sales (FY2024)`` are
-      different facts and no threshold can merge them.
+      period boundary. ``Net Sales (FY-2025-09-27)`` and ``Net Sales
+      (FY-2024-09-28)`` are different facts and no threshold can merge them.
     * The same partition is shared by every filing in the run, so a segment
       named in both the 10-K and the 10-Q resolves to one node instead of one per
       filing. This is what ``FilingParser.extract_segments`` could not do on its

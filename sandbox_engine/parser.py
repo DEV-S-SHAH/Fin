@@ -61,12 +61,14 @@ The stage interface
 
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import io
 import logging
 import re
 import time
 import warnings
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterator, Sequence
@@ -480,6 +482,11 @@ def canonical_metric(label: str, is_percent: bool = False) -> tuple[str, str | N
 _MONTHS = (
     r"January|February|March|April|May|June|July|August|September|October"
     r"|November|December"
+    # Abbreviated forms, as NVIDIA and Microsoft print them ("Apr 26, 2026").
+    # Without these a date header fails to parse and the period collapses to a
+    # bare year, which is the calendar year rather than the fiscal one.
+    r"|January|Feb|February|Mar|March|Apr|May|Jun|June|Jul|July|Aug|August"
+    r"|Sep|Sept|September|Oct|October|Nov|November|Dec|December"
 )
 _PERIOD_RE = re.compile(
     rf"(?:{_MONTHS})\s+\d{{1,2}}\s*,?\s*(?:19|20)\d{{2}}"       # September 27, 2025
@@ -488,6 +495,7 @@ _PERIOD_RE = re.compile(
     rf"|(?:Q[1-4]\s*)?(?:FY\s*)?(?:19|20)\d{{2}}",              # Q2 2026 / FY2025
     re.I,
 )
+_ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
 #: A header cell that is pure decoration, not a period. Without this, the word
 #: "Years" in a banner row is read as a period label.
 _PERIOD_STOPWORDS = frozenset(
@@ -540,6 +548,7 @@ class PeriodGroup:
     label: str
     columns: list[int]
     duration: str = ""
+    year_end: tuple[int, int] | None = None
 
     @property
     def key(self) -> str:
@@ -549,20 +558,31 @@ class PeriodGroup:
     def full_key(self) -> str:
         """Period identity used for metric nodes.
 
-        A duration-bearing period is keyed ``<duration>-FY<year>`` whether the
-        header printed a bare year ("Years ended 2025") or a full date
-        ("September 27, 2025"); both describe the same measurement, and keying
-        them differently would store it twice under two names. An annual period
-        is keyed plain ``FY<year>`` -- "FY-FY2025" would be a key nothing
-        outside this file could guess at.
+        Keyed on the period's own end date, ``<duration>-<end date>`` --
+        ``3M-2026-03-28`` for a quarter, ``FY-2025-09-27`` for a year, and the
+        bare ``2026-06-27`` for a point-in-time column that carries no duration
+        banner, because a balance-sheet date is not recoverable from a year.
 
-        A point-in-time column carries no duration banner and keeps its date,
-        because a balance-sheet date is not recoverable from a year alone.
+        The date, rather than the fiscal year and quarter it implies, because a
+        fiscal year holds up to four quarters and the year alone cannot tell
+        them apart. ``3M-FY2026`` names three different quarters at once, so the
+        three filings that report them attach three values to one metric node
+        and "gross margin" answers with whichever was loaded first. The header
+        already prints the date, so keying on it invents nothing; it is also the
+        only key that stays correct for a 53-week year, where two quarters can
+        share a fiscal year, and for a 10-K and 10-Q that both report the same
+        period.
+
+        A period whose header printed a bare year ("Years ended 2025") has no
+        date to key on and falls back to ``<duration>-FY<year>``.
         """
+        key = self.key
+        if _ISO_DATE.fullmatch(key):
+            return f"{self.duration}-{key}" if self.duration else key
         year = self.year
         if self.duration and year:
             return f"FY{year}" if self.duration == "FY" else f"{self.duration}-FY{year}"
-        return self.key
+        return key
 
     @staticmethod
     def period_key(label: str) -> str:
@@ -581,12 +601,24 @@ class PeriodGroup:
 
     @property
     def year(self) -> int | None:
+        """Fiscal year of this period, in the filer's own numbering.
+
+        Read from a full date plus the filer's year end when both are
+        available, because a bare calendar year in the header is not the fiscal
+        year for most quarters. A period that carries no date -- a banner
+        saying only "Years ended 2025" -- has no month to compare against a
+        September close, so it falls back to the year printed on it.
+        """
+        if self.year_end is not None:
+            iso = re.match(r"(\d{4}-\d{2}-\d{2})", self.key)
+            if iso:
+                return fiscal_year_for(iso.group(1), self.year_end)
         year = re.search(r"((?:19|20)\d{2})", self.key)
         return int(year.group(1)) if year else None
 
 
 def detect_period_groups(
-    frame: pd.DataFrame, scan: int = 6
+    frame: pd.DataFrame, scan: int = 6, year_end: tuple[int, int] | None = None
 ) -> tuple[int, list[PeriodGroup]]:
     """Locate the header row and group its columns by period.
 
@@ -605,6 +637,7 @@ def detect_period_groups(
             best_row, best = index, groups
     for group in best:
         group.duration = _duration_above(frame, group, best_row)
+        group.year_end = year_end
     return best_row, best
 
 
@@ -709,7 +742,9 @@ def classify_statement(labels: Sequence[str]) -> str:
 
 
 def extract_cells(
-    frame: pd.DataFrame, min_rows: int = 2
+    frame: pd.DataFrame,
+    min_rows: int = 2,
+    year_end: tuple[int, int] | None = None,
 ) -> tuple[str, list[TableCell]]:
     """Turn a statement table into ``(statement_category, cells)``.
 
@@ -721,7 +756,7 @@ def extract_cells(
     period to key a metric by, and storing it would produce an identity that
     collides with every other single-column table in the filing.
     """
-    _, groups = detect_period_groups(frame)
+    _, groups = detect_period_groups(frame, year_end=year_end)
     if len(groups) < 2:
         return "", []
     label_end = max(1, groups[0].columns[0])
@@ -1132,10 +1167,20 @@ _FILE_FORM_RE = re.compile(r"(10-[KQ]|8-?K)", re.I)
 #: SEC's own naming: ``aapl-20250927.htm``; the period end is the date part.
 _EDGAR_NAME_RE = re.compile(r"^([a-z]{1,6})-?(\d{8})", re.I)
 _CURATED_DATE_RE = re.compile(r"(\d{4})-(\d{2})-(\d{2})")
+#: Curated filenames end in ``<ticker>-<YYYYMMDD>`` where the date is the
+#: period the filing reports on, not the day it was filed -- both appear in the
+#: name and confusing the two is what makes a 10-Q look like it covers a year.
+#: EDGAR's own names carry no such token, so a miss here is expected and the
+#: caller falls through to the in-document tag.
+_CURATED_PERIOD_RE = re.compile(r"-(\d{8})$")
 _CIK_RE = re.compile(r"\b(\d{10})\b")
 _CURRENCY_RE = re.compile(
     r"\b(USD|EUR|GBP|JPY|CHF|CAD|AUD|CNY|HKD|INR|BRL|MXN|SEK|NOK)\b"
 )
+#: The unit every inline-XBRL filing declares its monetary facts in, tagged
+#: with the ISO 4217 scheme URI. Authoritative in a way a bare code in running
+#: text is not: it states what the filing measures in, not what it mentions.
+_ISO4217_RE = re.compile(r"iso4217:([A-Z]{3})\b", re.I)
 #: The entity identifier every inline-XBRL context carries. Unambiguous, because
 #: it is tagged with the SEC's own CIK scheme URI -- a bare ten-digit scan of the
 #: visible text would also match a dollar amount.
@@ -1149,7 +1194,145 @@ _DEI_FOCUS_RE = re.compile(
     r".{0,200}?<(?:dei:)?DocumentFiscalPeriodFocus[^>]*>\s*([A-Za-z0-9]{1,4})\s*<",
     re.S | re.I,
 )
+#: Matched against the *raw* markup, not ``_all_text`` output: those strip tags,
+#: and the focus values are tagged, so against stripped text neither can match.
+#: The two tags are read independently because filers emit them independently --
+#: a 10-Q may carry a period focus with no year focus at all, and demanding both
+#: loses the quarter exactly when it is the only thing the filing states.
+#: Inline-XBRL fact values are routinely wrapped in presentational markup --
+#: ``<span style="text-transform:uppercase">MSFT</span>`` -- so a value is not
+#: always the fact tag's own text. Allow a short run of nested tags between the
+#: fact and its value. Bounded to three so this cannot drift across the
+#: document and latch onto a stray token.
+_INLINE_WRAP = r"(?:<[^>]{0,400}>\s*){0,3}"
+_DEI_YEAR_RE = re.compile(
+    r"name\s*=\s*[\"']dei:DocumentFiscalYearFocus[\"'][^>]*>\s*" + _INLINE_WRAP +
+    r"((?:19|20)\d{2})\s*<"
+    r"|<ix:[^>]*name\s*=\s*[\"']dei:DocumentFiscalYearFocus[\"'][^>]*>\s*" + _INLINE_WRAP +
+    r"((?:19|20)\d{2})\s*<",
+    re.S | re.I,
+)
+_DEI_PERIOD_RE = re.compile(
+    r"name\s*=\s*[\"']dei:DocumentFiscalPeriodFocus[\"'][^>]*>\s*" + _INLINE_WRAP +
+    r"([A-Za-z0-9]{1,4})\s*<"
+    r"|<ix:[^>]*name\s*=\s*[\"']dei:DocumentFiscalPeriodFocus[\"'][^>]*>\s*" + _INLINE_WRAP +
+    r"([A-Za-z0-9]{1,4})\s*<",
+    re.S | re.I,
+)
 _HEADER_FOCUS_RE = re.compile(r"\b((?:19|20)\d{2})\s+(FY|Q[1-4])\b[^A-Za-z0-9]{0,12}\d{1,10}\b")
+#: ``dei:CurrentFiscalYearEndDate`` states the filer's year end, which is what a
+#: calendar year in a column header cannot be turned into a fiscal year without.
+#: Filers emit it three ways -- ``--09-26``, ``1/25``, and ``September 27`` with
+#: the closing tag splitting the fact mid-value -- so the tag is located first
+#: and the value parsed from a short text window after it.
+_DEI_FYE_LOCATE = re.compile(
+    r"name\s*=\s*[\"']dei:CurrentFiscalYearEndDate[\"'][^>]*>", re.I
+)
+_FYE_VALUE = re.compile(
+    r"--(\d{2})-(\d{2})"
+    r"|(\d{1,2})\s*/\s*(\d{1,2})"
+    rf"|({_MONTHS})[\s ]*(\d{{1,2}})",
+    re.I,
+)
+
+
+def fiscal_year_for(period_end: str, year_end: tuple[int, int] | None) -> int | None:
+    """The fiscal year a period ending *period_end* falls in.
+
+    A column header prints a calendar date; a filer names the period by its own
+    fiscal year. Those differ for most of every quarter -- Apple's quarter
+    ending 2025-12-27 is "Q1 FY2026" but the header says 2025, and NVIDIA's
+    quarter ending 2026-04-26 is "Q1 FY2027" but the header also says 2026.
+    Keying metrics by the header's year therefore files this quarter under the
+    previous fiscal year, colliding the current period with the comparative
+    printed beside it in the same table.
+
+    The fiscal year is the one whose most recent year end is on or before the
+    period end: Apple's year ends in late September, so 2025-12-27 falls after
+    the 2025-09-27 close and lands in the year ending 2026-09-26, while the
+    close date itself belongs to the year it closes. ``year_end`` is the
+    filer's own ``dei:CurrentFiscalYearEndDate``; without it the calendar year
+    is the only thing left, and is returned unchanged.
+    """
+    match = re.match(r"(\d{4})-(\d{2})-(\d{2})", str(period_end).strip())
+    if not match:
+        return None
+    year, month, day = int(match.group(1)), int(match.group(2)), int(match.group(3))
+    if year_end is None:
+        return year
+    end_month, end_day = year_end
+    try:
+        closes = dt.date(year, end_month, min(end_day, 31)) if end_month <= 12 else None
+    except ValueError:
+        closes = None
+    if closes is None:
+        return year
+    # On or after this year's close belongs to the year that has not closed yet.
+    return year if (month, day) <= (closes.month, closes.day) else year + 1
+#: Matched against raw markup: ``_all_text`` strips tags, and the symbol lives
+#: inside one. The two alternatives cover a bare fact and an ``ix:``-wrapped one.
+_DEI_TICKER_RE = re.compile(
+    r"name\s*=\s*[\"']dei:TradingSymbol[\"'][^>]*>\s*" + _INLINE_WRAP +
+    r"([A-Z][A-Z0-9.\-]{0,6})\s*<"
+    r"|<ix:[^>]*name\s*=\s*[\"']dei:TradingSymbol[\"'][^>]*>\s*" + _INLINE_WRAP +
+    r"([A-Z][A-Z0-9.\-]{0,6})\s*<",
+)
+
+#: ``dei`` values are tagged inline, so the date is the *text* of an
+#: ``ix:nonNumeric`` element whose name is the tag, not an ISO literal:
+#: ``<ix:nonNumeric name="dei:DocumentPeriodEndDate" ...>December&#160;27,
+#: 2025</ix:nonNumeric>``. A regex anchored on ``<dei:DocumentPeriodEndDate``
+#: never matches that, and the caller then falls through to a fallback that
+#: returns the wrong date for every 10-Q. Both spellings are accepted.
+_DEI_DATE_RE = re.compile(
+    r"<ix:nonNumeric\b[^>]*\bname\s*=\s*[\"']dei:DocumentPeriodEndDate[\"'][^>]*>"
+    r"\s*([^<]{4,40}?)\s*</ix:nonNumeric>"
+    r"|<(?:dei:)?DocumentPeriodEndDate\b[^>]*>\s*([^<]{4,40}?)\s*<",
+    re.I,
+)
+#: Name -> number, for normalising a tagged ``dei`` month name. Distinct from
+#: ``_MONTHS`` above, which is a regex alternation: sharing a name would shadow
+#: it and break every pattern that interpolates it.
+_MONTH_NUMBERS_BY_NAME = {
+    name.lower(): i
+    for i, name in enumerate(
+        ("January", "February", "March", "April", "May", "June", "July",
+         "August", "September", "October", "November", "December"),
+        start=1,
+    )
+}
+#: ``December 27, 2025`` and ``27 December 2025`` are both emitted in the wild.
+_DEI_MONTHNAME_RE = re.compile(
+    r"([A-Za-z]{3,9})\.?\s+(\d{1,2}),?\s+(\d{4})|(\d{1,2})\s+([A-Za-z]{3,9})\.?,?\s+(\d{4})"
+)
+
+
+def _iso_date(text: str) -> str:
+    """Normalise a tagged ``dei`` date to ISO, or return "" if unparseable.
+
+    Filers write these dates three ways -- an ISO literal, a month-name form,
+    and a month-name form with a non-breaking space (``&#160;``) where the comma
+    would be. All three reduce here, so the callers below can assume ISO.
+    """
+    import html
+    import re as _re
+
+    cleaned = html.unescape(text or "").replace(" ", " ").strip().strip(",")
+    if not cleaned:
+        return ""
+    if _re.fullmatch(r"\d{4}-\d{2}-\d{2}", cleaned):
+        return cleaned
+    match = _DEI_MONTHNAME_RE.search(cleaned)
+    if not match:
+        return ""
+    if match.group(1):
+        month_name, day, year = match.group(1), match.group(2), match.group(3)
+    else:
+        day, month_name, year = match.group(4), match.group(5), match.group(6)
+    month = _MONTH_NUMBERS_BY_NAME.get(month_name.lower())
+    if not month:
+        return ""
+    return f"{int(year):04d}-{month:02d}-{int(day):02d}"
 #: A corporate suffix is the one registrant-name shape every issuer shares.
 _CORPORATE_RE = re.compile(
     r"\b([A-Z][A-Za-z0-9&.,'’\-]{1,40}(?:\s+[A-Z][A-Za-z0-9&.,'’\-]{1,40}){0,4}"
@@ -1272,7 +1455,7 @@ class FilingParser:
 
         period_end = self._period_end(raw, path)
         fiscal_year, fiscal_period, period_source = self._fiscal(
-            hidden, path, form_type, period_end
+            hidden, path, form_type, period_end, raw
         )
         sources["fiscal"] = period_source
 
@@ -1324,6 +1507,22 @@ class FilingParser:
                 if (symbol and symbol.lower() not in _DASHES
                         and re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,6}", symbol)):
                     return symbol
+        return self._ticker_from_dei(raw)
+
+    def _ticker_from_dei(self, raw: str) -> str:
+        """Ticker from the tagged ``dei:TradingSymbol`` value.
+
+        The table reader is the better source when it works, but an 8-K often
+        renders its securities table in a shape the reader drops, and SEC's own
+        filenames carry a hash rather than a ticker -- so the filename fallback
+        yields ``UNKNOWN`` and the filer splits into a second Company node under
+        a key that is not its ticker. The tag is on the cover of every filing,
+        including the ones that break the table.
+        """
+        for match in _DEI_TICKER_RE.finditer(raw):
+            symbol = clean_text(match.group(1) or match.group(2) or "").strip("$ ")
+            if re.fullmatch(r"[A-Z][A-Z0-9.\-]{0,6}", symbol):
+                return symbol
         return ""
 
     def _ticker_from_name(self, path: Path) -> str:
@@ -1383,20 +1582,64 @@ class FilingParser:
             return match.group(1), "filename"
         return "", "unresolved"
 
+    def _year_end(self, raw: str) -> tuple[int, int] | None:
+        """The filer's fiscal year end as ``(month, day)``.
+
+        Read from ``dei:CurrentFiscalYearEndDate``, which every filer states on
+        the cover. This is what turns a column header's calendar date into the
+        fiscal year the filer names it by; see :func:`fiscal_year_for`. Returns
+        ``None`` when absent, and callers then fall back to the calendar year
+        rather than guessing a calendar.
+        """
+        located = _DEI_FYE_LOCATE.search(raw)
+        if not located:
+            return None
+        window = clean_text(strip_markup(raw[located.end():located.end() + 120]))
+        value = _FYE_VALUE.search(window)
+        if not value:
+            return None
+        if value.group(1):
+            month, day = int(value.group(1)), int(value.group(2))
+        elif value.group(3):
+            month, day = int(value.group(3)), int(value.group(4))
+        else:
+            month, day = _month_number(value.group(5)), int(value.group(6))
+        if not 1 <= month <= 12 or not 1 <= day <= 31:
+            return None
+        return month, day
+
     def _period_end(self, raw: str, path: Path) -> str:
-        """The filing's own period end, e.g. ``2025-09-27``."""
-        dei = re.search(
-            r"<(?:dei:)?DocumentPeriodEndDate[^>]*>\s*(\d{4}-\d{2}-\d{2})\s*<", raw, re.I
-        )
+        """The filing's own period end, e.g. ``2025-09-27``.
+
+        Order matters. The curated filename is read first because it is a
+        direct transcription of the cover page and is exact; the in-document
+        ``dei`` tag is the fallback, and it is genuinely unreliable --
+        filers emit it as a bare element, wrapped in a ``<span>``, and nested
+        around ``CurrentFiscalYearEndDate``, so one regex cannot hold all three
+        and a partial match is worse than the filename. A 10-Q that falls back
+        to a context instant gets the *prior* fiscal-year end, because that is
+        the comparative balance-sheet column, which is how a quarter ends up
+        wearing the annual window.
+        """
+        curated = _CURATED_PERIOD_RE.search(path.stem)
+        if curated:
+            stamp = curated.group(1)
+            return f"{stamp[0:4]}-{stamp[4:6]}-{stamp[6:8]}"
+        dei = _DEI_DATE_RE.search(raw)
         if dei:
-            return dei.group(1)
-        # The document period's context is the one carrying only an end date.
-        for match in re.finditer(
+            parsed = _iso_date(dei.group(1) or dei.group(2) or "")
+            if parsed:
+                return parsed
+        # Fallback only. A context instant is a weak signal: a filing carries
+        # many (cover page, prior-year comparatives, scheduled maturities) and
+        # the first is the document period's only by convention.
+        match = re.search(
             r"<xbrli:context\b[^>]*>(?:(?!</xbrli:context>).)*?"
             r"<xbrli:instant>\s*(\d{4}-\d{2}-\d{2})\s*<",
             raw,
             re.S | re.I,
-        ):
+        )
+        if match:
             return match.group(1)
         match = _EDGAR_NAME_RE.search(path.stem)
         if match:
@@ -1405,7 +1648,7 @@ class FilingParser:
         return ""
 
     def _fiscal(
-        self, hidden: str, path: Path, form_type: str, period_end: str
+        self, hidden: str, path: Path, form_type: str, period_end: str, raw: str = ""
     ) -> tuple[int | None, str, str]:
         """Fiscal year and period, e.g. ``(2025, "FY")`` or ``(2026, "Q3")``.
 
@@ -1413,7 +1656,23 @@ class FilingParser:
         fiscal-calendar guesswork is needed. Falling back to "the largest year
         in the text" would be wrong: these filings quote bond maturities out to
         2042.
+
+        The year and the period are read separately because filers do not always
+        emit both. A 10-Q with a period focus but no year focus still knows it
+        is ``Q3``; requiring both loses the quarter. When the year is genuinely
+        absent the period end is not a safe substitute -- Microsoft's quarter
+        ending 2025-12-31 is fiscal 2026, because its year ends in June -- so the
+        year is left unresolved instead of being silently wrong.
         """
+        if raw:
+            period_match = _DEI_PERIOD_RE.search(raw)
+            if period_match:
+                period = (period_match.group(1) or period_match.group(2) or "").upper()
+                year_match = _DEI_YEAR_RE.search(raw)
+                if year_match:
+                    year = year_match.group(1) or year_match.group(2)
+                    return int(year), period, "dei_focus"
+                return None, period, "dei_period_only"
         match = _DEI_FOCUS_RE.search(hidden)
         if match:
             return int(match.group(1)), match.group(2).upper(), "dei_focus"
@@ -1455,6 +1714,25 @@ class FilingParser:
         return f"{fiscal_year}-12-31" if fiscal_year else ""
 
     def _currency(self, text: str) -> str:
+        """The filing's own reporting currency.
+
+        Read from the inline-XBRL unit declarations rather than from the first
+        currency code the text happens to contain. The rendered text of an
+        inline-XBRL filing opens with the context and unit block, so a *first*
+        match is whichever unit the document lists earliest -- not the one it
+        reports in. Microsoft's FY2026 10-K declares ``iso4217:EUR`` before
+        ``iso4217:USD`` (EUR covers a segment disclosure) and the scan returned
+        EUR, which stamped every Microsoft metric edge with the wrong currency
+        and made a cross-issuer comparison wrong rather than merely untidy.
+
+        The unit declarations are machine-readable and per-filing, so the most
+        frequently declared one is the reporting currency. A filing that
+        declares no units -- an 8-K, typically -- falls back to the text scan,
+        and a filing that mentions no code at all falls back to USD.
+        """
+        declared = _ISO4217_RE.findall(text)
+        if declared:
+            return Counter(declared).most_common(1)[0][0]
         match = _CURRENCY_RE.search(text[:200_000])
         return match.group(1) if match else "USD"
 
@@ -1477,10 +1755,11 @@ class FilingParser:
         metrics: dict[str, dict[str, Any]] = {}
         candidates: list[dict[str, Any]] = []
         currency = metadata["currency"]
+        year_end = self._year_end(raw)
         for frame in self.tables(raw):
             if frame is None or frame.empty:
                 continue
-            category, cells = extract_cells(frame)
+            category, cells = extract_cells(frame, year_end=year_end)
             if not cells:
                 continue
             for cell in cells:
@@ -1602,10 +1881,11 @@ class FilingParser:
         edges: list[dict[str, Any]] = []
         totals: list[dict[str, Any]] = []
         frames = self.tables(raw)
+        year_end = self._year_end(raw)
         for index, frame in enumerate(frames):
             if frame is None or frame.empty:
                 continue
-            _, groups = detect_period_groups(frame)
+            _, groups = detect_period_groups(frame, year_end=year_end)
             if len(groups) < 2:
                 continue
             label_end = max(1, groups[0].columns[0])
@@ -1952,7 +2232,7 @@ def extract_executives_from_8k(raw: str, metadata: dict[str, Any]) -> list[dict[
     text = re.sub(r"\s+", " ", text)
     executives: list[dict[str, Any]] = []
     accession = metadata.get("accession_number") or filing_identity(metadata)
-    event_date = metadata.get("period_end_date") or metadata.get("filing_date", "")
+    event_date = metadata.get("period_end") or metadata.get("filing_date", "")
 
     for m in _ITEM_RE.finditer(text):
         code = m.group(1).strip()
