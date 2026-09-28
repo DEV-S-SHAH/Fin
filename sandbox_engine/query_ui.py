@@ -476,8 +476,11 @@ Rules:
 # ── Database Layer ────────────────────────────────────────────────────────────
 
 class KnowledgeGraph:
-    def __init__(self, db_path: Path):
-        self.db = lb.Database(str(db_path))
+    def __init__(self, db_path: Path, read_only: bool = True):
+        # Read-only by default: this UI never writes, and LadybugDB takes an
+        # exclusive lock on a read-write handle, so a read-write open makes a
+        # second server on another port fail to start at all.
+        self.db = lb.Database(str(db_path), read_only=read_only)
         self.conn = lb.Connection(self.db)
         self.lock = threading.Lock()
         self.schema = detect_schema(self._raw_execute)
@@ -2426,8 +2429,9 @@ def _int_param(qs: dict, name: str, default: int, minimum: int | None = None, ma
 
 # ── Server Runner ─────────────────────────────────────────────────────────────
 
-def serve(host: str = "127.0.0.1", port: int = 9000, open_browser: bool = True) -> None:
-    db_path = resolve_db_path()
+def serve(host: str = "127.0.0.1", port: int = 9000, open_browser: bool = True,
+          read_only: bool = True, db_path: Path | None = None) -> None:
+    db_path = db_path or resolve_db_path()
     if db_path is None:
         log.error(
             "No graph database found. Looked for:\n  %s\n"
@@ -2438,7 +2442,7 @@ def serve(host: str = "127.0.0.1", port: int = 9000, open_browser: bool = True) 
         )
         raise SystemExit(1)
 
-    kg = KnowledgeGraph(db_path)
+    kg = KnowledgeGraph(db_path, read_only=read_only)
     handler = type("_BoundHandler", (_Handler,), {"kg": kg})
     server = ThreadingHTTPServer((host, port), handler)
     server.daemon_threads = True
@@ -2476,8 +2480,16 @@ def _main() -> None:
     p.add_argument("--port", type=int, default=9000)
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--no-browser", action="store_true")
+    p.add_argument("--db", type=Path, default=None,
+                   help="Database file to serve. Use a separate copy of the "
+                        "graph to run a second UI on another port; LadybugDB "
+                        "locks the file, so two servers cannot share one path.")
+    p.add_argument("--read-write", action="store_true",
+                   help="Open the database read-write (takes an exclusive lock, "
+                        "so no other server can share the file)")
     args = p.parse_args()
-    serve(args.host, args.port, open_browser=not args.no_browser)
+    serve(args.host, args.port, open_browser=not args.no_browser,
+          read_only=not args.read_write, db_path=args.db)
 
 
 if __name__ == "__main__":
