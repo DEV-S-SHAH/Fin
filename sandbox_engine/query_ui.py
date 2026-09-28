@@ -112,6 +112,76 @@ _DB_CANDIDATES = (
 )
 
 
+# ── Schema translation ────────────────────────────────────────────────────────
+#
+# This UI's Cypher was written against the blueprint schema. The pipeline
+# (`python -m sandbox_engine`) builds a graph with a different, smaller schema.
+# A fresh clone can only produce the latter, because the databases are build
+# artefacts -- so a UI that spoke only the blueprint dialect served a graph
+# where every entity query raised "Cannot find property legal_name" and the page
+# rendered blank.
+#
+# Rather than maintain two copies of every query, queries are written once in
+# blueprint terms and translated per database. Properties with no counterpart
+# map to the literal NULL, which preserves the arity of a RETURN list and so
+# keeps positional unpacking correct -- dropping the column instead would
+# silently shift every later value.
+_BLUEPRINT_TO_ENGINE = {
+    # node tables
+    "FinancialMetric": "Metric",
+    "DisclosureEvent": "Event",
+    "DocumentChunk": "Chunk",
+    # relationship tables
+    "DISAGGREGATED_BY": "HAS_SEGMENT",
+    "CONTAINS_CHUNK": "HAS_CHUNK",
+    # properties
+    "legal_name": "name",
+    "accession_number": "id",
+    "period_end_date": "filing_date",
+    "metric_id": "id",
+    "statement_type": "statement_category",
+    "segment_id": "name",
+    "dimension_name": "name",
+    "dimension_type": "segment_type",
+    "event_id": "id",
+    "account_class": "statement_category",
+    "period_type": "period",
+    # present in the blueprint schema only
+    "scale": "NULL",
+    "raw_label": "NULL",
+    "event_date": "NULL",
+    "document_text": "text",
+    "chunk_type": "section",
+}
+
+_TRANSLATE_RE = re.compile(
+    r"\b(" + "|".join(sorted(_BLUEPRINT_TO_ENGINE, key=len, reverse=True)) + r")\b"
+)
+
+
+def translate_for_engine(cypher: str) -> str:
+    """Rewrite blueprint-schema Cypher into engine-schema Cypher."""
+    return _TRANSLATE_RE.sub(lambda m: _BLUEPRINT_TO_ENGINE[m.group(1)], cypher)
+
+
+def detect_schema(kg_execute) -> str:
+    """``"blueprint"`` or ``"engine"``, decided by which table actually exists.
+
+    Probing the schema rather than trusting the filename means a rebuild that
+    produces either shape is served correctly without configuration.
+    """
+    for query, schema in (
+        ("MATCH (m:FinancialMetric) RETURN count(m)", "blueprint"),
+        ("MATCH (m:Metric) RETURN count(m)", "engine"),
+    ):
+        try:
+            kg_execute(query)
+            return schema
+        except Exception:
+            continue
+    return "blueprint"
+
+
 def resolve_db_path() -> Path | None:
     """First candidate database that exists on disk.
 
@@ -313,15 +383,27 @@ class KnowledgeGraph:
         self.db = lb.Database(str(db_path))
         self.conn = lb.Connection(self.db)
         self.lock = threading.Lock()
+        self.schema = detect_schema(self._raw_execute)
 
     def close(self):
         self.conn.close()
         self.db.close()
 
-    def execute(self, cypher: str, params: dict | None = None) -> list[list[Any]]:
+    def _raw_execute(self, cypher: str, params: dict | None = None) -> list[list[Any]]:
         with self.lock:
             res = self.conn.execute(cypher, params or {})
             return [list(r) for r in res.get_all()]
+
+    def execute(self, cypher: str, params: dict | None = None) -> list[list[Any]]:
+        """Run *cypher*, translating it first if this is an engine-schema graph.
+
+        Every query in this module is written in blueprint terms. On an
+        engine-schema database they are rewritten here, so the rest of the file
+        -- and the canned reports -- need no schema awareness at all.
+        """
+        if self.schema == "engine":
+            cypher = translate_for_engine(cypher)
+        return self._raw_execute(cypher, params)
 
     def stats(self) -> dict[str, Any]:
         node_tables = ["Company", "Filing", "FinancialMetric", "Segment", "DisclosureEvent", "DocumentChunk"]
