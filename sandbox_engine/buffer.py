@@ -75,6 +75,7 @@ __all__ = [
     "REL_TABLES",
     "NODE_TABLES",
     "PRIMARY_KEYS",
+    "RESULT_NODE_SOURCES",
     "arrow_schema",
     "identity_of",
     "to_arrow",
@@ -93,13 +94,60 @@ log = logging.getLogger("sandbox_engine.buffer")
 # ---------------------------------------------------------------------------
 
 #: Node tables, in column order.
+#:
+#: The first six are the original question-answering graph. The rest implement
+#: the Universal Financial Graph Schema (UFGS-2026-09); see
+#: :mod:`sandbox_engine.ufgs_schema` for the reference tables. The two layers
+#: coexist deliberately -- ``Metric`` is the tabular line item the QA UI
+#: queries, ``RawFact`` is the as-filed XBRL fact the universal schema
+#: normalizes, and a filing produces both from one parse.
 NODE_TABLES: dict[str, tuple[str, ...]] = {
-    "Company": ("ticker", "name", "cik"),
-    "Filing": ("id", "form_type", "fiscal_year", "fiscal_period", "filing_date"),
+    "Company": ("ticker", "name", "cik", "sic_code", "sector",
+                "fiscal_year_end_month", "fiscal_year_end_day_rule"),
+    # ``id`` stays the primary key so the existing SUBMITTED/REPORTS_METRIC
+    # edges keep resolving; the spec's ``accession_number`` is carried alongside
+    # as provenance rather than promoted to the key.
+    "Filing": ("id", "form_type", "fiscal_year", "fiscal_period",
+               "filing_date", "accession_number", "period_end_date",
+               "reporting_lag_in_days", "audit_status"),
     "Metric": ("id", "canonical_name", "statement_category"),
     "Segment": ("name", "segment_type"),
     "Event": ("id", "item_code", "item_title", "summary"),
     "Chunk": ("id", "section", "text"),
+    # -- UFGS structural layer ------------------------------------------
+    "Section": ("id", "form_type", "item_code", "section_title",
+                "char_start", "char_end", "char_count"),
+    "FiscalPeriod": ("id", "fiscal_year", "fiscal_quarter", "period_end_date",
+                     "calendar_year_overlap", "reporting_lag_in_days",
+                     "period_start"),
+    "RestatementEvent": ("id", "restatement_type", "materiality",
+                         "restatement_reason", "effective_date",
+                         "amended_form_type"),
+    "DiscontinuedOpsSegment": ("name", "ticker", "disposal_date",
+                               "disposal_method"),
+    # -- UFGS dual-track layer ------------------------------------------
+    "RawFact": ("id", "xbrl_tag", "as_filed_label", "reported_value", "unit",
+                "period_type", "period_start", "period_end", "audit_status",
+                "presentation_basis", "scale", "decimals", "context_ref",
+                "continuing_ops"),
+    "StandardizedConcept": ("concept_id", "name", "definition",
+                            "statement_type", "sector_applicability"),
+    "Footnote": ("id", "note_number", "note_title", "note_text", "note_type"),
+    # -- UFGS causal layer ----------------------------------------------
+    "RiskFactor": ("id", "item_code", "rf_header", "rf_text",
+                   "extracted_entities", "severity", "year_disclosed",
+                   "year_removed"),
+    "CausalRelation": ("id", "relation_type", "subject_type", "subject_name",
+                       "object_type", "object_name", "weight", "magnitude",
+                       "source_quote", "context"),
+    "ProductFamily": ("name", "issuer", "launch_date", "lifecycle_stage"),
+    "GeographicMarket": ("name", "iso_code"),
+    "Competitor": ("name", "ticker", "relation_strength"),
+    "Supplier": ("name", "relationship_type", "criticality"),
+    "Customer": ("name", "concentration_pct"),
+    "RegulatoryBody": ("name", "jurisdiction", "scope"),
+    "MacroVariable": ("name", "variable_type"),
+    "SectorOverlay": ("sector", "overlay_name", "overlay_concept_list"),
 }
 
 PRIMARY_KEYS: dict[str, str] = {
@@ -109,21 +157,123 @@ PRIMARY_KEYS: dict[str, str] = {
     "Segment": "name",
     "Event": "id",
     "Chunk": "id",
+    "Section": "id",
+    "FiscalPeriod": "id",
+    "RestatementEvent": "id",
+    "DiscontinuedOpsSegment": "name",
+    "RawFact": "id",
+    "StandardizedConcept": "concept_id",
+    "Footnote": "id",
+    "RiskFactor": "id",
+    "CausalRelation": "id",
+    "ProductFamily": "name",
+    "GeographicMarket": "name",
+    "Competitor": "name",
+    "Supplier": "name",
+    "Customer": "name",
+    "RegulatoryBody": "name",
+    "MacroVariable": "name",
+    "SectorOverlay": "sector",
 }
 
 #: Relationship table -> (source node, target node, property columns).
 REL_TABLES: dict[str, tuple[str, str, tuple[str, ...]]] = {
+    # -- original graph -------------------------------------------------
     "SUBMITTED": ("Company", "Filing", ()),
     "REPORTS_METRIC": ("Filing", "Metric", ("value", "currency")),
     "HAS_SEGMENT": ("Metric", "Segment", ("value", "period")),
     "DISCLOSES_EVENT": ("Filing", "Event", ()),
     "HAS_CHUNK": ("Filing", "Chunk", ()),
+    # -- UFGS structural ------------------------------------------------
+    "FILED": ("Company", "Filing", ()),
+    "CONTAINS_SECTION": ("Filing", "Section", ()),
+    "REPORTS_FOR": ("Filing", "FiscalPeriod", ()),
+    # -- UFGS dual track ------------------------------------------------
+    "REPORTED_IN": ("RawFact", "Section", ("item_code",)),
+    "NORMALIZES_TO": ("RawFact", "StandardizedConcept",
+                      ("rule_id", "transform", "matched_on", "matched_value")),
+    "DISCLOSED_IN": ("RawFact", "Footnote", ("detail_type",)),
+    # -- UFGS edge cases ------------------------------------------------
+    "RESTATES": ("RawFact", "RawFact",
+                 ("restatement_type", "materiality", "effective_date")),
+    "RETROSPECTIVELY_RECASTS": ("RawFact", "RawFact", ("reason",)),
+    "REVISION_OF": ("RawFact", "RawFact", ("materiality", "magnitude_pct")),
+    "CLASSIFIED_AS_DISCONTINUED": ("Segment", "DiscontinuedOpsSegment",
+                                   ("basis",)),
+    "OVERLAY_APPLIES_TO": ("SectorOverlay", "Company", ()),
+    # A dimensional fact, split by the taxonomy axis that qualified it. This is
+    # the edge that answers "what were net sales in Greater China" or "how much
+    # did the iPhone make" with the filer's own tagged figures rather than with
+    # a figure scraped out of a table cell. It is not in the spec's relation
+    # list, which has no relation for a dimensional breakdown, but a
+    # ``RawFact`` with the axis dropped is a fact that can only be aggregated --
+    # and 415 of the 1,639 facts in a single 10-K are dimensional.
+    "BROKEN_DOWN_BY": ("RawFact", "Segment", ("axis", "member")),
+    # -- UFGS causal ----------------------------------------------------
+    # The spec's Table 8.2 gives the six typed relations a union endpoint
+    # ("Entity -> Outcome"), which no typed rel table can express. The relation
+    # is therefore reified: ``CausalRelation`` is the statement node carrying
+    # the subject, the verb, and the quote, the six tables below attach the
+    # financial outcome, and the seven below attach the subject so traversal
+    # still runs Supplier -> CausalRelation -> StandardizedConcept. The
+    # relation *names* stay first-class in the graph, which is what makes
+    # "which issuers state that inflation IMPACTS_MARGIN" answerable.
+    "DRIVES": ("CausalRelation", "StandardizedConcept", ("weight", "magnitude")),
+    "IMPACTS_MARGIN": ("CausalRelation", "StandardizedConcept",
+                       ("weight", "magnitude")),
+    "MITIGATES": ("CausalRelation", "StandardizedConcept",
+                  ("weight", "magnitude")),
+    "CREATES_EXPOSURE_TO": ("CausalRelation", "StandardizedConcept",
+                            ("weight", "magnitude")),
+    "COMPOUNDS": ("CausalRelation", "StandardizedConcept",
+                  ("weight", "magnitude")),
+    "OFFSETS": ("CausalRelation", "StandardizedConcept",
+                ("weight", "magnitude")),
+    "SUBJECT_PRODUCT_FAMILY": ("ProductFamily", "CausalRelation", ()),
+    "SUBJECT_GEOGRAPHIC_MARKET": ("GeographicMarket", "CausalRelation", ()),
+    "SUBJECT_COMPETITOR": ("Competitor", "CausalRelation", ()),
+    "SUBJECT_SUPPLIER": ("Supplier", "CausalRelation", ()),
+    "SUBJECT_CUSTOMER": ("Customer", "CausalRelation", ()),
+    "SUBJECT_REGULATORY_BODY": ("RegulatoryBody", "CausalRelation", ()),
+    "SUBJECT_MACRO_VARIABLE": ("MacroVariable", "CausalRelation", ()),
 }
 
 #: Columns stored as a non-string type.
-_INT_COLUMNS = frozenset({"fiscal_year"})
-_DATE_COLUMNS = frozenset({"filing_date"})
-_DOUBLE_PROPS = frozenset({"value"})
+_INT_COLUMNS = frozenset({
+    "fiscal_year", "fiscal_year_end_month", "year_disclosed",
+    "year_removed", "calendar_year_overlap", "reporting_lag_in_days",
+    "char_start", "char_end", "char_count", "scale", "decimals",
+})
+_DATE_COLUMNS = frozenset({
+    "filing_date", "period_start", "period_end", "period_end_date",
+    "effective_date", "disposal_date", "launch_date",
+})
+#: Node columns stored as DOUBLE. Separate from ``_DOUBLE_PROPS`` because that
+#: set types rel-table properties; a fact's reported value is a node column and
+#: has to go through the same ``column_type``/``_arrow_type`` pair.
+_DOUBLE_COLUMNS = frozenset({
+    "reported_value", "weight", "magnitude", "concentration_pct",
+})
+#: Rel-table properties stored as DOUBLE.
+_DOUBLE_PROPS = frozenset({"value", "weight", "magnitude", "concentration_pct"})
+
+#: ``(table, ExtractionResult attribute)`` for the UFGS node collections.
+#: Listed here rather than in :meth:`StageBuffer.add_result` so the table
+#: contract stays in one place: a table added to :data:`NODE_TABLES` without a
+#: source attribute here would be created by the DDL and then never populated,
+#: which is the shape of a bug that only shows up as an empty table in a query.
+RESULT_NODE_SOURCES: tuple[tuple[str, str], ...] = (
+    ("Section", "sections"),
+    ("RawFact", "raw_facts"),
+    ("StandardizedConcept", "concepts"),
+    ("Footnote", "footnotes"),
+    ("RiskFactor", "risk_factors"),
+    ("CausalRelation", "causal_relations"),
+    ("FiscalPeriod", "fiscal_periods"),
+    ("RestatementEvent", "restatements"),
+    ("DiscontinuedOpsSegment", "discontinued_segments"),
+    ("SectorOverlay", "sector_overlays"),
+)
 
 #: Written when a filing's fiscal year could not be resolved. Not a real year:
 #: no year in this corpus is below it, so a query can filter it out with
@@ -143,6 +293,8 @@ def _arrow_type(name: str) -> pa.DataType:
         return pa.int64()
     if name in _DATE_COLUMNS:
         return pa.date32()
+    if name in _DOUBLE_COLUMNS:
+        return pa.float64()
     return pa.string()
 
 
@@ -166,7 +318,6 @@ ARROW_SCHEMAS.update(
         for rel, (_, _, props) in REL_TABLES.items()
     }
 )
-
 
 def arrow_schema(table: str) -> pa.Schema:
     """The Arrow schema for *table* (node or relationship).
@@ -384,6 +535,10 @@ class StageBuffer:
             ("Chunk", result.chunks),
         ):
             counts[name] = self.add(name, list(nodes.values()))
+        for name, nodes in RESULT_NODE_SOURCES:
+            counts[name] = self.add(name, list(getattr(result, nodes).values()))
+        for table, nodes in result.entities.items():
+            counts[table] = self.add(table, list(nodes.values()))
         for rel, rows in result.edges.items():
             counts[rel] = self.add(rel, rows)
         return counts

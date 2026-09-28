@@ -37,7 +37,13 @@ from .buffer import StageBuffer, BufferReport
 from .config import SCOPE, SCOPE_LIMIT, resolve_scope as config_resolve_scope
 from .ddl import ensure_schema
 from .loader import BulkLoader, LoadReport
-from .parser import FilingParser, ExtractionResult
+from .parser import FilingParser, ExtractionResult, filing_identity
+from .ufgs_extract import (
+    audit_status_for,
+    extract_ufgs,
+    fiscal_year_end_rule,
+)
+from .ufgs_schema import sector_for_sic, sector_for_ticker  # noqa: F401
 
 __all__ = [
     "ParseReport",
@@ -45,6 +51,7 @@ __all__ = [
     "LoadReport",
     "resolve_scope",
     "parse_all",
+    "apply_ufgs",
     "buffer_all",
     "load_all",
     "run_pipeline",
@@ -84,6 +91,13 @@ class ParseReport:
     total_events: int = 0
     total_chunks: int = 0
     total_executives: int = 0
+    total_raw_facts: int = 0
+    total_sections: int = 0
+    total_footnotes: int = 0
+    total_risk_factors: int = 0
+    total_causal_relations: int = 0
+    total_entities: int = 0
+    total_normalizations: int = 0
     elapsed_sec: float = 0.0
     result: ExtractionResult | None = None
 
@@ -108,6 +122,7 @@ def parse_all(paths: list[Path], parser: FilingParser | None = None) -> ParseRep
     for path in paths:
         ft0 = time.perf_counter()
         result = parser.ingest_file(path)
+        apply_ufgs(result, path)
         elapsed = time.perf_counter() - ft0
 
         filing_reports.append(
@@ -121,6 +136,9 @@ def parse_all(paths: list[Path], parser: FilingParser | None = None) -> ParseRep
                 "events": result.counts().get("events", 0),
                 "chunks": result.counts().get("chunks", 0),
                 "executives": result.counts().get("executives", 0),
+                "raw_facts": result.counts().get("raw_facts", 0),
+                "sections": result.counts().get("sections", 0),
+                "risk_factors": result.counts().get("risk_factors", 0),
                 "elapsed_sec": elapsed,
             }
         )
@@ -139,9 +157,101 @@ def parse_all(paths: list[Path], parser: FilingParser | None = None) -> ParseRep
         total_events=counts.get("events", 0),
         total_chunks=counts.get("chunks", 0),
         total_executives=counts.get("executives", 0),
+        total_raw_facts=counts.get("raw_facts", 0),
+        total_sections=counts.get("sections", 0),
+        total_footnotes=counts.get("footnotes", 0),
+        total_risk_factors=counts.get("risk_factors", 0),
+        total_causal_relations=counts.get("causal_relations", 0),
+        total_entities=counts.get("entities", 0),
+        total_normalizations=counts.get("NORMALIZES_TO", 0),
         elapsed_sec=total_elapsed,
         result=combined,
     )
+
+
+def apply_ufgs(result: ExtractionResult, path: Path) -> ExtractionResult:
+    """Add the Universal Financial Graph Schema layer to one parsed filing.
+
+    Called after :meth:`FilingParser.ingest_file` rather than inside it, for
+    two reasons. The UFGS extractor needs the raw markup and the parser holds it
+    only for the duration of a call, and the two modules would otherwise import
+    each other in a cycle. More importantly the layering is real: the original
+    graph answers "what did this filing report in its tables" and the UFGS
+    layer answers "what was tagged, where, and what does it normalise to", and
+    the two disagree often enough -- an inline-XBRL fact in a dimensional
+    context has no table row, a table row may have no fact tag -- that merging
+    them inside one function would hide which layer produced what.
+
+    Never raises. A filing whose UFGS extraction fails still contributes its
+    original-graph nodes, because a partial graph with a reported gap is
+    recoverable and a failed run is not.
+    """
+    filing_id = filing_identity(result.metadata)
+    try:
+        bundle = extract_ufgs(
+            path.read_text(encoding="utf-8", errors="replace"),
+            path,
+            result.metadata,
+            filing_id,
+        )
+    except Exception as exc:  # noqa: BLE001 - a UFGS gap must not lose the parse
+        log.warning("UFGS extraction failed for %s: %s", path.name, exc)
+        result.stats["ufgs_error"] = str(exc)[:200]
+        return result
+
+    ticker = result.metadata.get("ticker") or ""
+    fye_month, fye_rule = fiscal_year_end_rule(ticker)
+    period_end = ""
+    for period in bundle.fiscal_periods.values():
+        period_end = period.get("period_end_date") or ""
+        break
+    reporting_lag = -1
+    for period in bundle.fiscal_periods.values():
+        reporting_lag = period.get("reporting_lag_in_days", -1)
+        break
+
+    # The UFGS fields on Company/Filing are additive, so they are written onto
+    # the nodes the parser already built rather than replacing them. ``ticker``
+    # and ``id`` stay the primary keys, which is what keeps the original
+    # graph's arcs resolving.
+    result.company.update({
+        "sic_code": bundle.stats.get("sic_code", ""),
+        "sector": bundle.stats.get("sector") or "",
+        "fiscal_year_end_month": fye_month,
+        "fiscal_year_end_day_rule": fye_rule,
+    })
+    result.filing.update({
+        "accession_number": bundle.stats.get("accession_number", ""),
+        "period_end_date": period_end,
+        "reporting_lag_in_days": reporting_lag,
+        "audit_status": audit_status_for(result.metadata.get("form_type")),
+    })
+
+    result.sections = bundle.sections
+    result.raw_facts = bundle.raw_facts
+    result.footnotes = bundle.footnotes
+    result.risk_factors = bundle.risk_factors
+    result.causal_relations = bundle.causal_relations
+    result.fiscal_periods = bundle.fiscal_periods
+    result.restatements = bundle.restatements
+    result.discontinued_segments = bundle.discontinued_segments
+    result.sector_overlays = bundle.sector_overlays
+    result.entities = bundle.entities
+    # Members found only in XBRL context refs extend the parser's segment set
+    # rather than replacing it: the table parser reads the visible note and
+    # the context reader reads the tags, and they overlap but neither is a
+    # superset. ``update`` keeps one node per name, and the parser's
+    # ``segment_type`` is not overwritten, so a member typed "geographic" in the
+    # note keeps that classification.
+    result.segments = {**bundle.segments, **result.segments}
+    # StandardizedConcept nodes are the same 33 or 40 rows for every filing, so
+    # they are added once per run rather than re-added per filing; ``update``
+    # would also grow the dict to 20 entries for 20 filings.
+    result.concepts = bundle.concepts
+    for rel, rows in bundle.edges.items():
+        result.edges.setdefault(rel, []).extend(rows)
+    result.stats.update(bundle.stats)
+    return result
 # ---------------------------------------------------------------------------
 # Stage 3: Buffering (Parquet spill)
 # ---------------------------------------------------------------------------

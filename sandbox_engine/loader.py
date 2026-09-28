@@ -61,6 +61,7 @@ import ladybug as lb
 from .buffer import (
     _DATE_COLUMNS,
     _DOUBLE_PROPS,
+    _INT_COLUMNS,
     NODE_TABLES,
     PRIMARY_KEYS,
     REL_TABLES,
@@ -246,18 +247,58 @@ class BulkLoader:
             self.report.methods[table] = "skipped"
             return 0
 
-        if len(fresh) >= self.copy_threshold:
-            # COPY maps by position, so the Arrow table must be built in
-            # NODE_TABLES[table] order. It already is, because the buffer stage
-            # used the same order to build the Parquet schema.
-            self.connection.execute(f"COPY {table} FROM $data", {"data": arrow_slice(arrow, fresh)})
-            self.report.methods[table] = "copy"
-        else:
-            assignments = ", ".join(f"{name}: r.{name}" for name in columns)
+        # COPY first, for every table, not just the large ones.
+        #
+        # UNWIND binds a list of dicts, and the driver types that parameter by
+        # inspecting it: it derives one expected struct type by merging every
+        # row, then converts each row at the narrowest integer width that fits
+        # that row. When one integer column spans two width classes the two
+        # disagree and the whole statement is rejected -- ``lag`` holding 34
+        # and 307 is bound as INT8 per row against an expected INT16. Nothing
+        # about that is visible in the query, and it depends on the data, so
+        # which tables load becomes a property of the numbers in them. The
+        # original schema never tripped it because ``fiscal_year`` was
+        # uniformly 2025; one column of day counts is enough.
+        #
+        # COPY carries the staged Parquet's types explicitly, so there is
+        # nothing to infer. UNWIND stays as a fallback so a table COPY cannot
+        # handle still loads.
+        copied = self._copy_nodes(table, arrow, fresh, columns)
+        if copied:
+            return copied
+        assignments = ", ".join(
+            f"{name}: CAST(r.{name} AS INT64)" if name in _INT_COLUMNS
+            else f"{name}: r.{name}"
+            for name in columns
+        )
+        self.connection.execute(
+            f"UNWIND $rows AS r CREATE (:{table} {{{assignments}}})", {"rows": fresh}
+        )
+        self.report.methods[table] = "unwind"
+        self.report.inserted[table] = len(fresh)
+        return len(fresh)
+
+    def _copy_nodes(
+        self,
+        table: str,
+        arrow: pa.Table,
+        fresh: Sequence[dict[str, Any]],
+        columns: Sequence[str],
+    ) -> int:
+        """COPY *fresh* into *table*. Returns 0 if COPY did not run.
+
+        COPY maps by position, so the Arrow table is built in
+        ``NODE_TABLES[table]`` order -- which it already is, because the buffer
+        stage used the same order to build the Parquet schema.
+        """
+        try:
             self.connection.execute(
-                f"UNWIND $rows AS r CREATE (:{table} {{{assignments}}})", {"rows": fresh}
+                f"COPY {table} FROM $data", {"data": arrow_slice(arrow, fresh)}
             )
-            self.report.methods[table] = "unwind"
+        except Exception as exc:  # noqa: BLE001 - fall back, do not fail the load
+            log.warning("COPY into %s failed (%s); falling back to UNWIND", table, exc)
+            return 0
+        self.report.methods[table] = "copy"
         self.report.inserted[table] = len(fresh)
         return len(fresh)
 

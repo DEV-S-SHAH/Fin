@@ -776,6 +776,59 @@ _PRODUCT_RE = re.compile(
 )
 _SEGMENT_CONTEXT_RE = re.compile(r"segment|reportable (segment|unit)", re.I)
 
+#: What a segment table is *measuring*, keyed by the caption row that announces
+#: it. A segment note does not hold one measure: Apple's carries net sales,
+#: operating income and long-lived assets in three separate tables that share
+#: the same taxonomy, and long-lived assets carries the *same* country names as
+#: net sales does. Without this the values are attached to whichever measure
+#: the code assumed, and the graph confidently reports Apple's FY2025 U.S. net
+#: sales as 40,274 -- which is its U.S. long-lived assets. Its U.S. net sales
+#: is 151,790. A wrong number that looks right is the worst thing this graph
+#: can emit, so the measure is read from the table rather than assumed.
+_SEGMENT_MEASURES: tuple[tuple[re.Pattern[str], str, str], ...] = (
+    (re.compile(r"long[-\s]?lived assets", re.I), "Long-Lived Assets", "balance_sheet"),
+    (re.compile(r"\bdepreciation\b", re.I), "Depreciation", "cash_flow"),
+    (re.compile(r"capital (?:expenditures?|spending)", re.I), "Capital Expenditures", "cash_flow"),
+    (re.compile(r"\btotal assets\b", re.I), "Total Assets", "balance_sheet"),
+    (re.compile(r"operating (?:income|loss)|operating income/\(loss\)", re.I),
+     "Operating Income", "income_statement"),
+    (re.compile(r"\bcost of sales\b", re.I), "Cost of Sales", "income_statement"),
+    (re.compile(r"\bnet sales\b", re.I), "Net Sales", "income_statement"),
+)
+
+
+def _is_measure_total(label: str, measure: str) -> bool:
+    """Whether *label* is the ``Total <measure>`` row of a segment table.
+
+    Both sides are reduced to their alphanumeric characters before comparison,
+    because the two are not written alike: the caption says "Long-lived assets"
+    and the row says "Total long-lived assets", so matching on the measure's
+    last word misses it and the host metric ends up with no owner at all.
+
+    Anchored on the *whole* measure so "Total net sales" is not mistaken for
+    the total of a long-lived-assets table that shares the same note.
+    """
+    def squash(value: str) -> str:
+        return re.sub(r"[^a-z0-9]", "", _normalise_label(value).lower())
+
+    text = squash(label)
+    if not text.startswith("total"):
+        return False
+    return text[len("total"):] == squash(measure)
+
+
+def segment_measure(label: str) -> tuple[str, str] | None:
+    """``(measure, statement_category)`` announced by *label*, or ``None``.
+
+    Ordered most specific first: "long-lived assets" and "total net sales" both
+    contain "net sales", and a caption that says both is announcing assets.
+    """
+    text = _normalise_label(label).strip(" .:")
+    for pattern, measure, category in _SEGMENT_MEASURES:
+        if pattern.search(text):
+            return measure, category
+    return None
+
 
 def detect_segment_table(
     frame: pd.DataFrame, labels: Sequence[str], context: str
@@ -988,6 +1041,14 @@ class ExtractionResult:
     Plain dictionaries, not Arrow and not rows in a table: the buffer stage is
     what turns this into Arrow, so the parser has no database or Arrow
     dependency and can be tested on its own.
+
+    Two layers share one parse. The scalar fields (``metrics``, ``segments``,
+    ``events``, ``chunks``) are the original question-answering graph. The
+    ``ufgs`` fields are the Universal Financial Graph Schema layer described in
+    :mod:`sandbox_engine.ufgs_schema` -- as-filed facts, the structural
+    sections they were reported in, and the causal layer -- and they are
+    collected in dictionaries keyed by primary key so a filing that reports the
+    same fact in three tables yields one node and three arcs.
     """
 
     company: dict[str, Any]
@@ -1001,6 +1062,25 @@ class ExtractionResult:
     stats: dict[str, Any] = field(default_factory=dict)
     elapsed: float = 0.0
 
+    # -- UFGS layer ------------------------------------------------------
+    sections: dict[str, dict[str, Any]] = field(default_factory=dict)
+    raw_facts: dict[str, dict[str, Any]] = field(default_factory=dict)
+    footnotes: dict[str, dict[str, Any]] = field(default_factory=dict)
+    risk_factors: dict[str, dict[str, Any]] = field(default_factory=dict)
+    causal_relations: dict[str, dict[str, Any]] = field(default_factory=dict)
+    fiscal_periods: dict[str, dict[str, Any]] = field(default_factory=dict)
+    restatements: dict[str, dict[str, Any]] = field(default_factory=dict)
+    discontinued_segments: dict[str, dict[str, Any]] = field(default_factory=dict)
+    sector_overlays: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: The canonical anchors materialised as nodes. Identical for every filing
+    #: of a sector, so this holds 33 or 40 rows regardless of filing count.
+    concepts: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: The seven narrative entity types, keyed by node table then by primary
+    #: key. Grouped rather than seven separate fields because the extractor
+    #: produces them from one gazetteer pass and the causal layer treats them
+    #: as one family.
+    entities: dict[str, dict[str, dict[str, Any]]] = field(default_factory=dict)
+
     def counts(self) -> dict[str, int]:
         """Row count per table, for the run report and benchmark 1."""
         return {
@@ -1008,6 +1088,17 @@ class ExtractionResult:
             "segments": len(self.segments),
             "events": len(self.events),
             "chunks": len(self.chunks),
+            "sections": len(self.sections),
+            "raw_facts": len(self.raw_facts),
+            "footnotes": len(self.footnotes),
+            "risk_factors": len(self.risk_factors),
+            "causal_relations": len(self.causal_relations),
+            "fiscal_periods": len(self.fiscal_periods),
+            "restatements": len(self.restatements),
+            "discontinued_segments": len(self.discontinued_segments),
+            "sector_overlays": len(self.sector_overlays),
+            "concepts": len(self.concepts),
+            "entities": sum(len(v) for v in self.entities.values()),
             **{name: len(rows) for name, rows in self.edges.items()},
         }
 
@@ -1017,6 +1108,14 @@ class ExtractionResult:
         self.segments.update(other.segments)
         self.events.update(other.events)
         self.chunks.update(other.chunks)
+        for name in (
+            "sections", "raw_facts", "footnotes", "risk_factors",
+            "causal_relations", "fiscal_periods", "restatements",
+            "discontinued_segments", "sector_overlays", "concepts",
+        ):
+            getattr(self, name).update(getattr(other, name))
+        for table, nodes in other.entities.items():
+            self.entities.setdefault(table, {}).update(nodes)
         for edge_name, edge_list in other.edges.items():
             if edge_name not in self.edges:
                 self.edges[edge_name] = []
@@ -1473,12 +1572,24 @@ class FilingParser:
 
     def extract_segments(
         self, raw: str, metadata: dict[str, Any]
-    ) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
-        """Reporting segments as ``Segment`` nodes, and the metric that owns each.
+    ) -> tuple[
+        dict[str, dict[str, Any]],
+        list[dict[str, Any]],
+        list[dict[str, Any]],
+    ]:
+        """Reporting segments, their arcs, and each measure's reported total.
 
         A segment table has no statement line items of its own, so its figures
-        hang off the revenue metric of the same period. That is the entire reason
-        the ``Metric -> HAS_SEGMENT -> Segment`` shape exists.
+        hang off the measure that owns them. That is the entire reason the
+        ``Metric -> HAS_SEGMENT -> Segment`` shape exists.
+
+        The third element is the ``Total <measure>`` row of each table. It is
+        returned rather than discarded because the host metric needs an owner:
+        a synthesised "Long-Lived Assets (FY2025)" with no ``REPORTS_METRIC``
+        arc is a node nothing can reach, and the total row is the filing's own
+        figure for it -- 49,834 for Apple's FY2025 long-lived assets, which is
+        exactly what the U.S, China and other-countries figures add to.
+        Without it the measure exists only as a label.
 
         A segment's name goes through the shared registry rather than a
         per-filing ``setdefault``. Both the 10-K and the 10-Q carry a segment
@@ -1489,6 +1600,7 @@ class FilingParser:
         """
         segments: dict[str, dict[str, Any]] = {}
         edges: list[dict[str, Any]] = []
+        totals: list[dict[str, Any]] = []
         frames = self.tables(raw)
         for index, frame in enumerate(frames):
             if frame is None or frame.empty:
@@ -1498,10 +1610,45 @@ class FilingParser:
                 continue
             label_end = max(1, groups[0].columns[0])
             rows: list[tuple[str, PeriodGroup, Number]] = []
+            # The measure this table reports, announced by a caption row and
+            # defaulting to net sales. Reset per table: the tables in one note
+            # are different measures of the same taxonomy, and a caption in the
+            # previous table must not leak into this one.
+            measure, category = "Net Sales", "income_statement"
             for _, row in frame.iterrows():
                 values = row.tolist()
                 label = _label_of(values[:label_end])
                 if not label or _PERIOD_RE.search(label):
+                    continue
+                # The total is tested before the caption because a total row
+                # also contains its measure's name -- "Total long-lived
+                # assets" matches the long-lived-assets pattern -- and consuming
+                # it as a caption would skip the one row that gives the
+                # synthesised host an owner.
+                if _is_measure_total(label, measure):
+                    # Recorded, but deliberately *not* added to ``rows``. It is
+                    # a financial concept, and ``detect_segment_table`` rejects
+                    # a table as soon as a quarter of its labels look like
+                    # statement line items -- so admitting "Total net sales"
+                    # here would make it reject the country table that
+                    # contains it, taking U.S. net sales with it.
+                    for group in groups:
+                        number = _number_in_group(values, group.columns)
+                        if number is None or not group.year:
+                            continue
+                        totals.append({
+                            "metric": self._metric_id(measure, group.full_key)[0],
+                            "measure": measure,
+                            "category": category,
+                            "period": group.full_key,
+                            "value": float(number.value),
+                        })
+                    continue
+                announced = segment_measure(label)
+                if announced is not None:
+                    # A caption row names the measure; it is not itself a
+                    # segment, so it sets the host and emits nothing.
+                    measure, category = announced
                     continue
                 for group in groups:
                     number = _number_in_group(values, group.columns)
@@ -1524,23 +1671,27 @@ class FilingParser:
                 entity = self.registry.partition("segment").get(resolution.canonical_id)
                 canonical = entity.name if entity else name
                 segments[canonical] = {"name": canonical, "segment_type": kind}
-                host_id, _ = self._metric_id("Net Sales", group.full_key)
+                host_id, _ = self._metric_id(measure, group.full_key)
                 edges.append(
                     {
                         "value": float(number.value),
                         "period": group.full_key,
                         "segment": canonical,
                         "metric": host_id,
+                        "measure": measure,
+                        "category": category,
                     }
                 )
-        return segments, edges
+        return segments, edges, totals
 
     def _segment_name(self, label: str) -> str:
         """A segment label, or ``""`` if the row is not one.
 
         "Total net sales" is a subtotal, not a segment, and a percentage row is
-        a share of a segment rather than a segment. Both are rejected so the
-        ``Segment`` table only ever holds real taxonomy members.
+        a share of a segment rather than a segment. A measure caption is not a
+        segment either: without that check "Long-lived assets:" becomes a
+        geographic segment sitting next to the countries it measures. Both are
+        rejected so the ``Segment`` table only ever holds real taxonomy members.
 
         The surviving label then goes through
         :func:`~sandbox_engine.entity_resolver.canonical_concept`, because a
@@ -1556,6 +1707,8 @@ class FilingParser:
         if not text or text.lower() in _DASHES or len(text) > 60:
             return ""
         if _PERIOD_RE.search(text) or _PERCENT_RE.search(text):
+            return ""
+        if segment_measure(text) is not None:
             return ""
         if re.match(r"^(total|net\s+total|grand\s+total)\b", text, re.I):
             return ""
@@ -1614,7 +1767,7 @@ class FilingParser:
         raw = path.read_text(encoding="utf-8", errors="replace")
         metadata = self.extract_metadata(raw, path)
         metrics, metric_edges = self.extract_metrics(raw, metadata)
-        segments, segment_edges = self.extract_segments(raw, metadata)
+        segments, segment_edges, segment_totals = self.extract_segments(raw, metadata)
         events = self.extract_events(raw, metadata)
         chunks = self.extract_chunks(raw, metadata)
 
@@ -1625,17 +1778,46 @@ class FilingParser:
         # from the registry for the same reason the segment's does: a synthesised
         # "Net Sales" has to be the *same node* as a "Net Sales" the statement
         # reported, or the arc points at an orphan.
+        # Hosts the segment notes needed but no statement produced. Recorded
+        # here because only these need an owner: where the statement already
+        # reported the measure, ``extract_metrics`` has attached the real edge
+        # and a second one would double the figure.
+        synthesised: set[str] = set()
         for edge in segment_edges:
             host = edge["metric"]
             if host not in metrics:
+                synthesised.add(host)
+                measure = edge.get("measure") or "Net Sales"
+                category = edge.get("category") or "income_statement"
                 metrics[host] = {
                     "id": host,
                     "canonical_name": (
-                        f"Net Sales ({edge['period']})"
-                        if PERIOD_SCOPED_METRICS else "Net Sales"
+                        f"{measure} ({edge['period']})"
+                        if PERIOD_SCOPED_METRICS else measure
                     ),
-                    "statement_category": "income_statement",
+                    "statement_category": category,
                 }
+
+        # A synthesised host is a Metric nothing can reach until something owns
+        # it. The segment table's own "Total <measure>" row supplies the owner:
+        # the filing's reported total rather than a sum we computed, so Apple's
+        # long-lived assets are 49,834 because the 10-K says so.
+        for total in segment_totals:
+            if total["metric"] not in synthesised:
+                continue
+            metrics.setdefault(total["metric"], {
+                "id": total["metric"],
+                "canonical_name": (
+                    f"{total['measure']} ({total['period']})"
+                    if PERIOD_SCOPED_METRICS else total["measure"]
+                ),
+                "statement_category": total["category"],
+            })
+            metric_edges.append({
+                "metric": total["metric"],
+                "value": total["value"],
+                "currency": "USD",
+            })
 
         filing_id = filing_identity(metadata)
         result = ExtractionResult(

@@ -26,6 +26,7 @@ from .benchmarks import run_all
 from .buffer import NODE_TABLES, REL_TABLES, StageBuffer, identity_of
 from .config import COPY_THRESHOLD, VERSION, default_paths, resolve_scope
 from .entity_resolver import ConceptRegistry
+from .ingestion import apply_ufgs
 from .loader import BulkLoader, WalRecoveryError
 from .parser import FilingParser, stable_id
 
@@ -114,6 +115,12 @@ def _parse_stage(
     filings: list[dict[str, Any]] = []
     for path in files:
         result = parser.ingest_file(path)
+        # The Universal Financial Graph Schema layer is added here rather than
+        # inside ``ingest_file`` so the two graphs stay separable. This CLI has
+        # its own loop rather than calling ``ingestion.parse_all``, so the call
+        # has to be repeated; the alternative is having the CLI delegate to
+        # ``parse_all`` and lose the per-filing registry handoff below.
+        apply_ufgs(result, path)
         buffer.add_result(result)
         filings.append(
             {

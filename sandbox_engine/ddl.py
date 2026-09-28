@@ -62,6 +62,7 @@ from typing import Any
 
 from .buffer import (
     _DATE_COLUMNS,
+    _DOUBLE_COLUMNS,
     _DOUBLE_PROPS,
     _INT_COLUMNS,
     NODE_TABLES,
@@ -104,12 +105,16 @@ def column_type(name: str) -> str:
 
     ``filing_date`` is a real ``DATE`` rather than a string so a query can range
     it and compare it against a date literal without parsing anything in the
-    query.
+    query. ``reported_value`` is ``DOUBLE`` for the same reason: a financial
+    fact held as text sorts lexicographically, so the largest revenue in the
+    graph would be whichever label happens to end in a high digit.
     """
     if name in _INT_COLUMNS:
         return "INT64"
     if name in _DATE_COLUMNS:
         return "DATE"
+    if name in _DOUBLE_COLUMNS:
+        return "DOUBLE"
     return "STRING"
 
 

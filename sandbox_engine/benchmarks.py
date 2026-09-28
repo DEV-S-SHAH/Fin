@@ -208,6 +208,16 @@ def benchmark_shape(runner: _Runner, distinct: dict[str, int]) -> BenchmarkResul
 
     Equality in both directions is the claim: not one buffered row lost, and not
     one stored row invented.
+
+    A table with zero buffered rows is expected to be empty and is not counted
+    as a failure. That distinction matters now that the schema is the universal
+    one: ``RestatementEvent`` is populated only by amended filings, and
+    ``Tier1CapitalRatio`` concepts only by bank-sector filings, so a run over
+    three Apple filings correctly writes nothing to them. The emptiness check is
+    therefore "buffered rows went missing", not "every table must be
+    populated" -- the original form would have failed every run of the
+    universal schema over a single-sector corpus and taught the reader to
+    ignore the benchmark.
     """
     failures: list[str] = []
     stored = {table: int(runner.scalar(f"MATCH (n:{table}) RETURN count(n)") or 0)
@@ -238,7 +248,7 @@ def benchmark_shape(runner: _Runner, distinct: dict[str, int]) -> BenchmarkResul
             "without a baseline (did the buffer stage run?)"
         )
     for table in NODE_TABLES:
-        if stored[table] == 0:
+        if stored[table] == 0 and distinct.get(table, 0) > 0:
             failures.append(f"{table}: empty; the loader wrote nothing for it")
 
     filings = runner.rows(B1_CYPHER)
