@@ -18,6 +18,13 @@ beautifulsoup4==4.15.0
 # Staging: Arrow/Parquet spill between the parse and load stages.
 pyarrow==25.0.1
 
+# PDF text extraction. graphrag/document.py imports PdfReader at module scope,
+# so a missing pypdf breaks `import graphrag` entirely -- which takes the
+# query UI and the whole legacy path down with it, not just PDF handling.
+# document_loader.py also prefers pdfplumber for table recovery, but degrades
+# to pypdf-only without it, so it is not pinned.
+pypdf==6.19.0
+
 # Query server: the OpenAI-compatible client used for GraphRAG answers, and
 # typer for the CLI entry point in sandbox_engine/cli.py.
 openai==3.19.2
