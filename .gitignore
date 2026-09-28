@@ -1,34 +1,25 @@
 # ── Secrets ──────────────────────────────────────────────────────────────────
-# .env is deliberately NOT ignored. This is a private repository and the
-# NVIDIA credential is committed on purpose so a fresh clone can answer
-# questions with no second setup step. Both ./.env and ./sandbox_engine/.env
-# are therefore tracked.
-#
-# To stop tracking them later:
-#   git rm --cached .env sandbox_engine/.env
-# and add these two lines back:
-#   .env
-#   .env.*
-#
-# If this repository is ever made public, or a collaborator is added, rotate
-# the key at build.nvidia.com first -- git history keeps the old value even
-# after the files are deleted.
+# Live credentials are never committed. `.env.example` is the tracked template;
+# copy it to `.env` and paste your own key. This repository is private, but git
+# history is permanent: a key committed once stays readable after the file is
+# deleted, so a leaked key has to be rotated, not removed.
+.env
+.env.*
+!.env.example
 
-# ── Dataset ──────────────────────────────────────────────────────────────────
-# The corpus is 59M of SEC filings. Only the three filings the sandbox scope
-# ingests are committed, so a fresh clone can run the pipeline immediately
-# without downloading anything.
-# all data included
+# ── Build artefacts & ephemeral runs ──────────────────────────────────────────
+# Transient staging parquet and scratch databases:
+sandbox_engine/_run/
+sandbox_engine/staging_parquet/
+graph.db/
+*.parquet
 
-# Ladybug databases and Parquet spill are build artefacts: `python -m
-# sandbox_engine --reset` recreates them from the fixtures above.
+# Graph databases are build output, not source: `python -m sandbox_engine
+# --reset` regenerates them from the committed filings in ~10s, and a binary
+# graph committed here only ever disagrees with the code that built it. The
+# source of truth is sandbox_engine/data/, which is tracked.
 *.lbug
 *.lbug/
-graph.db/
-sandbox_engine/_run/
-sandbox_engine/_run2/
-sandbox_engine/staging_parquet/
-*.parquet
 
 # ── Python ───────────────────────────────────────────────────────────────────
 .venv/

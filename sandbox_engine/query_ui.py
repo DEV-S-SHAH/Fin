@@ -3,7 +3,7 @@
 Provides the same three-pane UI as graphrag/web.py and graphrag/static/index.html:
   left   — entity browser (Company, Filing, FinancialMetric, Segment, DisclosureEvent)
   centre — interactive force-directed graph with citation highlighting
-  right  — natural-language question box powered by NVIDIA gpt-oss-20b GraphRAG
+  right  — natural-language question box powered by NVIDIA nemotron GraphRAG
 
 Run::
 
@@ -31,6 +31,15 @@ from urllib.parse import parse_qs, urlparse
 import ladybug as lb
 
 from .buffer import NODE_TABLES, REL_TABLES
+
+#: Frontend libraries served under ``/vendor/``. Vendored locally so the page
+#: works in a browser with no internet access; d3 drives the force layout below.
+_VENDOR_DIR = Path(__file__).resolve().parent / "static"
+VENDOR: dict[str, bytes] = {}
+for _vendor_name in ("d3.v7.min.js",):
+    _vendor_path = _VENDOR_DIR / _vendor_name
+    if _vendor_path.is_file():
+        VENDOR[_vendor_name] = _vendor_path.read_bytes()
 
 
 def merge_nodes(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -384,36 +393,71 @@ def run_report(kg: KnowledgeGraph, report_id: str) -> dict:
     except Exception as exc:
         return {"error": str(exc), "id": report_id}
 
+# ---------------------------------------------------------------------------
+# RAG configuration
+# ---------------------------------------------------------------------------
+
+def _env_files() -> list[Path]:
+    """Env files to read, nearest first: this package, then the repo root."""
+    return [_HERE / ".env", _HERE.parent / ".env"]
+
+
+def _env_map() -> dict[str, str]:
+    """Parsed ``KEY=value`` pairs from every env file, nearest file winning."""
+    found: dict[str, str] = {}
+    for env_file in reversed(_env_files()):
+        if not env_file.is_file():
+            continue
+        for line in env_file.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in stripped:
+                continue
+            name, _, value = stripped.partition("=")
+            found[name.strip()] = value.strip().strip("'\"")
+    return found
+
+
+def _setting(name: str, default: str = "") -> str:
+    """One RAG setting: the environment first, then the env files.
+
+    Reading the files is what makes the documented setup work. The variables
+    below are process environment today, so a ``.env`` that sets ``RAG_BACKEND``
+    would be ignored and the server would quietly come up on Ollama instead --
+    the configuration looks applied and is not.
+    """
+    value = os.environ.get(name, "").strip()
+    return value or _env_map().get(name, "").strip() or default
+
+
 # NVIDIA OpenAI client configuration
-NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
-NVIDIA_MODEL = "openai/gpt-oss-20b"
+NVIDIA_BASE_URL = _setting("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1").rstrip("/")
+NVIDIA_MODEL = _setting("NVIDIA_MODEL", "nvidia/nemotron-3-ultra-550b-a55b")
 
 # Ollama serves an OpenAI-compatible API on localhost, so the same client and
 # the same request body work against it -- only the base URL, the model name and
 # the timeout change. ``ollama`` is the conventional placeholder key; the local
 # server ignores it but the client refuses to construct without one.
-OLLAMA_BASE_URL = os.environ.get(
+OLLAMA_BASE_URL = _setting(
     "RAG_OLLAMA_BASE_URL", "http://127.0.0.1:11434/v1"
 ).rstrip("/")
-OLLAMA_MODEL = os.environ.get("RAG_OLLAMA_MODEL", "llama3.2")
+OLLAMA_MODEL = _setting("RAG_OLLAMA_MODEL", "llama3.2")
 
 #: Which backend phrases the answers: ``"ollama"`` (local, default) or
 #: ``"nvidia"`` (hosted, needs a key). Local is the default because it needs no
-#: credential and no network, and because NVIDIA's ``gpt-oss-20b`` deployment
-#: was answering 504 after five minutes.
-RAG_BACKEND = os.environ.get("RAG_BACKEND", "ollama").strip().lower()
+#: credential and no network; the hosted NVIDIA model runs with thinking enabled.
+RAG_BACKEND = _setting("RAG_BACKEND", "ollama").lower()
 
 #: Generous, because a local 3B model on CPU is slower than a hosted one, and
 #: the first request also pays the model load. The UI's fetch has no deadline
 #: of its own, so this is the only thing standing between a slow answer and a
 #: dropped connection -- "Failed to fetch" in the browser, with the request
 #: still running.
-RAG_TIMEOUT = float(os.environ.get("RAG_TIMEOUT", "900"))
+RAG_TIMEOUT = float(_setting("RAG_TIMEOUT", "900"))
 
 #: Ollama defaults to a 4k context, which the retrieved subgraph plus the
 #: instructions can overrun; a truncated prompt loses the tail of the evidence
 #: and the model answers from half a graph.
-RAG_NUM_CTX = int(os.environ.get("RAG_NUM_CTX", "16384"))
+RAG_NUM_CTX = int(_setting("RAG_NUM_CTX", "16384"))
 
 
 def _rag_settings() -> tuple[str, str, str, bool]:
@@ -427,27 +471,25 @@ def _rag_settings() -> tuple[str, str, str, bool]:
 def _load_api_key() -> str:
     """The key for the question box, in precedence order.
 
-    1. the ``NVIDIA_API_KEY`` environment variable;
-    2. ``sandbox_engine/.env``, which the repo's ``.env`` rule already ignores.
+    1. the ``NVIDIA_API_KEY`` (or ``OPENAI_API_KEY``) environment variable;
+    2. ``sandbox_engine/.env``;
+    3. the repository root ``.env``.
+
+    Both names and both files are accepted because the root ``.env`` is the one
+    a reader is told to copy from ``.env.example``, and it carries
+    ``OPENAI_API_KEY`` for the legacy ``graphrag`` package while this module
+    historically looked only for ``NVIDIA_API_KEY`` in its own directory. A
+    setup step that silently does nothing is worse than one spelled out.
 
     A parser rather than ``python-dotenv``, which is not a dependency here: the
     file is a flat ``KEY=value`` list and a regex is enough for it. The key used
     to be a literal in this source file, which put a live credential in a file
     people copy around; everything except the question box works without one.
     """
-    key = os.environ.get("NVIDIA_API_KEY", "").strip()
-    if key:
-        return key
-    env_file = _HERE / ".env"
-    if not env_file.is_file():
-        return ""
-    for line in env_file.read_text(encoding="utf-8").splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or "=" not in stripped:
-            continue
-        name, _, value = stripped.partition("=")
-        if name.strip() == "NVIDIA_API_KEY":
-            return value.strip().strip("'\"")
+    for name in ("NVIDIA_API_KEY", "OPENAI_API_KEY"):
+        found = _setting(name)
+        if found:
+            return found
     return ""
 
 
@@ -682,16 +724,21 @@ def retrieve_financial_context(kg: KnowledgeGraph, question: str) -> tuple[str, 
 
     # Check metrics
     metrics = kg.execute("MATCH (m:FinancialMetric) RETURN m.metric_id, m.canonical_name, m.statement_type, m.account_class")
+    # Question text with punctuation collapsed so "shareholders' equity" (straight
+    # or curly apostrophe) always matches a stored "shareholders' equity" label.
+    q_norm = re.sub(r"[^a-z0-9\s]", " ", q_low)
+    q_norm = re.sub(r"\s+", " ", q_norm).strip()
     for m in metrics:
         mid, cname, stype, aclass = m[0], m[1], m[2], m[3]
         name_clean = re.sub(r"\(.*?\)", "", cname).strip().lower()
-        keywords = [name_clean]
+        keywords = [re.sub(r"\s+", " ", re.sub(r"[^a-z0-9\s]", " ", name_clean)).strip()]
         if "sales" in name_clean or "revenue" in name_clean:
-            keywords.extend(["sales", "revenue", "top line"])
+            keywords.extend(["sales", "revenue", "top line", "margin", "profit"])
         if "profit" in name_clean:
-            keywords.extend(["profit", "gross margin"])
+            keywords.extend(["profit", "gross margin", "margin"])
         if "income" in name_clean:
-            keywords.extend(["income", "operating income", "net income", "earnings"])
+            keywords.extend(["income", "operating income", "net income",
+                             "earnings", "operating margin", "margin"])
         if "research" in name_clean:
             keywords.extend(["r&d", "research", "development"])
         if "operating expense" in name_clean:
@@ -699,7 +746,7 @@ def retrieve_financial_context(kg: KnowledgeGraph, question: str) -> tuple[str, 
         if "cost" in name_clean:
             keywords.extend(["cost", "cogs"])
 
-        if any(kw in q_low for kw in keywords):
+        if any(kw and kw in q_norm for kw in keywords):
             add_node(mid, cname, "FinancialMetric", f"Statement: {stype}, Class: {aclass}")
 
     # Check segments
@@ -725,6 +772,149 @@ def retrieve_financial_context(kg: KnowledgeGraph, question: str) -> tuple[str, 
                 add_node(mid, cname, "FinancialMetric", f"Statement: {stype}, Class: {aclass}")
         for s in segments[:10]:
             add_node(s[0], s[1], "Segment", f"Dimension type: {s[2]}")
+
+    # Narrative prose. The Item 1 business description, MD&A and risk-factor
+    # text live in DocumentChunk nodes, which none of the seed rules above
+    # reach (they only match filings, metrics, segments and events) -- so a
+    # general question like "what does apple do?" used to get an
+    # entity-and-edge-only context with nothing to answer from. Pull a bounded
+    # set of chunks from each seeded narrative filing, preferring the ones
+    # whose text mentions the question's own terms, and let the answer be
+    # grounded in the issuer's prose rather than its table rows.
+    _STOP = {"what", "does", "do", "is", "are", "was", "were", "has", "have",
+             "the", "a", "an", "and", "or", "of", "to", "in", "for", "on",
+             "it", "this", "that", "with", "how", "much", "many", "did"}
+    # Terms that mark a chunk as *describing the business itself*, not one
+    # metric or one line item. A general question ("what does apple do?")
+    # rarely shares words with the answer: the opening Item 1 sentence is "The
+    # Company designs, manufactures and markets smartphones..." -- no "apple",
+    # no "do" -- so a literal keyword match alone would keep picking the
+    # "Apple News"/"Apple TV" service paragraphs and miss the hardware line.
+    _BIZ_TERMS = ("design", "manufactur", "products", "services", "market",
+                  "sells", "sale of", "operat", "develop", "hardware",
+                  "software", "device", "wearab", "smartphone", "computer",
+                  "tablet", "subsidiar", "segment")
+    _BIZ_WEIGHT = 2
+    keywords = set(re.findall(r"[a-z0-9]+", q_low)) - _STOP
+    chunk_hits: list[dict[str, Any]] = []
+    for acc, form in ((f[0], f[1]) for f in filings):
+        if form not in ("10-K", "10-Q") or acc not in seen_ids:
+            continue
+        for chunk_acc, cid, ctext, csection in kg.execute(
+            "MATCH (f:Filing)-[:CONTAINS_CHUNK]->(c:DocumentChunk) "
+            "RETURN f.id, c.id, c.text, c.section"
+        ):
+            if chunk_acc != acc:
+                continue
+            text_low = ctext.lower()
+            q_score = sum(1 for kw in keywords if kw in text_low)
+            biz_score = sum(1 for term in _BIZ_TERMS if term in text_low)
+            chunk_hits.append(
+                {"filing": acc, "id": cid, "text": ctext, "section": csection,
+                 "score": q_score + _BIZ_WEIGHT * biz_score, "form": form}
+            )
+    # Best score first, then 10-K before 10-Q, then a stable tie-break. Never
+    # more than ``_MAX_CHUNK_CONTEXT`` chunks total, so the prompt stays
+    # bounded.
+    _MAX_CHUNK_CONTEXT = 8
+    _MAX_RISK_FACTORS = 6
+    _MAX_CAUSAL = 10
+    selected_chunks = sorted(
+        chunk_hits,
+        key=lambda c: (-c["score"], c["form"] != "10-K", c["id"]),
+    )[:_MAX_CHUNK_CONTEXT]
+    for c in selected_chunks:
+        text = re.sub(r"\s+", " ", c["text"]).strip()
+        add_node(
+            c["id"],
+            f"{c['section']} chunk: {text[:48]}{'…' if len(text) > 48 else ''}",
+            "DocumentChunk",
+            text,
+            hint=c["form"],
+        )
+
+    # UFGS structural layer: Section nodes (item index -> title). The parser
+    # extracts every regulated item of a 10-K/10-Q (Item 1 Business, Item 7
+    # MD&A, Item 1C Cybersecurity, ...) but those nodes were never sent to the
+    # model, so "what is the title of 10-K Item 7" was unanswerable even though
+    # the title sits in the graph. Pull the section index of every seeded
+    # narrative filing when the question is about the document structure.
+    section_nodes: list[dict[str, Any]] = []
+    if any(t in q_low for t in ("item", "section", "10-k", "10-q",
+                                "10k", "10q", "mda", "management's",
+                                "management analysis", "risk")):
+        for sacc, sid, scode, stitle in kg.execute(
+            "MATCH (f:Filing)-[:CONTAINS_SECTION]->(s:Section) "
+            "RETURN f.id, s.id, s.item_code, s.section_title"
+        ):
+            if sacc not in seen_ids:
+                continue
+            section_nodes.append(
+                {"filing": sacc, "id": sid, "code": scode, "title": stitle}
+            )
+            add_node(
+                sid,
+                f"Item {scode}: {stitle}",
+                "Section",
+                f"Item {scode} · {stitle}",
+                hint=sacc,
+            )
+
+    # UFGS causal layer: RiskFactor nodes (Item 1A) and CausalRelation
+    # statements. Both live in the graph but no retrieval rule reached them, so
+    # every question about the risk narrative or the typed causal edges came
+    # back "not in context". Risk factors surface when the question is about
+    # risks; causal statements when it is about drivers, exposures, suppliers,
+    # customers, currency or margins.
+    if any(t in q_low for t in ("risk", "threat", "exposure", "factor", "1a",
+                                "uncertain", "macro", "econom", "inflation",
+                                "currency", "exchange", "supply")):
+        rf_descs: list[str] = []
+        for rid, rcode, header, rtext in kg.execute(
+            "MATCH (n:RiskFactor) RETURN n.id, n.item_code, n.rf_header, n.rf_text"
+        ):
+            low = (header or "").lower() + " " + (rtext or "").lower()
+            score = sum(1 for kw in keywords if kw in low)
+            rf_descs.append((score, rid, rcode, header, rtext))
+        for score, rid, rcode, header, rtext in sorted(
+            rf_descs, key=lambda t: (-t[0], t[1])
+        )[:_MAX_RISK_FACTORS]:
+            text = re.sub(r"\s+", " ", rtext or "").strip()
+            add_node(
+                rid,
+                f"Risk factor ({rcode}): {(header or '')[:50]}",
+                "RiskFactor",
+                f"{header}\n{text[:600]}",
+                hint="10-K",
+            )
+    if any(t in q_low for t in ("causal", "drives", "driven", "margin",
+                                "expos", "impact", "driver", "supplier",
+                                "customer", "competitor", "macro", "inflation",
+                                "interest rate", "currency", "fx", "commod",
+                                "offset", "risk")):
+        causal_descs: list[dict[str, Any]] = []
+        for cid, rtype, subj, obj, quote in kg.execute(
+            "MATCH (n:CausalRelation) RETURN n.id, n.relation_type, "
+            "n.subject_name, n.object_name, n.source_quote"
+        ):
+            line = f"{subj} {rtype} {obj}".lower()
+            score = sum(1 for kw in keywords if kw in line)
+            causal_descs.append(
+                {"id": cid, "type": rtype, "subject": subj, "object": obj,
+                 "quote": quote, "score": score}
+            )
+        for c in sorted(causal_descs, key=lambda c: (-c["score"], c["id"]))[:_MAX_CAUSAL]:
+            quote = re.sub(r"\s+", " ", c["quote"] or "").strip()
+            desc = f"{c['subject']} {c['type']} {c['object']}"
+            if quote:
+                desc += f" — \"{quote[:240]}\""
+            add_node(
+                c["id"],
+                f"{c['subject']} → {c['object']}",
+                "CausalRelation",
+                desc,
+                hint=c["type"],
+            )
 
     # Now fetch connecting edges
     retrieved_edges: list[dict] = []
@@ -791,6 +981,25 @@ def retrieve_financial_context(kg: KnowledgeGraph, question: str) -> tuple[str, 
                 "relation": "DISCLOSES_EVENT",
                 "description": "Filing discloses event",
             })
+
+    # 5. Filing -> DocumentChunk (narrative prose selected above)
+    for c in selected_chunks:
+        if c["filing"] in node_ids and c["id"] in node_ids:
+            retrieved_edges.append({
+                "source": c["filing"], "target": c["id"],
+                "relation": "CONTAINS_CHUNK",
+                "description": f"{c['form']} {c['section']} prose",
+            })
+
+    # 6. Filing -> Section (UFGS structural index)
+    if section_nodes:
+        for s in section_nodes:
+            if s["filing"] in node_ids and s["id"] in node_ids:
+                retrieved_edges.append({
+                    "source": s["filing"], "target": s["id"],
+                    "relation": "CONTAINS_SECTION",
+                    "description": f"Item {s['code']} · {s['title']}",
+                })
 
     # Dedupe before the context string is built, not only at the JSON boundary:
     # the same edge is reachable from more than one of the queries above, and a
@@ -903,7 +1112,7 @@ def ask_rag(kg: KnowledgeGraph, question: str) -> dict[str, Any]:
         ],
         "temperature": 0.2,
         "top_p": 1,
-        "max_tokens": 4096,
+        "max_tokens": 16384,
         "stream": False,
     }
     if RAG_BACKEND == "ollama":
@@ -911,6 +1120,13 @@ def ask_rag(kg: KnowledgeGraph, question: str) -> dict[str, Any]:
         # reject them as unknown parameters.
         request["extra_body"] = {
             "options": {"num_ctx": RAG_NUM_CTX, "temperature": 0.2},
+        }
+    elif RAG_BACKEND == "nvidia":
+        # Nemotron's thinking mode, exactly as the NVIDIA quickstart passes it.
+        # The reasoning trace comes back on the message as ``reasoning_content``
+        # and is surfaced by the worksheet view alongside the answer.
+        request["extra_body"] = {
+            "chat_template_kwargs": {"enable_thinking": True},
         }
 
     try:
@@ -939,8 +1155,13 @@ def ask_rag(kg: KnowledgeGraph, question: str) -> dict[str, Any]:
             "graph": None,
         }
 
-    # Extract cited tags
-    cited_raw = _CITATION_RE.findall(content)
+    # Extract cited tags. The model sometimes writes arrow-style citations
+    # ("[E2→E15]") to pair a line item with its value; split those back into
+    # plain tags so every cited entity is counted and grounded is true.
+    content_cites = re.sub(
+        r"(\[E\d+)\s*(?:-{1,2}(?:>|→)|=>|→)\s*(E\d+\])", r"\1] [\2", content
+    )
+    cited_raw = _CITATION_RE.findall(content_cites)
     used_tags = sorted(set(t for t in cited_raw if t in tag_map), key=lambda x: int(x[1:]))
 
     # Flow trace
@@ -1428,6 +1649,7 @@ _HTML = r"""<!DOCTYPE html>
 </div>
 <div id="toasts" aria-live="polite"></div>
 
+<script src="/vendor/d3.v7.min.js"></script>
 <script>
 "use strict";
 
@@ -1457,6 +1679,11 @@ function typeColor(type) {
     company: "#7ee0b8", filing: "#6ea8fe", financialmetric: "#ffb454",
     segment: "#d2a8ff", disclosureevent: "#f78fb3", documentchunk: "#8fd3f4",
     executive: "#ffd479", supplier: "#a0e8a0",
+    section: "#f2a7c9", riskfactor: "#e86a6a", causalrelation: "#b9a7f2",
+    productfamily: "#ffd479", geographicmarket: "#9ad1d1",
+    competitor: "#f2a7a7", customer: "#a8d9a0", regulatorybody: "#c9b3e8",
+    macrovariable: "#f0c27a", standardizedconcept: "#7ed6a8",
+    rawfact: "#e8b3d4", footnote: "#cfe0a8", fiscalperiod: "#96c8e8",
   };
   if (known[t]) return known[t];
   let h = 0;
@@ -1479,50 +1706,34 @@ class Sim {
   constructor(nodes, links, width, height) {
     this.nodes = nodes; this.links = links;
     this.w = width; this.h = height;
-    const n = nodes.length;
-    this.repel = 2600 + n * 26;
-    this.spring = 0.055;
-    this.damp = 0.86;
-    nodes.forEach((d, i) => {
-      const a = i * 2.399963, r = 26 * Math.sqrt(i + 1);
-      d.x = width / 2 + r * Math.cos(a);
-      d.y = height / 2 + r * Math.sin(a);
-      d.vx = 0; d.vy = 0;
-    });
-    this.alpha = 1;
+    // d3-force drives the layout. The wrapper keeps the same contract the rest
+    // of this file relies on: a mutable ``alpha`` and a ``tick()`` that answers
+    // "is there more to do", so the rAF loop below is unchanged.
+    this.force = d3.forceSimulation(nodes)
+      .force("link", d3.forceLink(links).id((d) => d.id)
+        .distance(110).strength(0.10))
+      .force("charge", d3.forceManyBody().strength((d) => -120 - 5 * (d.r || 9)))
+      .force("x", d3.forceX(width / 2).strength(0.04))
+      .force("y", d3.forceY(height / 2).strength(0.04))
+      .force("center", d3.forceCenter(width / 2, height / 2))
+      // Keep labels readable: nodes never overlap, something the old hand-rolled
+      // sum-of-pairs repulsion could not guarantee.
+      .force("collide", d3.forceCollide((d) => (d.r || 9) + 7).iterations(2))
+      .stop();
   }
+  get alpha() { return this.force.alpha(); }
+  set alpha(v) { this.force.alpha(v).stop(); }
   tick() {
-    const { nodes, links, w, h } = this;
-    for (let i = 0; i < nodes.length; i++) {
-      const a = nodes[i];
-      for (let j = i + 1; j < nodes.length; j++) {
-        const b = nodes[j];
-        let dx = b.x - a.x, dy = b.y - a.y;
-        let d2 = dx * dx + dy * dy;
-        if (d2 < 1) { d2 = 1; dx = (Math.random() - 0.5); dy = (Math.random() - 0.5); }
-        const d = Math.sqrt(d2);
-        const f = (this.repel / d2) * this.alpha;
-        const fx = (dx / d) * f, fy = (dy / d) * f;
-        a.vx -= fx; a.vy -= fy; b.vx += fx; b.vy += fy;
-      }
-    }
-    for (const l of links) {
-      const a = l.source, b = l.target;
-      if (!a || !b) continue;
-      const dx = b.x - a.x, dy = b.y - a.y;
-      const d = Math.max(1, Math.hypot(dx, dy));
-      const f = (d - 150) * this.spring * this.alpha;
-      const fx = (dx / d) * f, fy = (dy / d) * f;
-      a.vx += fx; a.vy += fy; b.vx -= fx; b.vy -= fy;
-    }
-    for (const d of nodes) {
-      d.vx += (w / 2 - d.x) * 0.0022 * this.alpha;
-      d.vy += (h / 2 - d.y) * 0.0022 * this.alpha;
-      d.vx *= this.damp; d.vy *= this.damp;
-      d.x += d.vx; d.y += d.vy;
-    }
-    this.alpha *= 0.992;
-    return this.alpha > 0.02;
+    if (this.force.alpha() < this.force.alphaMin()) return false;
+    this.force.tick();
+    return this.force.alpha() > this.force.alphaMin();
+  }
+  resize(w, h) {
+    this.w = w; this.h = h;
+    this.force
+      .force("x", d3.forceX(w / 2).strength(0.04))
+      .force("y", d3.forceY(h / 2).strength(0.04))
+      .force("center", d3.forceCenter(w / 2, h / 2));
   }
 }
 
@@ -1538,66 +1749,137 @@ function startSim(reheat) {
   raf = requestAnimationFrame(loop);
 }
 
-const NS = "http://www.w3.org/2000/svg";
-const el = (tag, attrs) => {
-  const e = document.createElementNS(NS, tag);
-  for (const k in attrs) e.setAttribute(k, attrs[k]);
-  return e;
-};
+// ── d3 idiom from the getting-started guide: bind selections once, then
+// re-run data joins on each tick instead of clearing and rebuilding the DOM.
+const linkSel = d3.select(viewport).append("g");
+const labelSel = d3.select(viewport).append("g");
+const nodeSel = d3.select(viewport).append("g");
+
+function applyView() {
+  viewport.setAttribute("transform",
+    `translate(${S.view.x},${S.view.y}) scale(${S.view.k})`);
+}
+
+let nodeDrag = false;
+let suppressClick = false;
+let dragStart = null, dragTravel = 0;
+
+const zoom = d3.zoom()
+  .scaleExtent([0.1, 3])
+  .filter((event) => !nodeDrag && !event.button)
+  .on("start", () => svg.classList.add("dragging"))
+  .on("zoom", (event) => {
+    S.view = { x: event.transform.x, y: event.transform.y, k: event.transform.k };
+    applyView();
+    draw();
+  })
+  .on("end", () => svg.classList.remove("dragging"));
+d3.select(svg).call(zoom);
+
+function setView(x, y, k) {
+  S.view = { x, y, k };
+  d3.select(svg).call(zoom.transform, d3.zoomIdentity.translate(x, y).scale(k));
+}
+
+const dragBehavior = d3.drag()
+  .on("start", (event, d) => {
+    nodeDrag = true;
+    suppressClick = false;
+    dragStart = { x: event.x, y: event.y };
+    dragTravel = 0;
+    d.fx = d.x; d.fy = d.y;
+    if (!event.active && S.sim) S.sim.alpha = Math.max(S.sim.alpha, 0.7);
+    svg.classList.add("dragging");
+    hideTip();
+  })
+  .on("drag", (event, d) => {
+    // d3.pointer reports graph-space coordinates here (nodes sit under the
+    // zoomed viewport), so pin the node straight onto the force's seat.
+    d.fx = event.x; d.fy = event.y;
+    dragTravel = Math.max(dragTravel,
+      Math.hypot(event.x - dragStart.x, event.y - dragStart.y));
+    if (S.sim) S.sim.alpha = Math.max(S.sim.alpha, 0.35);
+    startSim(false);
+  })
+  .on("end", (event, d) => {
+    d.fx = null; d.fy = null;
+    nodeDrag = false;
+    svg.classList.remove("dragging");
+    suppressClick = dragTravel > 4;
+    if (suppressClick) setTimeout(() => { suppressClick = false; }, 0);
+  });
 
 function draw() {
-  viewport.textContent = "";
-  viewport.setAttribute("transform", `translate(${S.view.x},${S.view.y}) scale(${S.view.k})`);
-
   const hasFocus = S.seeds.size > 0 || S.cited.size > 0;
-  const gLinks = el("g", {}), gLabels = el("g", {}), gNodes = el("g", {});
 
-  for (const l of S.links) {
-    if (!l.source || !l.target) continue;
-    const inSeed = S.seeds.has(l.source.id) || S.seeds.has(l.target.id);
-    const isCited = S.cited.has(l.source.id) && S.cited.has(l.target.id);
-    const cls = isCited ? "link cited" : (hasFocus && !inSeed ? "link dim" : "link");
-    const line = el("line", {
-      class: cls, x1: l.source.x, y1: l.source.y, x2: l.target.x, y2: l.target.y,
+  linkSel.selectAll("line")
+    .data(S.links, (l) => `${l.source.id}|${l.target.id}|${encodeURIComponent(l.relation)}`)
+    .join("line")
+    .attr("class", (l) => {
+      const isCited = S.cited.has(l.source.id) && S.cited.has(l.target.id);
+      const inSeed = S.seeds.has(l.source.id) || S.seeds.has(l.target.id);
+      return isCited ? "link cited" : (hasFocus && !inSeed ? "link dim" : "link");
+    })
+    .attr("x1", (l) => l.source.x).attr("y1", (l) => l.source.y)
+    .attr("x2", (l) => l.target.x).attr("y2", (l) => l.target.y)
+    .each(function (l) {
+      if (!this.firstElementChild) {
+        d3.select(this).append("title")
+          .text(`${l.source.name} —${l.relation.replace(/_/g, " ")}→ ${l.target.name}` +
+            (l.description ? `\n${l.description}` : ""));
+      }
     });
-    line.appendChild(el("title", {})).textContent =
-      `${l.source.name} —${l.relation}→ ${l.target.name}` +
-      (l.description ? `\n${l.description}` : "");
-    gLinks.appendChild(line);
 
-    const mx = (l.source.x + l.target.x) / 2, my = (l.source.y + l.target.y) / 2;
-    if (S.view.k > 0.62 || isCited) {
-      const t = el("text", { class: "lbl", x: mx, y: my - 4, "text-anchor": "middle" });
-      t.textContent = l.relation.replace(/_/g, " ");
-      gLabels.appendChild(t);
-    }
-  }
+  labelSel.selectAll("text.lbl")
+    .data(S.links.filter((l) => l.source && l.target &&
+      (S.view.k > 0.62 || (S.cited.has(l.source.id) && S.cited.has(l.target.id)))),
+      (l) => `${l.source.id}|${l.target.id}|${encodeURIComponent(l.relation)}`)
+    .join("text")
+    .attr("class", "lbl")
+    .attr("text-anchor", "middle")
+    .attr("x", (l) => (l.source.x + l.target.x) / 2)
+    .attr("y", (l) => (l.source.y + l.target.y) / 2 - 4)
+    .text((l) => l.relation.replace(/_/g, " "));
 
-  for (const d of S.nodes) {
-    const isCited = S.cited.has(d.id);
-    const isSeed = S.seeds.has(d.id);
-    const g = el("g", {
-      class: "node" + (isSeed ? " seed" : "") +
-             (isCited ? " cited" : "") +
-             (hasFocus && !isSeed && !isCited ? " dim" : ""),
-      transform: `translate(${d.x},${d.y})`,
-    });
-    g.appendChild(el("circle", { r: d.r || 9, fill: typeColor(d.type) }));
-    if (S.showLabels && (S.view.k > 0.45 || isSeed || isCited)) {
-      const label = el("text", { y: (d.r || 9) + 12, "text-anchor": "middle" });
-      label.textContent = d.name.length > 26 ? d.name.slice(0, 25) + "…" : d.name;
-      g.appendChild(label);
-    }
-    gNodes.appendChild(g);
-  }
-  viewport.appendChild(gLinks);
-  viewport.appendChild(gLabels);
-  viewport.appendChild(gNodes);
+  const nodeGroups = nodeSel.selectAll("g.node")
+    .data(S.nodes, (d) => d.id)
+    .join(
+      (enter) => {
+        const g = enter.append("g").attr("class", "node");
+        g.append("circle");
+        g.append("title");
+        g.append("text").attr("y", (d) => (d.r || 9) + 12).attr("text-anchor", "middle");
+        g.call(dragBehavior);
+        return g;
+      },
+      (update) => update,
+      (exit) => exit.remove())
+    .attr("class", (d) => {
+      const isCited = S.cited.has(d.id), isSeed = S.seeds.has(d.id);
+      return "node" + (isSeed ? " seed" : "") + (isCited ? " cited" : "") +
+             (hasFocus && !isSeed && !isCited ? " dim" : "");
+    })
+    .attr("transform", (d) => `translate(${d.x},${d.y})`);
+
+  nodeGroups.select("circle")
+    .attr("r", (d) => d.r || 9)
+    .attr("fill", (d) => typeColor(d.type));
+  nodeGroups.select("text")
+    .text((d) => d.name.length > 26 ? d.name.slice(0, 25) + "…" : d.name)
+    .style("display", (d) =>
+      S.showLabels && (S.view.k > 0.45 || S.seeds.has(d.id) || S.cited.has(d.id))
+        ? null : "none");
+  nodeGroups.select("title")
+    .text((d) => `${d.name} (${d.type}${d.description ? " — " + d.description : ""})`);
 }
 
 function fit() {
   const r = svg.getBoundingClientRect();
-  if (!S.nodes.length) { S.view = { x: 0, y: 0, k: 1 }; draw(); return; }
+  if (!S.nodes.length) {
+    setView(r.width / 2, r.height / 2, 1);
+    draw();
+    return;
+  }
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
   for (const d of S.nodes) {
     minX = Math.min(minX, d.x - 30); maxX = Math.max(maxX, d.x + 30);
@@ -1605,11 +1887,18 @@ function fit() {
   }
   const k = Math.min(2, Math.max(0.15,
     Math.min(r.width / (maxX - minX), r.height / (maxY - minY)) * 0.9));
-  S.view = {
-    k,
-    x: r.width / 2 - ((minX + maxX) / 2) * k,
-    y: r.height / 2 - ((minY + maxY) / 2) * k,
-  };
+  setView(
+    r.width / 2 - ((minX + maxX) / 2) * k,
+    r.height / 2 - ((minY + maxY) / 2) * k,
+    k);
+  draw();
+}
+
+function zoomBy(factor) {
+  const r = svg.getBoundingClientRect();
+  const cx = r.width / 2, cy = r.height / 2;
+  const k = Math.max(0.1, Math.min(3, S.view.k * factor));
+  setView(cx - (cx - S.view.x) * (k / S.view.k), cy - (cy - S.view.y) * (k / S.view.k), k);
   draw();
 }
 
@@ -1646,49 +1935,17 @@ function showTip(evt, html) {
 }
 const hideTip = () => { tip.style.display = "none"; };
 
-let dragNode = null, panning = null;
-
-function toLocal(evt) {
-  const r = svg.getBoundingClientRect();
-  return {
-    x: (evt.clientX - r.left - S.view.x) / S.view.k,
-    y: (evt.clientY - r.top - S.view.y) / S.view.k,
-  };
-}
-
 function nodeAt(evt) {
-  const p = toLocal(evt);
+  const [px, py] = d3.pointer(evt, nodeSel.node());
   let best = null, bd = Infinity;
   for (const n of S.nodes) {
-    const d = Math.hypot(n.x - p.x, n.y - p.y);
+    const d = Math.hypot(n.x - px, n.y - py);
     if (d < (n.r || 9) + 4 && d < bd) { bd = d; best = n; }
   }
   return best;
 }
 
-svg.addEventListener("pointerdown", (e) => {
-  svg.setPointerCapture(e.pointerId);
-  const hit = nodeAt(e);
-  if (hit) { dragNode = hit; hideTip(); return; }
-  panning = { x: e.clientX, y: e.clientY, vx: S.view.x, vy: S.view.y };
-  svg.classList.add("dragging");
-});
-
 svg.addEventListener("pointermove", (e) => {
-  if (dragNode) {
-    const p = toLocal(e);
-    dragNode.x = p.x; dragNode.y = p.y;
-    dragNode.vx = 0; dragNode.vy = 0;
-    if (S.sim) S.sim.alpha = Math.max(S.sim.alpha, 0.35);
-    startSim(false);
-    return;
-  }
-  if (panning) {
-    S.view.x = panning.vx + (e.clientX - panning.x);
-    S.view.y = panning.vy + (e.clientY - panning.y);
-    draw();
-    return;
-  }
   const best = nodeAt(e);
   if (best) {
     const rel = S.links.filter((l) => l.source === best || l.target === best)
@@ -1704,24 +1961,13 @@ svg.addEventListener("pointermove", (e) => {
   } else hideTip();
 });
 
-const endDrag = () => { dragNode = null; panning = null; svg.classList.remove("dragging"); };
-svg.addEventListener("pointerup", endDrag);
-svg.addEventListener("pointercancel", endDrag);
 svg.addEventListener("pointerleave", hideTip);
+
 svg.addEventListener("click", (e) => {
+  if (suppressClick) return;
   const best = nodeAt(e);
   if (best) focusEntity(best.id);
 });
-svg.addEventListener("wheel", (e) => {
-  e.preventDefault();
-  const r = svg.getBoundingClientRect();
-  const mx = e.clientX - r.left, my = e.clientY - r.top;
-  const k = Math.max(0.1, Math.min(3, S.view.k * (e.deltaY < 0 ? 1.12 : 0.89)));
-  S.view.x = mx - (mx - S.view.x) * (k / S.view.k);
-  S.view.y = my - (my - S.view.y) * (k / S.view.k);
-  S.view.k = k;
-  draw();
-}, { passive: false });
 
 async function loadStats() {
   try {
@@ -1810,8 +2056,7 @@ function focusOn(id) {
   if (!n) { toast("that entity is not in the current view", "bad"); return; }
   S.cited = new Set([id]);
   const r = svg.getBoundingClientRect();
-  S.view.x = r.width / 2 - n.x * S.view.k;
-  S.view.y = r.height / 2 - n.y * S.view.k;
+  setView(r.width / 2 - n.x * S.view.k, r.height / 2 - n.y * S.view.k, S.view.k);
   draw();
 }
 
@@ -2083,8 +2328,8 @@ $("relayout").onclick = () => {
   if (S.sim) { S.sim.alpha = 1; startSim(true); }
   setTimeout(fit, 700);
 };
-$("zoomIn").onclick = () => { S.view.k = Math.min(3, S.view.k * 1.25); draw(); };
-$("zoomOut").onclick = () => { S.view.k = Math.max(0.1, S.view.k / 1.25); draw(); };
+$("zoomIn").onclick = () => zoomBy(1.25);
+$("zoomOut").onclick = () => zoomBy(1 / 1.25);
 $("labelsBtn").onclick = () => {
   S.showLabels = !S.showLabels;
   $("labelsBtn").classList.toggle("on", S.showLabels);
@@ -2117,8 +2362,7 @@ for (const t of document.querySelectorAll(".tab")) {
 let resizeTimer = null;
 window.addEventListener("resize", () => {
   if (S.sim) {
-    S.sim.w = svg.clientWidth || S.sim.w;
-    S.sim.h = svg.clientHeight || S.sim.h;
+    S.sim.resize(svg.clientWidth || S.sim.w, svg.clientHeight || S.sim.h);
   }
   draw();
   clearTimeout(resizeTimer);
@@ -2359,6 +2603,9 @@ class _Handler(BaseHTTPRequestHandler):
         p, qs = parsed.path, parse_qs(parsed.query)
         if p in ("/", "/index.html"):
             return self._send(200, _HTML.encode(), "text/html; charset=utf-8")
+        if p.startswith("/vendor/") and p[len("/vendor/"):] in VENDOR:
+            name = p[len("/vendor/"):]
+            return self._send(200, VENDOR[name], "application/javascript; charset=utf-8")
         if p == "/api/stats":
             return self._json(self.kg.stats())
         if p == "/api/entities":
@@ -2457,6 +2704,15 @@ def serve(host: str = "127.0.0.1", port: int = 9000, open_browser: bool = True,
     print(f"  Graph Stats  : {stats['nodes']} entities, {stats['edges']} relationships")
     where = "NVIDIA NIM" if RAG_BACKEND == "nvidia" else "local Ollama"
     print(f"  RAG Model    : {RAG_MODEL} via {where} ({RAG_BASE_URL})")
+    if RAG_NEEDS_KEY:
+        # The only setting that silently degrades rather than raising, so it is
+        # the one worth reporting. A typo in the env var name, or a .env that
+        # was never filled in, otherwise looks like a broken model.
+        key_state = "found" if RAG_KEY else (
+            "MISSING -- answers will not be phrased; set NVIDIA_API_KEY in "
+            ".env or the environment"
+        )
+        print(f"  API Key      : {key_state}")
     print(f"  RAG Timeout  : {RAG_TIMEOUT:.0f}s")
     print(f"  Press Ctrl-C to stop")
     print(f"{'='*70}\n")
