@@ -30,6 +30,8 @@ from urllib.parse import parse_qs, urlparse
 
 import ladybug as lb
 
+from .buffer import NODE_TABLES, REL_TABLES
+
 
 def merge_nodes(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Collapse repeated *ids*, then make every remaining label unique.
@@ -134,7 +136,14 @@ _BLUEPRINT_TO_ENGINE = {
     # relationship tables
     "DISAGGREGATED_BY": "HAS_SEGMENT",
     "CONTAINS_CHUNK": "HAS_CHUNK",
-    # properties
+}
+
+#: Blueprint property -> engine property. A property missing from this map
+#: keeps its name. The ones the engine dropped entirely are not listed here:
+#: :func:`translate_for_engine` detects those from the real column lists, which
+#: is what lets ``period_type`` survive as ``period`` on HAS_SEGMENT while
+#: becoming a null on REPORTS_METRIC, a table that has no such column.
+_PROP_RENAME = {
     "legal_name": "name",
     "accession_number": "id",
     "period_end_date": "filing_date",
@@ -146,22 +155,72 @@ _BLUEPRINT_TO_ENGINE = {
     "event_id": "id",
     "account_class": "statement_category",
     "period_type": "period",
-    # present in the blueprint schema only
-    "scale": "NULL",
-    "raw_label": "NULL",
-    "event_date": "NULL",
     "document_text": "text",
     "chunk_type": "section",
 }
 
-_TRANSLATE_RE = re.compile(
+
+_REL_BIND_RE = re.compile(r"\[\s*(?:(\w+)\s*)?:\s*(\w+)")
+_NODE_BIND_RE = re.compile(r"\(\s*(?:(\w+)\s*)?:\s*(\w+)\s*\)")
+_ACCESSOR_RE = re.compile(r"\b(\w+)\.(\w+)\b")
+_TABLE_RENAME_RE = re.compile(
     r"\b(" + "|".join(sorted(_BLUEPRINT_TO_ENGINE, key=len, reverse=True)) + r")\b"
 )
 
 
+def _bindings(cypher: str) -> dict[str, tuple[str, bool]]:
+    """Map each pattern variable to its ``(blueprint_table, is_relationship)``."""
+    found: dict[str, tuple[str, bool]] = {}
+    for m in _REL_BIND_RE.finditer(cypher):
+        found[m.group(1) or ""] = (m.group(2), True)
+    for m in _NODE_BIND_RE.finditer(cypher):
+        found[m.group(1) or ""] = (m.group(2), False)
+    return found
+
+
+def _engine_columns(table: str, is_relationship: bool) -> set[str]:
+    """Columns of *table* after renaming, or an empty set when unrecognised."""
+    name = _BLUEPRINT_TO_ENGINE.get(table, table)
+    if is_relationship:
+        spec = REL_TABLES.get(name)
+        return set(spec[2]) if spec else set()
+    return set(NODE_TABLES.get(name, ()))
+
+
 def translate_for_engine(cypher: str) -> str:
-    """Rewrite blueprint-schema Cypher into engine-schema Cypher."""
-    return _TRANSLATE_RE.sub(lambda m: _BLUEPRINT_TO_ENGINE[m.group(1)], cypher)
+    """Rewrite blueprint-schema Cypher into engine-schema Cypher.
+
+    A blanket search-and-replace over property names gets two things wrong, and
+    both surface as parser errors rather than as nulls -- which is why serving a
+    rebuilt graph raised "Cannot find property" on entity queries and
+    "Invalid input <x.NULL>" on the retrieval queries:
+
+    * It rewrites the *output* name too, so ``r.scale AS scale`` became
+      ``r.NULL AS NULL``, and ``AS NULL`` is not a legal projection item.
+    * It leaves the accessor prefix behind, so mapping ``scale`` to the literal
+      ``NULL`` turned ``x.scale`` into ``x.NULL`` -- a property read on a
+      constant, which does not parse at all.
+
+    So properties are only rewritten in ``alias.property`` position, where the
+    pattern variables are known, and one the target table has no column for
+    becomes the bare ``NULL`` literal. That preserves the arity of a RETURN
+    list, so the positional unpacking at each call site still lines up.
+    """
+    bindings = _bindings(cypher)
+
+    def rewrite(m: re.Match[str]) -> str:
+        alias, prop = m.group(1), m.group(2)
+        binding = bindings.get(alias)
+        if binding is None:
+            return m.group(0)
+        table, is_relationship = binding
+        renamed = _PROP_RENAME.get(prop, prop)
+        if renamed in _engine_columns(table, is_relationship):
+            return f"{alias}.{renamed}"
+        return "NULL"
+
+    cypher = _ACCESSOR_RE.sub(rewrite, cypher)
+    return _TABLE_RENAME_RE.sub(lambda m: _BLUEPRINT_TO_ENGINE[m.group(1)], cypher)
 
 
 def detect_schema(kg_execute) -> str:
@@ -329,6 +388,41 @@ def run_report(kg: KnowledgeGraph, report_id: str) -> dict:
 NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
 NVIDIA_MODEL = "openai/gpt-oss-20b"
 
+# Ollama serves an OpenAI-compatible API on localhost, so the same client and
+# the same request body work against it -- only the base URL, the model name and
+# the timeout change. ``ollama`` is the conventional placeholder key; the local
+# server ignores it but the client refuses to construct without one.
+OLLAMA_BASE_URL = os.environ.get(
+    "RAG_OLLAMA_BASE_URL", "http://127.0.0.1:11434/v1"
+).rstrip("/")
+OLLAMA_MODEL = os.environ.get("RAG_OLLAMA_MODEL", "llama3.2")
+
+#: Which backend phrases the answers: ``"ollama"`` (local, default) or
+#: ``"nvidia"`` (hosted, needs a key). Local is the default because it needs no
+#: credential and no network, and because NVIDIA's ``gpt-oss-20b`` deployment
+#: was answering 504 after five minutes.
+RAG_BACKEND = os.environ.get("RAG_BACKEND", "ollama").strip().lower()
+
+#: Generous, because a local 3B model on CPU is slower than a hosted one, and
+#: the first request also pays the model load. The UI's fetch has no deadline
+#: of its own, so this is the only thing standing between a slow answer and a
+#: dropped connection -- "Failed to fetch" in the browser, with the request
+#: still running.
+RAG_TIMEOUT = float(os.environ.get("RAG_TIMEOUT", "900"))
+
+#: Ollama defaults to a 4k context, which the retrieved subgraph plus the
+#: instructions can overrun; a truncated prompt loses the tail of the evidence
+#: and the model answers from half a graph.
+RAG_NUM_CTX = int(os.environ.get("RAG_NUM_CTX", "16384"))
+
+
+def _rag_settings() -> tuple[str, str, str, bool]:
+    """``(base_url, model, api_key, needs_key)`` for the active backend."""
+    if RAG_BACKEND == "nvidia":
+        return NVIDIA_BASE_URL, NVIDIA_MODEL, NVIDIA_API_KEY, True
+    return OLLAMA_BASE_URL, OLLAMA_MODEL, "ollama", False
+
+
 
 def _load_api_key() -> str:
     """The key for the question box, in precedence order.
@@ -358,6 +452,9 @@ def _load_api_key() -> str:
 
 
 NVIDIA_API_KEY = _load_api_key()
+
+# Resolved after the key is loaded, since the hosted backend needs it.
+RAG_BASE_URL, RAG_MODEL, RAG_KEY, RAG_NEEDS_KEY = _rag_settings()
 
 MAX_BODY = 128 * 1024
 
@@ -429,6 +526,9 @@ class KnowledgeGraph:
             "table_counts": counts,
             "rel_counts": rel_counts,
             "entity_types": entity_types,
+            "schema": self.schema,
+            "rag_model": RAG_MODEL,
+            "rag_backend": RAG_BACKEND,
         }
 
     def all_entities(self, query: str = "", limit: int = 500) -> list[dict[str, Any]]:
@@ -469,8 +569,8 @@ class KnowledgeGraph:
                 entities.append({"id": sid, "name": name, "entity_type": "Segment", "description": f"Dimension: {dtype}"})
 
         # 4. DisclosureEvent
-        for r in self.execute("MATCH (e:DisclosureEvent) RETURN e.event_id, e.item_code, e.item_title, e.event_date, e.summary"):
-            eid, code, title, edate, summary = r[0], r[1], r[2], r[3], r[4]
+        for r in self.execute("MATCH (e:DisclosureEvent) RETURN e.event_id, e.item_code, e.item_title, e.summary"):
+            eid, code, title, summary = r[0], r[1], r[2], r[3]
             name = f"Item {code}: {title.strip()[:40]}"
             if not q or q in name.lower() or q in code.lower() or q in "event":
                 entities.append({"id": eid, "name": name, "entity_type": "DisclosureEvent", "description": summary[:120]})
@@ -607,12 +707,12 @@ def retrieve_financial_context(kg: KnowledgeGraph, question: str) -> tuple[str, 
             add_node(sid, name, "Segment", f"Dimension type: {dtype}")
 
     # Check disclosure events
-    events = kg.execute("MATCH (e:DisclosureEvent) RETURN e.event_id, e.item_code, e.item_title, e.event_date, e.summary")
+    events = kg.execute("MATCH (e:DisclosureEvent) RETURN e.event_id, e.item_code, e.item_title, e.summary")
     for e in events:
-        eid, code, title, edate, summary = e[0], e[1], e[2], e[3], e[4]
+        eid, code, title, summary = e[0], e[1], e[2], e[3]
         if code in q_low or "8-k" in q_low or "event" in q_low or "item" in q_low or "press release" in q_low or "operation" in q_low:
             clean_title = re.sub(r"&[a-z0-9#]+;", " ", title).strip()
-            add_node(eid, f"Item {code}: {clean_title}", "DisclosureEvent", f"Date: {edate}, Summary: {summary[:160]}")
+            add_node(eid, f"Item {code}: {clean_title}", "DisclosureEvent", f"Summary: {summary[:160]}")
 
     # If too few nodes matched (e.g. broad general question), populate with top metrics
     if len(seen_ids) <= 3:
@@ -719,9 +819,27 @@ def _explain_api_error(exc: Exception) -> str:
 
     A bare ``403 Authorization failed`` in the answer box looks like a bug in
     this app. It is not: the key authenticated, so the request was refused
-    further up, and the two refusals mean different things.
+    further up, and the two refusals mean different things. The local backend
+    has its own common failure -- the server simply is not running -- which is
+    worth naming, because "Failed to fetch" gives the reader nothing to act on.
     """
     status = getattr(exc, "status_code", None)
+    if RAG_BACKEND == "ollama":
+        name = type(exc).__name__
+        if name in ("APIConnectionError", "ConnectError", "ConnectionError"):
+            return (
+                f"Could not reach the local model server at {RAG_BASE_URL}. "
+                f"Start it with `ollama serve` and confirm "
+                f"`ollama list` shows {RAG_MODEL}. The graph explorer below "
+                f"does not need it."
+            )
+        if name in ("APITimeoutError", "Timeout"):
+            return (
+                f"{RAG_MODEL} did not answer within {RAG_TIMEOUT:.0f}s. A local "
+                f"model on CPU can be slow; raise RAG_TIMEOUT if the question "
+                f"is a large one."
+            )
+        return f"Error talking to the local model {RAG_MODEL}: {exc}"
     if status in (401, 403):
         return (
             f"NVIDIA refused the request ({status}). The key in "
@@ -731,10 +849,11 @@ def _explain_api_error(exc: Exception) -> str:
             f"working NVIDIA_API_KEY in the environment. The graph explorer "
             f"below does not need it."
         )
-    if status == 410:
+    if status in (410, 504):
         return (
-            f"{NVIDIA_MODEL} is retired upstream (410 Gone). Choose a current "
-            f"model and update NVIDIA_MODEL in query_ui.py."
+            f"{NVIDIA_MODEL} is unavailable upstream ({status}). NVIDIA's "
+            f"deployment is retired or timing out; pick another model, or run "
+            f"the local backend with RAG_BACKEND=ollama."
         )
     if status == 429:
         return "Rate limited by NVIDIA (429). Wait a moment and try again."
@@ -742,11 +861,12 @@ def _explain_api_error(exc: Exception) -> str:
 
 
 def ask_rag(kg: KnowledgeGraph, question: str) -> dict[str, Any]:
-    if not NVIDIA_API_KEY:
+    if RAG_NEEDS_KEY and not RAG_KEY:
         return {
             "error": (
                 "NVIDIA_API_KEY is not set, so the question box is disabled. "
-                "Export it and restart to enable GraphRAG answers; the graph "
+                "Export it and restart to enable GraphRAG answers, or run the "
+                "local model instead with RAG_BACKEND=ollama; the graph "
                 "explorer does not need it."
             ),
             "id": "n/a",
@@ -757,27 +877,41 @@ def ask_rag(kg: KnowledgeGraph, question: str) -> dict[str, Any]:
 
     log.info("Retrieved %d entities and %d relationships for: %s", len(nodes), len(edges), question)
 
-    # Initialize OpenAI client targeting NVIDIA
+    # One client for whichever backend is configured; both speak the
+    # OpenAI-compatible chat API, so only the URL, the model and the timeout
+    # differ. The timeout is explicit because the default (10 minutes for a
+    # hosted call, but far less in practice for a stalled local socket) is what
+    # turns a slow model into a browser-side "Failed to fetch".
     client = OpenAI(
-        base_url=NVIDIA_BASE_URL,
-        api_key=NVIDIA_API_KEY,
+        base_url=RAG_BASE_URL,
+        api_key=RAG_KEY,
+        timeout=RAG_TIMEOUT,
+        max_retries=0,
     )
 
+    request: dict[str, Any] = {
+        "model": RAG_MODEL,
+        "messages": [
+            {"role": "system", "content": ANSWER_SYSTEM},
+            {
+                "role": "user",
+                "content": f"CONTEXT (retrieved knowledge graph):\n{context_str}\n\nQUESTION: {question}\n\nAnswer using only the context above, citing tags like [E1].",
+            },
+        ],
+        "temperature": 0.2,
+        "top_p": 1,
+        "max_tokens": 4096,
+        "stream": False,
+    }
+    if RAG_BACKEND == "ollama":
+        # Ollama-specific knobs ride along in extra_body; the hosted API would
+        # reject them as unknown parameters.
+        request["extra_body"] = {
+            "options": {"num_ctx": RAG_NUM_CTX, "temperature": 0.2},
+        }
+
     try:
-        completion = client.chat.completions.create(
-            model=NVIDIA_MODEL,
-            messages=[
-                {"role": "system", "content": ANSWER_SYSTEM},
-                {
-                    "role": "user",
-                    "content": f"CONTEXT (retrieved knowledge graph):\n{context_str}\n\nQUESTION: {question}\n\nAnswer using only the context above, citing tags like [E1].",
-                },
-            ],
-            temperature=0.2,
-            top_p=1,
-            max_tokens=4096,
-            stream=False,
-        )
+        completion = client.chat.completions.create(**request)
         msg = completion.choices[0].message
         content = (msg.content or "").strip()
         reasoning = (
@@ -788,7 +922,7 @@ def ask_rag(kg: KnowledgeGraph, question: str) -> dict[str, Any]:
         if not content and reasoning:
             content = reasoning
     except Exception as exc:
-        log.error("NVIDIA API call failed: %s", exc)
+        log.error("RAG call to %s failed: %s", RAG_MODEL, exc)
         return {
             "question": question,
             "text": _explain_api_error(exc),
@@ -1060,61 +1194,215 @@ _HTML = r"""<!DOCTYPE html>
   .node.dim { opacity: .22; }
   .node text { font-size: 11px; fill: var(--text); pointer-events: none;
     paint-order: stroke; stroke: #0f1115; stroke-width: 3.5px; stroke-linejoin: round; }
+
+  /* ── layout: three resizable columns, each one its own scroll context ── */
+  html, body { height: 100%; }
+  body { height: 100dvh; }
+  main {
+    flex: 1 1 auto; min-height: 0; overflow: hidden;
+    display: grid;
+    grid-template-columns: var(--w-left, 300px) 5px minmax(0, 1fr) 5px var(--w-right, 460px);
+  }
+  .splitter { cursor: col-resize; background: transparent; }
+  .splitter:hover, .splitter.dragging { background: var(--accent); }
+  /* width comes from the grid columns, not the pane itself */
+  aside, section.qa { width: auto; min-height: 0; min-width: 0; }
+  # every scroll container gets an explicit zero minimum, otherwise a flex
+  # item refuses to shrink below its content and the scrollbar never appears,
+  # which is what made the answer pane look frozen
+  #entityList, #answerWrap, #reportsBody, .reasoning-box { min-height: 0; overscroll-behavior: contain; }
+
+  /* Scrollbars you can actually see. The default dark-theme scrollbar was
+     invisible against --panel, which is why panes looked frozen. */
+  * { scrollbar-width: thin; scrollbar-color: #3d4657 #12151b; }
+  ::-webkit-scrollbar { width: 12px; height: 12px; }
+  ::-webkit-scrollbar-track { background: #12151b; }
+  ::-webkit-scrollbar-thumb { background: #3d4657; border-radius: 8px; border: 3px solid #12151b; }
+  ::-webkit-scrollbar-thumb:hover { background: #56637a; }
+
+  /* ── shared bits ── */
+  .grow { flex: 1 1 auto; }
+  .row { display: flex; gap: 8px; align-items: center; }
+  .row > * { min-width: 0; }
+  button.icon { padding: 5px 9px; font-size: 12px; line-height: 1.2; }
+  button.ghost { background: transparent; }
+  button.on { background: #24405f; border-color: #35597f; color: #fff; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .field.inline { display: inline; margin: 0; }
+  .count { color: var(--accent); font-weight: 600; letter-spacing: 0; text-transform: none; }
+  select.compact, input.compact { padding: 5px 7px; }
+
+  /* ── left column ── */
+  .side-head { flex: 0 0 auto; }
+  .side-foot { flex: 0 0 auto; border-bottom: none; border-top: 1px solid var(--line); }
+  #entityList { padding: 6px; }
+  #entityList .entity { cursor: pointer; }
+  #entityList .entity .nm { flex: 1 1 auto; }
+  #entityList .entity.kb { box-shadow: inset 0 0 0 1px var(--accent); }
+
+  /* ── graph ── */
+  #graphWrap { min-width: 0; min-height: 0; }
+  .toolbar { flex-wrap: wrap; max-width: calc(100% - 20px); }
+  .hint { max-width: 60%; line-height: 1.35; }
+  #legend { max-height: 40%; overflow-y: auto; }
+  #legend.hidden, .toolbar.hidden, .hint.hidden { display: none; }
+
+  /* ── right column ── */
+  .qa-head { flex: 0 0 auto; }
+  #askBox { min-height: 62px; max-height: 220px; resize: vertical; font-size: 13px; line-height: 1.45; }
+  .examples { max-height: 92px; overflow-y: auto; padding-right: 4px; margin-top: 8px; }
+  .examples button { font-size: 11px; padding: 4px 8px; border-radius: 999px; text-align: left; }
+  .tabs { display: flex; align-items: center; gap: 4px; padding: 6px 10px;
+    border-bottom: 1px solid var(--line); background: var(--panel); flex: 0 0 auto; }
+  .tab { background: transparent; border: 1px solid transparent; font-size: 12px; padding: 4px 9px; }
+  .tab.active { background: var(--panel-2); border-color: var(--line); color: #fff; }
+  #answerWrap { flex: 1 1 auto; padding: 14px; }
+  #answerWrap p { margin: 0 0 9px; }
+  #answerWrap ul, #answerWrap ol { margin: 0 0 10px 20px; }
+  #answerWrap li { margin-bottom: 4px; }
+  #answer h4 { font-size: 12px; text-transform: uppercase; letter-spacing: .5px;
+    color: var(--muted); margin: 14px 0 6px; }
+  #answer b { color: #fff; }
+  #answer code { background: var(--panel-2); border: 1px solid var(--line);
+    border-radius: 4px; padding: 0 4px; font-size: 12px; }
+  .inline-cite { background: #1d3557; color: var(--accent); border: 1px solid #33507a;
+    border-radius: 4px; font-size: 11px; padding: 0 4px; margin: 0 1px; cursor: pointer; }
+  .inline-cite:hover { background: #24405f; color: #fff; }
+  .srcs { display: flex; flex-direction: column; gap: 6px; }
+  .src { display: flex; align-items: baseline; gap: 8px; padding: 7px 9px;
+    background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px;
+    cursor: pointer; }
+  .src:hover { border-color: var(--accent); }
+  .src .tag { font-size: 11px; color: var(--accent); min-width: 34px; }
+  .src .nm { flex: 1 1 auto; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .src .ty { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; }
+  .src .val { font-size: 12px; color: var(--accent-2); font-variant-numeric: tabular-nums; }
+  #waitTimer { font-variant-numeric: tabular-nums; }
+
+  /* ── reports overlay ── */
+  #reportsOverlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.72); z-index: 100; }
+  #reportsOverlay.open { display: flex; align-items: center; justify-content: center; }
+  #reportsPanel {
+    background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+    width: min(96vw, 1180px); height: min(90vh, 900px);
+    display: grid; grid-template-rows: auto auto minmax(0, 1fr);
+  }
+  #reportsList { max-height: 22vh; overflow-y: auto; }
+  #reportsBody { min-height: 0; }
+  #reportsHeader input { width: 200px; }
+
+  /* ── toasts ── */
+  #toasts { position: fixed; right: 14px; bottom: 14px; z-index: 200;
+    display: flex; flex-direction: column; gap: 8px; max-width: 380px; }
+  .toast { background: var(--panel-2); border: 1px solid var(--line); border-left: 3px solid var(--accent);
+    border-radius: 6px; padding: 9px 12px; font-size: 12.5px; box-shadow: 0 8px 24px rgba(0,0,0,.55); }
+  .toast.bad { border-left-color: var(--bad); }
+  .toast.ok { border-left-color: var(--accent-2); }
+
+  /* ── narrow windows: stack the columns and let the page scroll ── */
+  @media (max-width: 1000px) {
+    main { display: flex; flex-direction: column; overflow-y: auto; padding-bottom: 10px; }
+    .splitter { display: none; }
+    #graphWrap { flex: 0 0 auto; height: 52vh; min-height: 300px; border-bottom: 1px solid var(--line); }
+    aside, section.qa { width: auto; flex: 0 0 auto; border: none;
+      border-top: 1px solid var(--line); }
+    aside { max-height: 46vh; }
+    section.qa { max-height: 90vh; }
+    #entityList { max-height: 26vh; }
+    header { flex-wrap: wrap; row-gap: 6px; }
+  }
 </style>
 </head>
 <body>
 <header>
   <h1>graphrag viewer</h1>
   <div class="stats" id="stats">loading…</div>
+  <span class="chip" id="modelChip" title="Answering model and backend">model</span>
   <div class="spacer"></div>
-  <button id="reportsBtn" style="font-size:12px;padding:5px 10px">reports</button>
-  <label class="stats" for="hops">hops</label>
-  <select id="hops" style="width:auto">
+  <label class="field inline stats" for="hops">hops</label>
+  <select id="hops" class="compact" style="width:auto">
     <option value="1">1</option>
     <option value="2" selected>2</option>
   </select>
-  <button id="fit">fit</button>
+  <button id="legendBtn" class="icon">legend</button>
+  <button id="reportsBtn" class="icon">reports</button>
+  <button id="fit" class="icon">fit</button>
 </header>
 
 <main>
   <aside>
-    <div class="pane">
-      <label class="field" for="entitySearch">Entities</label>
+    <div class="pane side-head">
+      <label class="field" for="entitySearch">Entities <span class="count" id="entityCount"></span></label>
       <input type="search" id="entitySearch" placeholder="filter by name or type…" autocomplete="off">
+      <div class="row" style="margin-top:6px">
+        <select id="typeFilter" class="compact"></select>
+        <button id="clearSearch" class="icon ghost" title="Clear filter">✕</button>
+      </div>
     </div>
-    <div id="entityList"></div>
-    <div class="pane">
+    <div id="entityList" tabindex="0" aria-label="Entity list"></div>
+    <div class="pane side-foot">
       <div class="row">
         <button id="showAll" class="primary" style="flex:1">show whole graph</button>
-        <button id="clearSeed">clear</button>
+        <button id="clearSeed" class="icon">clear</button>
+      </div>
+      <div class="row" style="margin-top:6px">
+        <label class="field inline stats" for="graphLimit" style="font-size:11px">nodes</label>
+        <select id="graphLimit" class="compact">
+          <option value="60">60</option>
+          <option value="150" selected>150</option>
+          <option value="300">300</option>
+          <option value="500">500</option>
+        </select>
+        <div class="grow"></div>
+        <span class="chip" id="graphCount">0 nodes</span>
       </div>
     </div>
   </aside>
 
+  <div class="splitter" id="splitL" role="separator" aria-orientation="vertical" title="Drag to resize"></div>
+
   <div id="graphWrap">
     <svg id="svg"><g id="viewport"></g></svg>
-    <div class="toolbar">
-      <button id="relayout">re-layout</button>
-      <button id="zoomIn">+</button>
-      <button id="zoomOut">−</button>
+    <div class="toolbar" id="toolbar">
+      <button id="relayout" class="icon">re-layout</button>
+      <button id="zoomIn" class="icon" title="Zoom in">+</button>
+      <button id="zoomOut" class="icon" title="Zoom out">−</button>
+      <button id="fitGraph" class="icon">fit</button>
+      <button id="labelsBtn" class="icon on" title="Toggle node labels">labels</button>
     </div>
     <div id="legend"></div>
-    <div class="hint">drag node to move · click to focus · scroll to zoom · drag background to pan</div>
+    <div class="hint" id="graphHint">drag node to move · click to focus · scroll to zoom · drag background to pan</div>
     <div id="tip"></div>
   </div>
 
+  <div class="splitter" id="splitR" role="separator" aria-orientation="vertical" title="Drag to resize"></div>
+
   <section class="qa">
-    <div class="pane">
-      <label class="field" for="askBox">Ask the graph (NVIDIA gpt-oss-20b)</label>
+    <div class="pane qa-head">
+      <label class="field" for="askBox">Ask the graph <span class="count" id="modelName">…</span></label>
       <textarea id="askBox" placeholder="e.g. What was Apple's total net sales in 2025 and how much came from the Americas segment?"></textarea>
       <div class="row" style="margin-top:8px">
         <button id="askBtn" class="primary" style="flex:1">ask</button>
+        <button id="examplesBtn" class="icon" title="Show or hide sample questions">examples</button>
+        <span class="chip" title="Keyboard shortcut">ctrl+enter</span>
       </div>
       <div class="examples" id="examples"></div>
     </div>
+    <div class="tabs">
+      <button class="tab active" data-tab="answer">Answer</button>
+      <button class="tab" data-tab="sources">Sources</button>
+      <button class="tab" data-tab="trace">Trace</button>
+      <div class="grow"></div>
+      <span class="chip" id="waitTimer" hidden></span>
+      <button id="copyAnswer" class="icon ghost" title="Copy answer text">copy</button>
+    </div>
     <div id="answerWrap">
-      <div class="empty">Answers are generated from the retrieved subgraph and cite entities as
-        <code>[E1]</code>. Click a citation to highlight it in the graph.</div>
+      <div id="tabAnswer">
+        <div class="empty">Answers are generated from the retrieved subgraph and cite entities as
+          <code>[E1]</code>. Click a citation to highlight it in the graph.</div>
+      </div>
+      <div id="tabSources" hidden><div class="empty">No answer yet — the cited entities show up here.</div></div>
+      <div id="tabTrace" hidden><div class="empty">The retrieval trace shows up here after a question.</div></div>
     </div>
   </section>
 </main>
@@ -1124,8 +1412,10 @@ _HTML = r"""<!DOCTYPE html>
   <div id="reportsPanel">
     <div id="reportsHeader">
       <h2>Canned Reports — graph query results</h2>
-      <span class="chip" style="font-size:11px">Zero-LLM · Pure Cypher · All companies</span>
-      <button onclick="document.getElementById('reportsOverlay').classList.remove('open')">✕ close</button>
+      <span class="chip" style="font-size:11px">Zero-LLM · Pure Cypher</span>
+      <input id="reportFilter" class="compact" placeholder="filter rows…" autocomplete="off">
+      <button id="csvBtn" class="icon" title="Download the current result as CSV">csv</button>
+      <button id="closeReports" class="icon">✕ close</button>
     </div>
     <div id="reportsList"></div>
     <div id="reportsBody">
@@ -1133,6 +1423,7 @@ _HTML = r"""<!DOCTYPE html>
     </div>
   </div>
 </div>
+<div id="toasts" aria-live="polite"></div>
 
 <script>
 "use strict";
@@ -1146,6 +1437,12 @@ const S = {
   sim: null,
   view: { x: 0, y: 0, k: 1 },
   busy: false,
+  ragModel: "",
+  ragBackend: "",
+  showLabels: true,
+  lastAnswer: "",
+  kbIndex: -1,
+  timer: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -1283,7 +1580,7 @@ function draw() {
       transform: `translate(${d.x},${d.y})`,
     });
     g.appendChild(el("circle", { r: d.r || 9, fill: typeColor(d.type) }));
-    if (S.view.k > 0.45) {
+    if (S.showLabels && (S.view.k > 0.45 || isSeed || isCited)) {
       const label = el("text", { y: (d.r || 9) + 12, "text-anchor": "middle" });
       label.textContent = d.name.length > 26 ? d.name.slice(0, 25) + "…" : d.name;
       g.appendChild(label);
@@ -1329,6 +1626,7 @@ function loadGraph(payload, opts) {
   S.cited = new Set(opts.cited || []);
   S.sim = new Sim(S.nodes, S.links, svg.clientWidth || 900, svg.clientHeight || 600);
   S.sim.alpha = opts.fresh ? 1 : 0.6;
+  $("graphCount").textContent = `${S.nodes.length} nodes · ${S.links.length} links`;
   startSim(true);
   if (opts.fresh) setTimeout(fit, 700);
 }
@@ -1425,41 +1723,68 @@ svg.addEventListener("wheel", (e) => {
 async function loadStats() {
   try {
     const s = await api("/api/stats");
+    S.ragModel = s.rag_model || "";
+    S.ragBackend = s.rag_backend || "";
     $("stats").textContent = `${s.nodes} entities · ${s.edges} relationships`;
+    const where = S.ragBackend === "nvidia" ? "NVIDIA NIM" : "local Ollama";
+    $("modelChip").textContent = `${S.ragModel || "no model"} · ${where}`;
+    $("modelChip").title = `Answers are phrased by ${S.ragModel || "no model"} via ${where}`;
+    $("modelName").textContent = S.ragModel ? `(${S.ragModel}, ${where})` : "";
+    if (s.schema) {
+      const b = document.createElement("span");
+      b.className = "chip";
+      b.textContent = s.schema;
+      $("stats").after(b);
+    }
+
     const legend = $("legend");
     legend.textContent = "";
+    const sel = $("typeFilter");
+    sel.textContent = "";
+    sel.appendChild(new Option("all types", ""));
     for (const [type, n] of (s.entity_types || [])) {
       const b = document.createElement("button");
       b.className = "chip";
       b.style.borderColor = typeColor(type);
       b.style.color = typeColor(type);
       b.textContent = `${type} ${n}`;
+      b.title = `Filter the entity list by ${type}`;
       b.onclick = () => {
         const term = type.toLowerCase();
         const input = $("entitySearch");
         input.value = input.value === term ? "" : term;
         input.dispatchEvent(new Event("input"));
+        sel.value = "";
       };
       legend.appendChild(b);
+      sel.appendChild(new Option(`${type} (${n})`, type.toLowerCase()));
     }
   } catch (e) { $("stats").textContent = "error: " + e.message; }
+}
+
+function activeTerm() {
+  return ($("entitySearch").value || $("typeFilter").value || "").toLowerCase();
 }
 
 async function loadEntities(q) {
   try {
     const d = await api(`/api/entities?limit=500${q ? "&q=" + encodeURIComponent(q) : ""}`);
-    S.all = d.entities;
+    S.all = d.entities || [];
     renderEntities();
-  } catch (e) {}
+  } catch (e) { toast(`entity list failed: ${e.message}`, "bad"); }
 }
 
 function renderEntities() {
   const box = $("entityList");
-  const term = ($("entitySearch").value || "").toLowerCase();
+  const term = activeTerm();
   const rows = S.all.filter((e) =>
-    !term || e.name.toLowerCase().includes(term) ||
-    (e.entity_type || "").toLowerCase().includes(term));
+    !term || (e.name || "").toLowerCase().includes(term) ||
+    (e.entity_type || "").toLowerCase().includes(term) ||
+    (e.description || "").toLowerCase().includes(term));
 
+  S.kbIndex = -1;
+  $("entityCount").textContent = rows.length === S.all.length
+    ? `${rows.length}` : `${rows.length}/${S.all.length}`;
   box.textContent = "";
   if (!rows.length) {
     box.innerHTML = '<div class="empty" style="padding:10px">no matching entities</div>';
@@ -1468,12 +1793,23 @@ function renderEntities() {
   for (const e of rows) {
     const d = document.createElement("div");
     d.className = "entity" + (S.selected === e.id ? " sel" : "");
+    d.title = e.description || e.name;
     d.innerHTML = `<span class="nm"></span><span class="ty"></span>`;
     d.querySelector(".nm").textContent = e.name;
     d.querySelector(".ty").textContent = e.entity_type || "";
     d.onclick = () => focusEntity(e.id);
     box.appendChild(d);
   }
+}
+
+function focusOn(id) {
+  const n = S.byId.get(id);
+  if (!n) { toast("that entity is not in the current view", "bad"); return; }
+  S.cited = new Set([id]);
+  const r = svg.getBoundingClientRect();
+  S.view.x = r.width / 2 - n.x * S.view.k;
+  S.view.y = r.height / 2 - n.y * S.view.k;
+  draw();
 }
 
 async function focusEntity(id) {
@@ -1484,7 +1820,7 @@ async function focusEntity(id) {
     const g = await api(`/api/graph?seed=${encodeURIComponent(id)}&hops=${hops}`);
     loadGraph(g, { fresh: true });
   } catch (e) {
-    $("answerWrap").innerHTML = `<div class="note">${esc(e.message)}</div>`;
+    toast(`graph query failed: ${e.message}`, "bad");
   }
 }
 
@@ -1492,19 +1828,43 @@ async function showAll() {
   S.selected = null;
   renderEntities();
   try {
-    const g = await api("/api/graph?limit=300");
+    const g = await api("/api/graph?limit=" + ($("graphLimit").value || 300));
     loadGraph(g, { fresh: true });
   } catch (e) {
-    $("answerWrap").innerHTML = `<div class="note">${esc(e.message)}</div>`;
+    toast(`graph query failed: ${e.message}`, "bad");
   }
+}
+
+function startTimer() {
+  const chip = $("waitTimer");
+  const t0 = Date.now();
+  chip.hidden = false;
+  clearInterval(S.timer);
+  S.timer = setInterval(() => {
+    const s = Math.round((Date.now() - t0) / 1000);
+    chip.textContent = s > 20
+      ? `local model thinking… ${s}s (this can take minutes on CPU)`
+      : `retrieving… ${s}s`;
+  }, 1000);
+}
+
+function stopTimer() {
+  clearInterval(S.timer);
+  $("waitTimer").hidden = true;
 }
 
 async function askQuestion() {
   const q = $("askBox").value.trim();
-  if (!q || S.busy) return;
+  if (!q) { toast("type a question first", "bad"); return; }
+  if (S.busy) { toast("a question is already running", "bad"); return; }
   S.busy = true;
   $("askBtn").disabled = true;
-  $("answerWrap").innerHTML = '<div class="spinner"><span>⚡</span> Retrieving graph context & generating answer with gpt-oss-20b…</div>';
+  $("askBtn").textContent = "asking…";
+  showTab("answer");
+  $("tabAnswer").innerHTML =
+    `<div class="spinner"><span>⚡</span> Retrieving graph context, then ` +
+    `generating an answer with ${esc(S.ragModel || "the model")}…</div>`;
+  startTimer();
   try {
     const res = await api("/api/ask", {
       method: "POST",
@@ -1517,99 +1877,297 @@ async function askQuestion() {
       loadGraph(res.graph, { cited: citedIds });
     }
   } catch (e) {
-    $("answerWrap").innerHTML = `<div class="note">Query failed: ${esc(e.message)}</div>`;
+    $("tabAnswer").innerHTML = `<div class="note">Query failed: ${esc(e.message)}</div>`;
+    toast(`query failed: ${e.message}`, "bad");
   } finally {
+    stopTimer();
     S.busy = false;
     $("askBtn").disabled = false;
+    $("askBtn").textContent = "ask";
   }
+}
+
+// Minimal markdown for model output: **bold**, `code`, and - / 1. lists.
+// Input is escaped first, so nothing here can inject markup.
+function mdLite(text) {
+  const safe = esc(text || "");
+  const inline = (s) => s
+    .replace(/\[(E\d+)\]/g, '<button class="inline-cite" data-tag="$1">$1</button>')
+    .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
+    .replace(/`([^`]+)`/g, "<code>$1</code>");
+  const out = [];
+  let list = null;
+  for (const raw of safe.split(/\r?\n/)) {
+    const line = raw.trimEnd();
+    const bullet = line.match(/^\s*(?:[-*•]|\d+[.)])\s+(.*)$/);
+    if (bullet) {
+      const kind = /^\d/.test(bullet[0].trim()) ? "ol" : "ul";
+      if (!list || list.kind !== kind) {
+        if (list) out.push(`</${list.kind}>`);
+        out.push(`<${kind}>`);
+        list = { kind };
+      }
+      out.push(`<li>${inline(bullet[1])}</li>`);
+      continue;
+    }
+    if (list) { out.push(`</${list.kind}>`); list = null; }
+    if (!line.trim()) { out.push(""); continue; }
+    if (/^#{1,6}\s+/.test(line)) {
+      out.push(`<h4>${inline(line.replace(/^#{1,6}\s+/, ""))}</h4>`);
+      continue;
+    }
+    out.push(`<p>${inline(line)}</p>`);
+  }
+  if (list) out.push(`</${list.kind}>`);
+  return out.join("\n");
 }
 
 function renderAnswer(res) {
-  const wrap = $("answerWrap");
-  wrap.textContent = "";
+  S.lastAnswer = res.text || "";
+  const tagMap = res.tag_map || {};
+  const nodesById = new Map(((res.graph || {}).nodes || []).map((n) => [n.id, n]));
+
+  // ── Answer tab ──
+  const answer = $("tabAnswer");
+  answer.textContent = "";
 
   const meta = document.createElement("div");
   meta.className = "meta";
-
-  // Citation chips
-  for (const t of res.used_tags || []) {
-    const id = (res.tag_map || {})[t];
-    const ent = res.graph && (res.graph.nodes || []).find((n) => n.id === id);
+  const addChip = (cls, text, title, onClick) => {
     const c = document.createElement("span");
-    c.className = "chip cite";
-    c.textContent = `${t}${ent ? " " + ent.name : ""}`;
-    c.title = "Click to highlight in graph";
-    c.onclick = () => {
-      S.cited = new Set([id]);
-      draw();
-    };
+    c.className = "chip " + cls;
+    c.textContent = text;
+    if (title) c.title = title;
+    if (onClick) c.onclick = onClick;
     meta.appendChild(c);
-  }
-
+    return c;
+  };
+  addChip("ok", "asked: " + (res.question || "").slice(0, 60), "the question that produced this answer");
   if (res.context_entities) {
-    const c = document.createElement("span");
-    c.className = "chip";
-    c.textContent = `${res.context_entities} entities / ${res.context_edges} rels`;
-    meta.appendChild(c);
+    addChip("", `${res.context_entities} entities / ${res.context_edges} rels`,
+      "size of the retrieved subgraph handed to the model");
   }
+  addChip(res.grounded ? "ok" : "bad", res.grounded ? "grounded" : "not grounded",
+    "whether the model reported finding its answer in the retrieved subgraph");
+  if (res.elapsed_sec) addChip("", `${res.elapsed_sec}s`, "retrieval + generation time");
+  answer.appendChild(meta);
 
-  const g = document.createElement("span");
-  g.className = "chip " + (res.grounded ? "ok" : "bad");
-  g.textContent = res.grounded ? "grounded" : "not grounded";
-  meta.appendChild(g);
-
-  if (res.elapsed_sec) {
-    const s = document.createElement("span");
-    s.className = "chip";
-    s.textContent = `${res.elapsed_sec}s`;
-    meta.appendChild(s);
-  }
-
-  wrap.appendChild(meta);
-
-  // Main Answer text
   const body = document.createElement("div");
   body.id = "answer";
-  body.textContent = res.text;
-  wrap.appendChild(body);
+  body.innerHTML = mdLite(res.text);
+  body.addEventListener("click", (e) => {
+    const btn = e.target.closest(".inline-cite");
+    if (!btn) return;
+    const id = tagMap[btn.dataset.tag];
+    if (id) focusOn(id);
+  });
+  answer.appendChild(body);
 
-  // Model Reasoning Collapsible
   if (res.reasoning) {
-    const rBox = document.createElement("details");
-    rBox.className = "reasoning-box";
-    rBox.innerHTML = `<summary>🧠 Model Reasoning (gpt-oss-20b)</summary><div style="margin-top:6px">${esc(res.reasoning)}</div>`;
-    wrap.appendChild(rBox);
+    const box = document.createElement("details");
+    box.className = "reasoning-box";
+    box.innerHTML = `<summary>Model reasoning (${esc(S.ragModel || "model")})</summary>` +
+      `<div style="margin-top:6px">${esc(res.reasoning)}</div>`;
+    answer.appendChild(box);
   }
 
-  // Retrieval Flow Trace
-  if (res.flow) {
-    const n = document.createElement("details");
-    n.className = "note";
-    n.innerHTML = `<summary style="cursor:pointer;font-weight:600">Trace: Graph Retrieval Flow</summary><div style="margin-top:6px;line-height:1.5">${esc(res.flow)}</div>`;
-    wrap.appendChild(n);
+  // ── Sources tab ──
+  const sources = $("tabSources");
+  sources.textContent = "";
+  const tags = res.used_tags || [];
+  if (!tags.length) {
+    sources.innerHTML = '<div class="empty">The model cited no entities in this answer.</div>';
+  } else {
+    const list = document.createElement("div");
+    list.className = "srcs";
+    for (const t of tags) {
+      const id = tagMap[t];
+      const n = nodesById.get(id);
+      const row = document.createElement("div");
+      row.className = "src";
+      row.title = n ? n.description || n.name : "";
+      row.innerHTML = `<span class="tag"></span><span class="nm"></span>` +
+        `<span class="val"></span><span class="ty"></span>`;
+      row.querySelector(".tag").textContent = t;
+      row.querySelector(".nm").textContent = n ? n.name : "(not in this view)";
+      const rel = n && n.description || "";
+      row.querySelector(".val").textContent = /value=/.test(rel)
+        ? (rel.match(/value=[^ ]+/) || [""])[0].slice(6) : "";
+      row.querySelector(".ty").textContent = n ? (n.type || "") : "";
+      row.onclick = () => { if (id) focusOn(id); };
+      list.appendChild(row);
+    }
+    sources.appendChild(list);
   }
+
+  // ── Trace tab ──
+  const trace = $("tabTrace");
+  trace.textContent = "";
+  trace.innerHTML = res.flow
+    ? `<div class="note" style="white-space:pre-wrap;font-family:inherit">${esc(res.flow)}</div>`
+    : '<div class="empty">No retrieval trace for this answer.</div>';
+}
+
+function showTab(name) {
+  for (const t of document.querySelectorAll(".tab")) {
+    t.classList.toggle("active", t.dataset.tab === name);
+  }
+  for (const id of ["answer", "sources", "trace"]) {
+    $("tab" + id[0].toUpperCase() + id.slice(1)).hidden = id !== name;
+  }
+  $("answerWrap").scrollTop = 0;
+}
+
+function toast(msg, kind) {
+  const box = $("toasts");
+  const t = document.createElement("div");
+  t.className = "toast " + (kind || "");
+  t.textContent = msg;
+  box.appendChild(t);
+  setTimeout(() => t.remove(), kind === "bad" ? 8000 : 4000);
+}
+
+// ── controls ────────────────────────────────────────────────────────────
+
+function debounce(fn, ms) {
+  let t;
+  return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
 }
 
 $("entitySearch").addEventListener("input", (e) => {
-  if (e.target.value === "") { loadEntities(""); return; }
-  clearTimeout(window.__t);
-  window.__t = setTimeout(() => loadEntities(e.target.value), 180);
+  const term = e.target.value;
+  if (term === "") { loadEntities(""); return; }
+  debounce(loadEntities, 180)(term);
 });
+$("typeFilter").addEventListener("change", () => {
+  $("entitySearch").value = "";
+  loadEntities("");
+});
+$("clearSearch").onclick = () => {
+  $("entitySearch").value = "";
+  $("typeFilter").value = "";
+  loadEntities("");
+};
+
+// ↑/↓ walk the list, Enter focuses, "/" jumps to the search box.
+$("entityList").addEventListener("keydown", (e) => {
+  const rows = [...$("entityList").querySelectorAll(".entity")];
+  if (!rows.length) return;
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault();
+    S.kbIndex = Math.max(0, Math.min(rows.length - 1, S.kbIndex + (e.key === "ArrowDown" ? 1 : -1)));
+    rows.forEach((r, i) => r.classList.toggle("kb", i === S.kbIndex));
+    rows[S.kbIndex].scrollIntoView({ block: "nearest" });
+  } else if (e.key === "Enter" && S.kbIndex >= 0) {
+    e.preventDefault();
+    rows[S.kbIndex].click();
+  }
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeReports();
+  if (e.key === "/" && !/^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName)) {
+    e.preventDefault(); $("entitySearch").focus(); $("entitySearch").select();
+  }
+});
+
 $("showAll").onclick = showAll;
-$("clearSeed").onclick = () => { S.cited = new Set(); showAll(); };
+$("clearSeed").onclick = () => { S.cited = new Set(); draw(); };
+$("graphLimit").onchange = showAll;
 $("hops").onchange = () => { if (S.selected) focusEntity(S.selected); else showAll(); };
 $("fit").onclick = fit;
+$("fitGraph").onclick = fit;
 $("relayout").onclick = () => {
   if (S.sim) { S.sim.alpha = 1; startSim(true); }
   setTimeout(fit, 700);
 };
 $("zoomIn").onclick = () => { S.view.k = Math.min(3, S.view.k * 1.25); draw(); };
 $("zoomOut").onclick = () => { S.view.k = Math.max(0.1, S.view.k / 1.25); draw(); };
+$("labelsBtn").onclick = () => {
+  S.showLabels = !S.showLabels;
+  $("labelsBtn").classList.toggle("on", S.showLabels);
+  draw();
+};
+$("legendBtn").onclick = () => {
+  const hidden = $("legend").classList.toggle("hidden");
+  $("legendBtn").classList.toggle("on", !hidden);
+};
 $("askBtn").onclick = askQuestion;
+$("examplesBtn").onclick = () => {
+  const box = $("examples");
+  box.hidden = !box.hidden;
+  $("examplesBtn").classList.toggle("on", !box.hidden);
+};
 $("askBox").addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) askQuestion();
+  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); askQuestion(); }
 });
-window.addEventListener("resize", () => draw());
+$("copyAnswer").onclick = async () => {
+  if (!S.lastAnswer) { toast("nothing to copy yet", "bad"); return; }
+  try {
+    await navigator.clipboard.writeText(S.lastAnswer);
+    toast("answer copied to the clipboard", "ok");
+  } catch (e) { toast("clipboard blocked by the browser", "bad"); }
+};
+for (const t of document.querySelectorAll(".tab")) {
+  t.onclick = () => showTab(t.dataset.tab);
+}
+
+let resizeTimer = null;
+window.addEventListener("resize", () => {
+  if (S.sim) {
+    S.sim.w = svg.clientWidth || S.sim.w;
+    S.sim.h = svg.clientHeight || S.sim.h;
+  }
+  draw();
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(fit, 200);
+});
+
+// ── draggable column splitters, widths remembered across reloads ─────────
+(function setupSplitters() {
+  const root = document.documentElement;
+  const LIMITS = { "--w-left": [220, 520], "--w-right": [320, 760] };
+  const stored = { "--w-left": "leftW", "--w-right": "rightW" };
+  for (const [prop, key] of Object.entries(stored)) {
+    const v = Number(localStorage.getItem(key));
+    if (v) root.style.setProperty(prop, v + "px");
+  }
+  // The pane each splitter controls, so a drag starts from the width actually
+  // on screen rather than from the CSS default.
+  const PANES = { "--w-left": () => $("splitL").previousElementSibling,
+                  "--w-right": () => $("splitR").nextElementSibling };
+  const attach = (el, prop) => {
+    if (!el) return;
+    let startX = 0, startW = 0;
+    el.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      el.setPointerCapture(e.pointerId);
+      el.classList.add("dragging");
+      startX = e.clientX;
+      const pane = PANES[prop]();
+      startW = pane ? pane.getBoundingClientRect().width
+                    : (parseFloat(getComputedStyle(root).getPropertyValue(prop)) || 320);
+    });
+    el.addEventListener("pointermove", (e) => {
+      if (!el.hasPointerCapture(e.pointerId)) return;
+      const [lo, hi] = LIMITS[prop];
+      // the right column grows as the pointer moves left, and vice versa
+      const delta = prop === "--w-left" ? e.clientX - startX : startX - e.clientX;
+      const w = Math.max(lo, Math.min(hi, startW + delta));
+      root.style.setProperty(prop, w + "px");
+      localStorage.setItem(stored[prop], String(Math.round(w)));
+      draw();
+    });
+    const end = (e) => {
+      el.classList.remove("dragging");
+      try { el.releasePointerCapture(e.pointerId); } catch (_) {}
+      fit();
+    };
+    el.addEventListener("pointerup", end);
+    el.addEventListener("pointercancel", end);
+  };
+  attach($("splitL"), "--w-left");
+  attach($("splitR"), "--w-right");
+})();
 
 const SAMPLE_QUESTIONS = [
   "What was Apple's total net sales in fiscal year 2025 and how much came from the Americas segment?",
@@ -1617,17 +2175,16 @@ const SAMPLE_QUESTIONS = [
   "What quarterly revenue and period did Apple report in the 10-Q?",
   "What items and events were disclosed in Apple's Form 8-K?",
   "How does Apple's revenue break down across product and geographic segments?",
-  // 5 new cross-company questions
-  "Compare net income across Apple, NVIDIA, Microsoft, Tesla, Meta, and Amazon for their latest fiscal year.",
-  "Which company had the highest operating margin among all companies in the graph?",
-  "What was NVIDIA's revenue and gross profit for FY2026?",
-  "How does Amazon's operating income compare to Meta's for fiscal year 2025?",
-  "What are the total assets and stockholders equity for Tesla and Microsoft?",
+  "What are Apple's total assets and total liabilities in FY2025?",
+  "Which Apple fiscal years show the highest reported net sales?",
+  "What did Apple report for research and development expense in the 10-Q?",
 ];
 
 function seedExamples() {
   const box = $("examples");
   box.textContent = "";
+  box.hidden = true;
+  $("examplesBtn").classList.remove("on");
   for (const q of SAMPLE_QUESTIONS) {
     const b = document.createElement("button");
     b.textContent = q;
@@ -1661,56 +2218,99 @@ async function loadReportsList() {
 
 async function runReport(id) {
   _activeReport = id;
-  // Mark active button
   for (const b of $('reportsList').querySelectorAll('button')) {
     b.classList.toggle('active', b.dataset.id === id);
   }
   const body = $('reportsBody');
   body.innerHTML = '<div class="spinner"><span>⚡</span> Running report…</div>';
+  $('reportFilter').value = '';
   try {
     const d = await api('/api/reports/' + encodeURIComponent(id));
     if (d.error) { body.innerHTML = `<div class="note">${esc(d.error)}</div>`; return; }
-
-    const fmtVal = (col, v) => {
-      if (v === null || v === undefined) return '—';
-      if ((col === 'value') && typeof v === 'number') return v.toLocaleString(undefined, {maximumFractionDigits: 2});
-      if (col === 'scale' && typeof v === 'number') {
-        return v === 6 ? 'millions' : v === 3 ? 'thousands' : v === 9 ? 'billions' : String(v);
-      }
-      return String(v);
-    };
-
-    let html = `<div id="reportTitle">${esc(d.title)}</div>`;
-    html += `<div id="reportDesc">${esc(d.description)}</div>`;
-    if (!d.rows || d.rows.length === 0) {
-      html += '<div class="empty">No rows returned — graph may not contain matching data yet.</div>';
-    } else {
-      html += '<table id="reportTable"><thead><tr>';
-      for (const col of (d.columns || [])) html += `<th>${esc(col)}</th>`;
-      html += '</tr></thead><tbody>';
-      for (const row of d.rows) {
-        html += '<tr>';
-        for (let i = 0; i < (d.columns || []).length; i++) {
-          html += `<td>${esc(fmtVal(d.columns[i], row[i]))}</td>`;
-        }
-        html += '</tr>';
-      }
-      html += '</tbody></table>';
-      html += `<div id="reportCount">${d.row_count} row${d.row_count !== 1 ? 's' : ''}</div>`;
-    }
-    body.innerHTML = html;
+    _lastReport = d;
+    renderReportRows();
   } catch (e) {
     body.innerHTML = `<div class="note">Report failed: ${esc(e.message)}</div>`;
+    toast(`report failed: ${e.message}`, "bad");
   }
+}
+
+let _lastReport = null;
+
+const fmtCell = (col, v) => {
+  if (v === null || v === undefined) return '—';
+  if (col === 'value' && typeof v === 'number') {
+    return v.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  }
+  if (col === 'scale' && typeof v === 'number') {
+    return v === 6 ? 'millions' : v === 3 ? 'thousands' : v === 9 ? 'billions' : String(v);
+  }
+  return String(v);
+};
+
+function renderReportRows() {
+  const body = $('reportsBody');
+  const d = _lastReport;
+  if (!d) return;
+  const cols = d.columns || [];
+  const term = ($('reportFilter').value || '').toLowerCase();
+  const rows = (d.rows || []).filter((row) =>
+    !term || row.some((c) => String(c == null ? '' : c).toLowerCase().includes(term)));
+
+  let html = `<div id="reportTitle">${esc(d.title)}</div>`;
+  html += `<div id="reportDesc">${esc(d.description)}</div>`;
+  if (!d.rows || d.rows.length === 0) {
+    html += '<div class="empty">No rows returned — the graph has no matching data yet.</div>';
+  } else if (!rows.length) {
+    html += `<div class="empty">No row matches "${esc(term)}".</div>`;
+  } else {
+    html += '<table id="reportTable"><thead><tr>';
+    for (const col of cols) html += `<th>${esc(col)}</th>`;
+    html += '</tr></thead><tbody>';
+    for (const row of rows) {
+      html += '<tr>';
+      for (let i = 0; i < cols.length; i++) {
+        html += `<td>${esc(fmtCell(cols[i], row[i]))}</td>`;
+      }
+      html += '</tr>';
+    }
+    html += '</tbody></table>';
+    const hidden = (d.rows.length - rows.length);
+    html += `<div id="reportCount">${rows.length} of ${d.row_count} row` +
+      `${d.row_count !== 1 ? 's' : ''}${hidden > 0 ? ` (${hidden} filtered out)` : ''}</div>`;
+  }
+  body.innerHTML = html;
+}
+
+$('reportFilter').addEventListener('input', renderReportRows);
+
+$('csvBtn').onclick = () => {
+  const d = _lastReport;
+  if (!d || !d.rows) { toast('run a report first', "bad"); return; }
+  const cell = (v) => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
+  const text = [d.columns.map(cell).join(',')]
+    .concat(d.rows.map((r) => r.map(cell).join(',')))
+    .join('\r\n');
+  const url = URL.createObjectURL(new Blob([text], { type: 'text/csv' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${d.title || 'report'}.csv`.replace(/[^\w.-]+/g, '_');
+  a.click();
+  URL.revokeObjectURL(url);
+  toast('report downloaded as CSV', "ok");
+};
+
+function closeReports() {
+  document.getElementById('reportsOverlay').classList.remove('open');
 }
 
 $('reportsBtn').onclick = () => {
   document.getElementById('reportsOverlay').classList.add('open');
   if (_reportsMeta.length === 0) loadReportsList();
 };
+$('closeReports').onclick = closeReports;
 document.getElementById('reportsOverlay').addEventListener('click', (e) => {
-  if (e.target === document.getElementById('reportsOverlay'))
-    document.getElementById('reportsOverlay').classList.remove('open');
+  if (e.target === document.getElementById('reportsOverlay')) closeReports();
 });
 
 (async function init() {
@@ -1845,15 +2445,17 @@ def serve(host: str = "127.0.0.1", port: int = 9000, open_browser: bool = True) 
 
     url = f"http://{host}:{port}/"
     stats = kg.stats()
-    print(f"\n{'═'*70}")
+    print(f"\n{'='*70}")
     print(f"  GraphRAG Viewer & Question Answering Engine")
-    print(f"{'═'*70}")
+    print(f"{'='*70}")
     print(f"  Web UI       : {url}")
     print(f"  Database     : {db_path}")
     print(f"  Graph Stats  : {stats['nodes']} entities, {stats['edges']} relationships")
-    print(f"  RAG Model    : {NVIDIA_MODEL} via NVIDIA NIM ({NVIDIA_BASE_URL})")
+    where = "NVIDIA NIM" if RAG_BACKEND == "nvidia" else "local Ollama"
+    print(f"  RAG Model    : {RAG_MODEL} via {where} ({RAG_BASE_URL})")
+    print(f"  RAG Timeout  : {RAG_TIMEOUT:.0f}s")
     print(f"  Press Ctrl-C to stop")
-    print(f"{'═'*70}\n")
+    print(f"{'='*70}\n")
 
     if open_browser:
         threading.Timer(0.6, lambda: webbrowser.open(url)).start()

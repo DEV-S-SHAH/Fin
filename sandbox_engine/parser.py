@@ -1011,6 +1011,19 @@ class ExtractionResult:
             **{name: len(rows) for name, rows in self.edges.items()},
         }
 
+    def merge(self, other: "ExtractionResult") -> None:
+        """Merge another ExtractionResult into this one."""
+        self.metrics.update(other.metrics)
+        self.segments.update(other.segments)
+        self.events.update(other.events)
+        self.chunks.update(other.chunks)
+        for edge_name, edge_list in other.edges.items():
+            if edge_name not in self.edges:
+                self.edges[edge_name] = []
+            self.edges[edge_name].extend(edge_list)
+        self.stats.update(other.stats)
+        self.elapsed += other.elapsed
+
 
 # ---------------------------------------------------------------------------
 # Metadata patterns

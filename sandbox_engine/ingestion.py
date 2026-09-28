@@ -34,7 +34,7 @@ from typing import Any
 import pyarrow as pa
 
 from .buffer import StageBuffer, BufferReport
-from .config import SCOPE_PATTERNS, SCOPE_LIMIT
+from .config import SCOPE, SCOPE_LIMIT, resolve_scope as config_resolve_scope
 from .ddl import ensure_schema
 from .loader import BulkLoader, LoadReport
 from .parser import FilingParser, ExtractionResult
@@ -59,31 +59,14 @@ log = logging.getLogger("sandbox_engine.ingestion")
 # ---------------------------------------------------------------------------
 
 
-def resolve_scope() -> list[Path]:
+def resolve_scope(root: Path | None = None) -> list[Path]:
     """Return an ordered list of filing file paths to ingest.
 
-    Uses ``SCOPE_PATTERNS`` and ``SCOPE_LIMIT`` from config. For each
-    pattern, resolves the exact file if it exists, otherwise falls back
-    to the most recent matching file in the same directory.
+    Uses the config's resolve_scope which uses SCOPE and SCOPE_LIMIT.
     """
-    resolved: list[Path] = []
-    for form_type, filename, data_dir in SCOPE_PATTERNS[:SCOPE_LIMIT]:
-        p = data_dir / filename
-        if p.exists():
-            resolved.append(p)
-        else:
-            # glob fallback within the same data_dir
-            candidates = sorted(data_dir.glob(f"{form_type}_*"))
-            if candidates:
-                resolved.append(candidates[-1])
-                log.warning("exact file not found; using %s", candidates[-1].name)
-            else:
-                raise FileNotFoundError(
-                    f"No {form_type} filing found in {data_dir}. Expected: {filename}"
-                )
-    if not resolved:
-        raise FileNotFoundError("No filings resolved from scope patterns")
-    return resolved
+    if root is None:
+        root = Path(__file__).resolve().parent.parent
+    return config_resolve_scope(root)
 
 
 # ---------------------------------------------------------------------------
@@ -119,7 +102,7 @@ def parse_all(paths: list[Path], parser: FilingParser | None = None) -> ParseRep
     """
     t0 = time.perf_counter()
     parser = parser or FilingParser()
-    combined = ExtractionResult()
+    combined = None
     filing_reports: list[dict[str, Any]] = []
 
     for path in paths:
@@ -141,10 +124,13 @@ def parse_all(paths: list[Path], parser: FilingParser | None = None) -> ParseRep
                 "elapsed_sec": elapsed,
             }
         )
-        combined.merge(result)
+        if combined is None:
+            combined = result
+        else:
+            combined.merge(result)
 
     total_elapsed = time.perf_counter() - t0
-    counts = combined.counts()
+    counts = combined.counts() if combined else {}
 
     return ParseReport(
         filings=filing_reports,
@@ -178,7 +164,8 @@ def buffer_all(
     """
     stage = StageBuffer(staging_dir, batch_rows=batch_rows)
     stage.add_result(result)
-    return stage.spill()
+    stage.spill()
+    return stage
 
 
 # ---------------------------------------------------------------------------
@@ -203,8 +190,11 @@ def load_all(
     # Ensure schema exists before loading
     import ladybug as lb
 
-    with lb.connect(str(db_path), buffer_pool_bytes=buffer_pool_bytes) as conn:
-        ensure_schema(conn)
+    database = lb.Database(str(db_path), buffer_pool_size=buffer_pool_bytes)
+    conn = lb.Connection(database)
+    ensure_schema(conn)
+    conn.close()
+    database.close()
 
     loader = BulkLoader(db_path, buffer_pool_bytes=buffer_pool_bytes)
     return loader.load(buffer)
@@ -233,6 +223,7 @@ def run_pipeline(
     load_only: bool = False,
     batch_rows: int = 50000,
     buffer_pool_bytes: int = 256 * 1024 * 1024,
+    root: Path | None = None,
 ) -> PipelineReport:
     """Run the complete four-stage ingestion pipeline.
 
@@ -244,6 +235,7 @@ def run_pipeline(
         load_only: If True, skip parse/buffer and load existing Parquet.
         batch_rows: Max rows per RecordBatch in buffer stage.
         buffer_pool_bytes: Buffer pool size for database connection.
+        root: Repository root path for resolving scope. Defaults to sandbox_engine parent.
 
     Returns:
         ``PipelineReport`` with all stage reports and timing.
@@ -264,7 +256,7 @@ def run_pipeline(
 
     # Stage 1: Resolve scope
     log.info("Stage 1: Resolving scope...")
-    paths = resolve_scope()
+    paths = resolve_scope(root)
     log.info("Resolved %d filing(s)", len(paths))
 
     if not load_only:
@@ -283,13 +275,14 @@ def run_pipeline(
 
         # Stage 3: Buffer to Parquet
         log.info("Stage 3: Buffering to Parquet at %s...", staging_dir)
-        report.buffer = buffer_all(report.parse.result, staging_dir, batch_rows=batch_rows)
+        buffer = buffer_all(report.parse.result, staging_dir, batch_rows=batch_rows)
+        report.buffer = buffer.report
         log.info(
             "Buffer complete: %d tables, %d batches, %.2f MB (%.2fs)",
-            len(report.buffer.files),
-            sum(report.buffer.batches.values()),
-            report.buffer.bytes_written / 1e6,
-            report.buffer.seconds,
+            len(buffer.report.files),
+            sum(buffer.report.batches.values()),
+            buffer.report.bytes_written / 1e6,
+            buffer.report.seconds,
         )
 
     if parse_only:
@@ -300,7 +293,7 @@ def run_pipeline(
         # Reconstruct buffer from existing Parquet
         log.info("Stage 3 (load-only): Reading existing Parquet from %s...", staging_dir)
         buffer = StageBuffer(staging_dir, batch_rows=batch_rows)
-        report.buffer = buffer.spill()
+        report.buffer = buffer.report
 
     # Stage 4: Load into LadybugDB
     log.info("Stage 4: Loading into LadybugDB at %s...", db_path)

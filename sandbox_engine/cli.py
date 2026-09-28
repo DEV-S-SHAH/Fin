@@ -14,7 +14,7 @@ from typing import Annotated
 
 import typer
 
-from .config import DEFAULT_DB_PATH, DEFAULT_STAGING_DIR
+from .config import default_paths
 from .ingestion import PipelineReport, run_pipeline
 
 __all__ = ["app", "main"]
@@ -43,56 +43,52 @@ def _setup_logging(verbose: bool) -> None:
 def _print_summary(report: PipelineReport) -> None:
     """Print a human-readable summary of the pipeline run."""
     W = 72
-    print(f"
-{'═' * W}")
+    print("\n" + "=" * W)
     print(f"  ingest-sandbox complete in {report.total_elapsed_sec:.2f}s")
-    print(f"  extraction : ZERO-LLM / ZERO-API — local HTML parser only")
+    print(f"  extraction : ZERO-LLM / ZERO-API -- local HTML parser only")
     if report.staging_dir:
-        print(f"  staging    → {report.staging_dir}")
+        print(f"  staging    -> {report.staging_dir}")
     if report.db_path:
-        print(f"  database   → {report.db_path}")
-    print(f"{'═' * W}")
+        print(f"  database   -> {report.db_path}")
+    print("=" * W)
 
     if report.parse and report.parse.filings:
-        print(f"
-{'─' * W}")
+        print("\n" + "-" * W)
         print(
             f"  {'FILE':<42} {'TICKER':<6} {'FORM':<5} {'FY':<5} "
             f"{'METS':>4} {'SEGS':>4} {'EVTS':>4} {'CHNKS':>5} {'EXEC':>4} {'TIME':>7}"
         )
-        print(f"{'─' * W}")
+        print("-" * W)
         for f in report.parse.filings:
             fn = f["file"]
-            fn_short = fn if len(fn) <= 42 else "…" + fn[-41:]
+            fn_short = fn if len(fn) <= 42 else "..." + fn[-41:]
             print(
                 f"  {fn_short:<42} {str(f['ticker']):<6} {str(f['form_type']):<5} "
                 f"{str(f['fiscal_year']):<5} "
                 f"{f['metrics']:>4} {f['segments']:>4} {f['events']:>4} "
                 f"{f['chunks']:>5} {f['executives']:>4} {f['elapsed_sec']:>6.2f}s"
             )
-        print(f"{'─' * W}")
+        print("-" * W)
 
     if report.buffer:
-        print(f"
-{'─' * W}")
+        print("\n" + "-" * W)
         print(f"  PARQUET SPILL SUMMARY")
-        print(f"{'─' * W}")
+        print("-" * W)
         print(f"  Tables written : {len(report.buffer.files)}")
         print(f"  Total batches  : {sum(report.buffer.batches.values())}")
         print(f"  Bytes written  : {report.buffer.bytes_written / 1e6:.2f} MB")
         print(f"  Elapsed        : {report.buffer.seconds:.2f}s")
         if report.buffer.sentinel_fiscal_years:
             print(f"  Sentinel FYs   : {sorted(report.buffer.sentinel_fiscal_years)}")
-        print(f"{'─' * W}")
+        print("-" * W)
 
     if report.load:
         inserted = report.load.inserted
         nodes = {k: v for k, v in inserted.items() if not k.isupper()}
         rels = {k: v for k, v in inserted.items() if k.isupper()}
-        print(f"
-{'─' * W}")
+        print("\n" + "-" * W)
         print(f"  GRAPH CONTENTS")
-        print(f"{'─' * W}")
+        print("-" * W)
         print(f"  {'NODE TABLES':<32}  {'REL TABLES':<32}")
         print(f"  {'-'*32}  {'-'*32}")
         node_items = sorted(nodes.items())
@@ -101,13 +97,12 @@ def _print_summary(report: PipelineReport) -> None:
             nl = f"{node_items[i][0]:<26} {node_items[i][1]:>5}" if i < len(node_items) else ""
             rl = f"{rel_items[i][0]:<26} {rel_items[i][1]:>5}" if i < len(rel_items) else ""
             print(f"  {nl:<32}  {rl:<32}")
-        print(f"{'─' * W}")
+        print("-" * W)
         total_nodes = sum(nodes.values())
         total_rels = sum(rels.values())
         print(f"  Total nodes: {total_nodes:,}   Total relationships: {total_rels:,}   ")
         print(f"  Bulk-load: {report.load.seconds:.2f}s")
-        print(f"{'═' * W}
-")
+        print("=" * W + "\n")
 
 
 @app.command()
@@ -119,7 +114,7 @@ def run(
             help="Path to LadybugDB database file",
             exists=False,
         ),
-    ] = DEFAULT_DB_PATH,
+    ] = default_paths().db,
     staging_dir: Annotated[
         Path,
         typer.Option(
@@ -127,7 +122,7 @@ def run(
             help="Directory for Parquet spill",
             exists=False,
         ),
-    ] = DEFAULT_STAGING_DIR,
+    ] = default_paths().staging,
     reset: Annotated[
         bool,
         typer.Option(
@@ -183,6 +178,8 @@ def run(
         raise typer.Exit(1)
 
     try:
+        from pathlib import Path
+        repo_root = Path(__file__).resolve().parent.parent
         report = run_pipeline(
             db_path=db_path,
             staging_dir=staging_dir,
@@ -191,6 +188,7 @@ def run(
             load_only=load_only,
             batch_rows=batch_rows,
             buffer_pool_bytes=buffer_pool_bytes,
+            root=repo_root,
         )
     except FileNotFoundError as e:
         typer.echo(f"Error: {e}", err=True)
@@ -207,8 +205,10 @@ def run(
 def scope() -> None:
     """Show the resolved filing scope without running the pipeline."""
     from .ingestion import resolve_scope
+    from pathlib import Path
+    repo_root = Path(__file__).resolve().parent.parent
 
-    paths = resolve_scope()
+    paths = resolve_scope(root=repo_root)
     print("Resolved filing scope:")
     for i, p in enumerate(paths, 1):
         print(f"  {i}. {p}")

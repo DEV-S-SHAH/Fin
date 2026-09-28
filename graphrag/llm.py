@@ -421,6 +421,69 @@ class AnthropicClient(_RetryingClient):
         return self._chat(system, user, None)
 
 
+class OllamaClient(_RetryingClient):
+    """Ollama local models via HTTP API."""
+
+    name = "ollama"
+    default_min_interval = 0.0
+
+    def __init__(
+        self,
+        model: str = "llama3.2:latest",
+        temperature: float = 0.0,
+        base_url: str | None = None,
+        max_retries: int = 3,
+        min_interval: float | None = None,
+    ) -> None:
+        super().__init__(max_retries, min_interval=min_interval)
+        self.model = model
+        self.temperature = temperature
+        self.base_url = base_url or os.environ.get("OLLAMA_BASE_URL") or "http://localhost:11434"
+        try:
+            import httpx  # type: ignore
+        except ImportError as exc:
+            raise LLMError("Ollama provider requires 'httpx': pip install httpx") from exc
+        self._client = httpx.Client(timeout=300.0, base_url=self.base_url)
+
+    def _messages(self, system: str, user: str) -> list[dict[str, str]]:
+        return [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+
+    def _chat(
+        self,
+        system: str,
+        user: str,
+        schema: dict[str, Any] | None = None,
+        *,
+        json_mode: bool = True,
+    ) -> str:
+        def call() -> str:
+            payload = {
+                "model": self.model,
+                "messages": self._messages(system, user),
+                "temperature": self.temperature,
+                "stream": False,
+            }
+            if json_mode:
+                payload["format"] = "json"
+            resp = self._client.post("/api/chat", json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+            return data["message"]["content"] or ""
+
+        return self._retry(call, f"{self.name} request")
+
+    def complete_json(
+        self, system: str, user: str, schema: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        return parse_json_object(self._chat(system, user, schema, json_mode=True))
+
+    def complete_text(self, system: str, user: str) -> str:
+        return self._chat(system, user, json_mode=False)
+
+
 class HeuristicClient(LLMClient):
     """Offline, deterministic stand-in used when no API key is available.
 
@@ -709,7 +772,14 @@ def resolve_client(
         elif os.environ.get("ANTHROPIC_API_KEY"):
             provider = "anthropic"
         else:
-            return HeuristicClient()
+            # Try Ollama as a local fallback
+            try:
+                import httpx
+                with httpx.Client(timeout=2.0) as c:
+                    c.get("http://localhost:11434/api/tags")
+                provider = "ollama"
+            except Exception:
+                return HeuristicClient()
 
     if provider == "gemini":
         return GeminiClient(
@@ -726,9 +796,14 @@ def resolve_client(
             model=model or os.environ.get("GRAPHRAG_MODEL") or "claude-sonnet-4-5",
             temperature=temperature,
         )
+    if provider == "ollama":
+        return OllamaClient(
+            model=model or os.environ.get("GRAPHRAG_MODEL") or "llama3.2:latest",
+            temperature=temperature,
+        )
     raise LLMError(
         f"Unknown provider {provider!r}; "
-        "use gemini, openai, anthropic, or heuristic"
+        "use gemini, openai, anthropic, ollama, or heuristic"
     )
 
 

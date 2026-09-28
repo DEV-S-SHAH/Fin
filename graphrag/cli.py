@@ -24,7 +24,7 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--provider",
-        choices=("auto", "gemini", "openai", "anthropic", "heuristic"),
+        choices=("auto", "gemini", "openai", "anthropic", "ollama", "heuristic"),
         default="auto",
         help="LLM provider; 'auto' uses whichever API key is present",
     )
