@@ -16,10 +16,17 @@ from .qa import ask
 from .store import GraphStore
 
 
+def _default_db() -> str:
+    for candidate in ("data/aapl-2026.lbug", "./graphrag_db.lbug"):
+        if Path(candidate).exists():
+            return candidate
+    return "./graphrag_db.lbug"
+
+
 def _add_common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--db",
-        default="./graphrag_db.lbug",
+        default=_default_db(),
         help="path to the Ladybug database file (default: %(default)s)",
     )
     parser.add_argument(

@@ -1,1 +1,0 @@
-{"version": 1, "result": {"__dataclass__": "ChunkExtraction", "fields": {"entities": [], "relationships": [], "error": "openai request failed after 3 attempts: Error code: 504", "rejected": 0}}}

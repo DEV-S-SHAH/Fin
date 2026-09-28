@@ -34,7 +34,7 @@ from typing import Any
 import pyarrow as pa
 
 from .buffer import StageBuffer, BufferReport
-from .config import SCOPE, SCOPE_LIMIT, resolve_scope as config_resolve_scope
+from .config import resolve_scope as config_resolve_scope
 from .ddl import ensure_schema
 from .loader import BulkLoader, LoadReport
 from .parser import FilingParser, ExtractionResult, filing_identity
@@ -69,7 +69,8 @@ log = logging.getLogger("sandbox_engine.ingestion")
 def resolve_scope(root: Path | None = None) -> list[Path]:
     """Return an ordered list of filing file paths to ingest.
 
-    Uses the config's resolve_scope which uses SCOPE and SCOPE_LIMIT.
+    Walks the document tree in ``config.DATA_DIR`` and returns every filing the
+    folders contain, irrespective of company.
     """
     if root is None:
         root = Path(__file__).resolve().parent.parent
@@ -121,13 +122,18 @@ def parse_all(paths: list[Path], parser: FilingParser | None = None) -> ParseRep
 
     for path in paths:
         ft0 = time.perf_counter()
+        t_step = time.perf_counter()
         result = parser.ingest_file(path)
+        base_parse_sec = time.perf_counter() - t_step
+        t_step = time.perf_counter()
         apply_ufgs(result, path)
-        elapsed = time.perf_counter() - ft0
+        ufgs_sec = time.perf_counter() - t_step
+        elapsed_sec = time.perf_counter() - ft0
 
         filing_reports.append(
             {
                 "file": path.name,
+                "company": path.parents[2].name,
                 "ticker": result.metadata.get("ticker"),
                 "form_type": result.metadata.get("form_type"),
                 "fiscal_year": result.metadata.get("fiscal_year"),
@@ -139,7 +145,9 @@ def parse_all(paths: list[Path], parser: FilingParser | None = None) -> ParseRep
                 "raw_facts": result.counts().get("raw_facts", 0),
                 "sections": result.counts().get("sections", 0),
                 "risk_factors": result.counts().get("risk_factors", 0),
-                "elapsed_sec": elapsed,
+                "base_parse_sec": base_parse_sec,
+                "ufgs_sec": ufgs_sec,
+                "elapsed_sec": elapsed_sec,
             }
         )
         if combined is None:
@@ -322,6 +330,7 @@ class PipelineReport:
     buffer: BufferReport | None = None
     load: LoadReport | None = None
     total_elapsed_sec: float = 0.0
+    scope_sec: float = 0.0
     db_path: Path | None = None
     staging_dir: Path | None = None
 
@@ -366,7 +375,9 @@ def run_pipeline(
 
     # Stage 1: Resolve scope
     log.info("Stage 1: Resolving scope...")
+    t_scope = time.perf_counter()
     paths = resolve_scope(root)
+    report.scope_sec = time.perf_counter() - t_scope
     log.info("Resolved %d filing(s)", len(paths))
 
     if not load_only:

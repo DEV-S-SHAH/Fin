@@ -42,7 +42,7 @@ def _setup_logging(verbose: bool) -> None:
 
 def _print_summary(report: PipelineReport) -> None:
     """Print a human-readable summary of the pipeline run."""
-    W = 72
+    W = 80
     print("\n" + "=" * W)
     print(f"  ingest-sandbox complete in {report.total_elapsed_sec:.2f}s")
     print(f"  extraction : ZERO-LLM / ZERO-API -- local HTML parser only")
@@ -52,21 +52,37 @@ def _print_summary(report: PipelineReport) -> None:
         print(f"  database   -> {report.db_path}")
     print("=" * W)
 
+    if report.parse:
+        print("\n" + "-" * W)
+        print(f"  STAGE TIMING (seconds)")
+        print(f"  {'scope':<16} {'parse+ufgs':<12} {'buffer':<9} {'load':<8} total")
+        parse_sec = report.parse.elapsed_sec
+        buffer_sec = report.buffer.seconds if report.buffer else 0.0
+        load_sec = report.load.seconds if report.load else 0.0
+        print(
+            f"  {report.scope_sec:<16.3f} {parse_sec:<12.3f} "
+            f"{buffer_sec:<9.3f} {load_sec:<8.3f} "
+            f"{report.total_elapsed_sec:.3f}"
+        )
+        print("-" * W)
+
     if report.parse and report.parse.filings:
         print("\n" + "-" * W)
         print(
-            f"  {'FILE':<42} {'TICKER':<6} {'FORM':<5} {'FY':<5} "
-            f"{'METS':>4} {'SEGS':>4} {'EVTS':>4} {'CHNKS':>5} {'EXEC':>4} {'TIME':>7}"
+            f"  {'FILE':<32} {'CO':<8} {'TICKER':<6} {'FORM':<5} {'FY':<5} "
+            f"{'METS':>4} {'SEGS':>4} {'EVTS':>4} "
+            f"{'PARSE':>7} {'UFGS':>7} {'TOTAL':>7}"
         )
         print("-" * W)
         for f in report.parse.filings:
             fn = f["file"]
-            fn_short = fn if len(fn) <= 42 else "..." + fn[-41:]
+            fn_short = fn if len(fn) <= 32 else "..." + fn[-31:]
             print(
-                f"  {fn_short:<42} {str(f['ticker']):<6} {str(f['form_type']):<5} "
-                f"{str(f['fiscal_year']):<5} "
+                f"  {fn_short:<32} {str(f['company']):<8} {str(f['ticker']):<6} "
+                f"{str(f['form_type']):<5} {str(f['fiscal_year']):<5} "
                 f"{f['metrics']:>4} {f['segments']:>4} {f['events']:>4} "
-                f"{f['chunks']:>5} {f['executives']:>4} {f['elapsed_sec']:>6.2f}s"
+                f"{f['base_parse_sec']:>6.2f}s {f['ufgs_sec']:>6.2f}s "
+                f"{f['elapsed_sec']:>6.2f}s"
             )
         print("-" * W)
 

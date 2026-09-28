@@ -43,14 +43,14 @@ column inserted in the wrong place writes values into the wrong properties; a
 single declaration is the only way to make that impossible rather than merely
 unlikely.
 
-Scope is three filings, enforced in code
-----------------------------------------
+Scope is the document tree, not a list
+--------------------------------------
 
-:func:`sandbox_engine.config.resolve_scope` will not return more than
-:data:`~sandbox_engine.config.SCOPE_LIMIT` paths even if ``SCOPE`` is extended.
-The 75-filing corpus is out of scope on purpose: a verification harness that
-runs in seconds gets re-run after every change, and one that takes an hour does
-not.
+:func:`sandbox_engine.config.resolve_scope` walks
+``sandbox_engine/data/<company>/<year>/<form>/`` and returns every filing it
+finds, so the pipeline is universal: a new issuer is a new folder, no config
+edit. The verification harness re-runs in seconds after every change, and an
+empty tree fails loudly rather than reporting an empty artifact as success.
 
 Dependencies: ``ladybug>=0.20`` (the Kuzu fork; the import name is ``ladybug``,
 not ``kuzu``), ``pyarrow``, ``pandas``, ``beautifulsoup4``, ``lxml``.
@@ -70,8 +70,6 @@ from .buffer import (
 from .config import (
     ABSENT_YEAR,
     COPY_THRESHOLD,
-    SCOPE,
-    SCOPE_LIMIT,
     VERSION,
     Paths,
     default_paths,
@@ -107,8 +105,6 @@ __all__ = [
     "PRIMARY_KEYS",
     "REL_TABLES",
     "Resolution",
-    "SCOPE",
-    "SCOPE_LIMIT",
     "SchemaDriftError",
     "StageBuffer",
     "VERSION",
