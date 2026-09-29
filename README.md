@@ -146,8 +146,8 @@ To add a company, create its folder and drop filings in. Nothing else to edit.
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -p "test_*.py"          # 484 tests
-python -m unittest discover -s sandbox_engine -p "test_*.py" # 67 tests
+python -m unittest discover -s tests -p "test_*.py"          # 625 tests
+python -m unittest discover -s sandbox_engine -p "test_*.py" # 112 tests
 ```
 
 `tests/test_ingestion.py` is the one to run first on a new machine: it fails
@@ -167,6 +167,7 @@ one fresh-clone failure that is otherwise hard to diagnose.
 | `sandbox_engine/query_ui.py` | HTTP server, `/api/ask`, graph payload for the UI |
 | `sandbox_engine/cli.py` | Typer entry point |
 | `sandbox_engine/EVAL_SET.md` | 30-question eval set and the live defect register |
+| `sandbox_engine/eval_set.py` | EVAL_SET.md as runnable questions; `provenance_match_rate` |
 | `graphrag/` | Older GraphRAG package, kept for the legacy `financial_graphrag.py` path |
 
 ## Correctness
@@ -193,6 +194,31 @@ legal name, so merging by name would silently destroy data; the UI breaks label
 collisions in the *label* and leaves the nodes distinct. The registry also
 treats "gross"/"net" and "beginning"/"ending" as opposite-sense labels that must
 never be fuzzy-merged.
+
+### What the answer panel is allowed to say
+
+Every sentence the model writes is graded by rule against the cited evidence,
+and the answer is then reduced to one of three states:
+
+| Verdict | Means |
+|---|---|
+| **supported** | every sentence rests on a fact in the evidence it cited |
+| **qualified** | nothing failed, but part of it is hedged or reaches past the filings |
+| **refused** | at least one sentence is not supported by what it cited |
+
+Refusal dominates: an answer of nine `STATED` sentences and one `GAP` sentence
+is refused, not qualified, because a reader takes the nine and misses the one.
+
+The **Provenance** tab shows every sentence with the rule that judged it, the
+figures it asserts, and the citations that support it — clicking a citation
+highlights the node in the graph, as in the answer itself. A red banner above
+the answer lists anything the grader refused, and screen readers are told the
+verdict when an answer arrives.
+
+The chip is the grader's verdict, not whether the model cited something. Those
+are different questions, and only one of them means anything: a model that
+invents a figure and cites a real entity satisfies the second and fails the
+first.
 
 ## Dependencies
 

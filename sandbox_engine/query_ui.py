@@ -34,7 +34,10 @@ import ladybug as lb
 
 from .buffer import NODE_TABLES, REL_TABLES
 from .provenance import (
-    LEGAL_NAME_NOISE,
+    REFUSED,
+    _Alias,
+    issuer_forms,
+    issuer_in_text,
     build_evidence,
     citation_tags,
     grade_answer,
@@ -947,25 +950,27 @@ def _bound_metric_periods(
     return kept
 
 
-def _names_issuer(q_low: str, ticker: str, legal_name: str | None) -> bool:
+def _names_issuer(question: str, ticker: str, legal_name: str | None) -> bool:
     """Whether the question names this issuer, by ticker or by trading name.
 
     The stored legal names are "Apple Inc" and "MICROSOFT CORPORATION", neither
     of which appears in "Compare Apple and Microsoft" -- so a verbatim test finds
     no issuer in almost every real question and the scoping does nothing. The
     corporate suffix is what a person drops when they write the company, so it is
-    stripped and the distinctive remainder matched on word boundaries. Names
-    shorter than four characters are not matched at all, because a two-letter
-    remainder ("3M") is far more likely to be an ordinary word than an issuer.
-    The suffix list is the grader's, because the grader strips a legal name off
-    an issuer to decide who a sentence is talking about, and two copies of that
-    list is how two readers of a name would stop agreeing.
+    stripped and the distinctive remainder matched on word boundaries. A short
+    remainder ("3M", "IBM") is not matched here at all: a question is where a
+    quantity gets written as "3M miles", and scoping that to 3M would pull the
+    wrong filer into the prompt. The grader reads answers rather than questions
+    and takes the opposite trade, which is why the two pass the same helper with
+    different answers to that question -- not because either is the correct one
+    in general.
     """
-    if ticker and re.search(rf"\b{re.escape(ticker.lower())}\b", q_low):
-        return True
-    for candidate in LEGAL_NAME_NOISE.split((legal_name or "").lower()):
-        name = candidate.strip()
-        if len(name) >= 4 and re.search(rf"\b{re.escape(name)}\b", q_low):
+    for spelling in issuer_forms(ticker) + issuer_forms(legal_name):
+        if issuer_in_text(question, _Alias(
+            form=spelling.lower(),
+            originals=frozenset({spelling}),
+            issuers=frozenset({ticker}),
+        ), short_names=False):
             return True
     return False
 
@@ -1018,7 +1023,7 @@ def retrieve_financial_context(kg: KnowledgeGraph, question: str) -> tuple[list[
     named: set[str] = {
         tick
         for tick, lname, _cik in companies
-        if _names_issuer(q_low, tick, lname)
+        if _names_issuer(question, tick, lname)
     }
     #: The filings the question's own words selected. A metric is in scope only
     #: when one of these reported it.
@@ -1186,13 +1191,23 @@ def retrieve_financial_context(kg: KnowledgeGraph, question: str) -> tuple[list[
     _BIZ_WEIGHT = 2
     keywords = set(re.findall(r"[a-z0-9]+", q_low)) - _STOP
     chunk_hits: list[dict[str, Any]] = []
-    # One query for every filing at once, with the accession list bound into it.
-    # The query has no WHERE, so it returns every chunk in the corpus -- ~4,700
-    # of them -- and the caller then discarded all but one filing's worth. Run
-    # once per filing, that is ~4,700 rows transferred per filing, up to twelve
-    # times for a question that touches every 10-K and 10-Q in the corpus, to
-    # end up with the same set. Batching the loop and filtering in the engine
-    # does it in one pass.
+    # One query for every filing at once. It used to be run once per filing with
+    # no WHERE, so each run returned every chunk in the corpus -- ~4,700 of
+    # them -- and the caller discarded all but one filing's worth: ~4,700 rows
+    # transferred per filing, twelve times over, to arrive at the same set.
+    #
+    # The WHERE and the RETURN name the same property, and that is the part that
+    # matters. `Filing.id` is `stable_id("filing", ticker, form_type, ...)`, a
+    # hash, while the accession list below is built from
+    # `MATCH (f:Filing) RETURN f.accession_number, ...`. The two are equal only
+    # while the corpus holds no real SEC accession numbers, because
+    # `accession_number` falls back to that same hash when there is none. Bind
+    # the hash against an accession list and the filter matches nothing -- and
+    # a chunk query that matches nothing raises no error and drops every
+    # narrative passage from every answer. Asking for the property the
+    # accession list was actually read from keeps the two in step on either
+    # schema: `accession_number` is renamed to `id` by the engine translation,
+    # so both sides move together.
     narrative_forms = {
         f[0]: f[1] for f in filings
         if f[1] in ("10-K", "10-Q") and f[0] in seen_ids
@@ -1200,8 +1215,8 @@ def retrieve_financial_context(kg: KnowledgeGraph, question: str) -> tuple[list[
     if narrative_forms:
         for chunk_acc, cid, ctext, csection in kg.execute(
             "MATCH (f:Filing)-[:CONTAINS_CHUNK]->(c:DocumentChunk) "
-            "WHERE f.id IN $accs "
-            "RETURN f.id, c.id, c.text, c.section",
+            "WHERE f.accession_number IN $accs "
+            "RETURN f.accession_number, c.id, c.text, c.section",
             {"accs": sorted(narrative_forms)},
         ):
             form = narrative_forms.get(chunk_acc)
@@ -1634,6 +1649,7 @@ def ask_rag(kg: KnowledgeGraph, question: str) -> dict[str, Any]:
             "flow": "",
             "graph": None,
             "gap": False,
+            "verdict": REFUSED,
             "provenance_mix": {},
             "provenance": [],
             "invented_tags": [],
@@ -1722,6 +1738,7 @@ def ask_rag(kg: KnowledgeGraph, question: str) -> dict[str, Any]:
         "rag_backend": backend,
         "rag_model": state["model"],
         "gap": graded.gap,
+        "verdict": graded.verdict,
         "provenance_mix": graded.mix,
         "provenance": [
             {
@@ -1730,6 +1747,7 @@ def ask_rag(kg: KnowledgeGraph, question: str) -> dict[str, Any]:
                 "cites": v.cites,
                 "figures": v.figures,
                 "ungrounded": v.ungrounded,
+                "unknown_cites": v.unknown_cites,
                 "misattributed": v.misattributed,
                 "reason": v.reason,
             }
@@ -1872,6 +1890,7 @@ _HTML = r"""<!DOCTYPE html>
   }
   .chip.ok { color: var(--accent-2); border-color: #2c5a48; }
   .chip.bad { color: var(--bad); border-color: #6b2f2c; }
+  .chip.warn { color: var(--warn); border-color: #6b5327; }
   .chip.cite { cursor: pointer; color: var(--accent); border-color: #33507a; }
   .chip.cite:hover { background: #24405f; }
   #answer { white-space: pre-wrap; line-height: 1.6; font-size: 13px; color: #f1f5f9; }
@@ -1890,6 +1909,65 @@ _HTML = r"""<!DOCTYPE html>
   .examples button { font-size: 11px; padding: 4px 8px; border-radius: 999px; text-align: left; }
   .spinner { color: var(--accent); font-size: 13px; display:flex; align-items:center; gap:8px; }
   .empty { color: var(--muted); font-size: 13px; }
+
+  /* ---- provenance ----
+     The grader's output. Deliberately not dismissible and deliberately above
+     the answer text: violations() is the only thing a reader must not miss, and
+     the one badge that looks like a verdict has to be the grader's verdict and
+     not "did the model cite something". */
+  .violations {
+    margin: 0 0 12px; padding: 10px 12px; border-radius: 6px;
+    background: #2a1614; border: 1px solid #6b2f2c; color: var(--bad);
+    font-size: 12.5px; line-height: 1.55;
+  }
+  .violations h4 {
+    margin: 0 0 6px; font-size: 11px; letter-spacing: .5px;
+    text-transform: uppercase; color: var(--bad);
+  }
+  .violations ul { margin: 0; padding-left: 18px; }
+  .violations li { margin-bottom: 4px; }
+  .prov-head {
+    display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+    margin-bottom: 10px;
+  }
+  .prov { display: flex; flex-direction: column; gap: 7px; }
+  .prov-row {
+    display: flex; gap: 9px; align-items: flex-start;
+    padding: 8px 9px; border-radius: 6px;
+    background: var(--panel-2); border: 1px solid var(--line);
+  }
+  .prov-row.is-bad { border-color: #6b2f2c; }
+  .prov-row.is-warn { border-color: #6b5327; }
+  .prov-row .ptag {
+    font-size: 10px; font-weight: 600; letter-spacing: .4px; text-transform: uppercase;
+    padding: 2px 6px; border-radius: 4px; white-space: nowrap;
+    border: 1px solid var(--line); color: var(--muted);
+  }
+  .prov-row .ptag.t-STATED { color: var(--accent-2); border-color: #2c5a48; }
+  .prov-row .ptag.t-DERIVED { color: var(--accent); border-color: #33507a; }
+  .prov-row .ptag.t-INFERRED { color: var(--warn); border-color: #6b5327; }
+  .prov-row .ptag.t-EXTERNAL { color: #c792ea; border-color: #4a3760; }
+  .prov-row .ptag.t-GAP { color: var(--bad); border-color: #6b2f2c; }
+  .prov-row .pbody { flex: 1 1 auto; min-width: 0; }
+  .prov-row .ptext { font-size: 12.5px; line-height: 1.5; color: var(--text); }
+  .prov-row .ptext.clipped {
+    display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .prov-row .preason { margin-top: 5px; font-size: 11.5px; color: var(--muted); }
+  .prov-row .pflags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 5px; }
+  .prov-row .pflag {
+    font-size: 10.5px; padding: 2px 6px; border-radius: 4px;
+    background: #2a1614; border: 1px solid #6b2f2c; color: var(--bad);
+  }
+  .prov-note {
+    margin-bottom: 10px; padding: 8px 10px; border-radius: 6px; font-size: 11.5px;
+    line-height: 1.5; background: #2a2317; border: 1px solid #4a3d20; color: var(--warn);
+  }
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+  }
 
   /* ---- reports overlay ---- */
   #reportsOverlay {
@@ -2151,24 +2229,37 @@ _HTML = r"""<!DOCTYPE html>
         </div>
       </div>
     </div>
-    <div class="tabs">
-      <button class="tab active" data-tab="answer">Answer</button>
-      <button class="tab" data-tab="sources">Sources</button>
-      <button class="tab" data-tab="trace">Trace</button>
+    <div class="tabs" role="tablist" aria-label="Answer detail">
+      <button class="tab active" role="tab" id="tabBtnAnswer" aria-selected="true"
+              aria-controls="tabAnswer" data-tab="answer">Answer</button>
+      <button class="tab" role="tab" id="tabBtnSources" aria-selected="false"
+              aria-controls="tabSources" data-tab="sources">Sources</button>
+      <button class="tab" role="tab" id="tabBtnTrace" aria-selected="false"
+              aria-controls="tabTrace" data-tab="trace">Trace</button>
+      <button class="tab" role="tab" id="tabBtnProvenance" aria-selected="false"
+              aria-controls="tabProvenance" data-tab="provenance">Provenance</button>
       <div class="grow"></div>
       <span class="chip" id="waitTimer" hidden></span>
       <button id="copyAnswer" class="icon ghost" title="Copy answer text">copy</button>
     </div>
     <div id="answerWrap">
-      <div id="tabAnswer">
+      <div id="tabAnswer" role="tabpanel" aria-labelledby="tabBtnAnswer">
         <div class="empty">Answers are generated from the retrieved subgraph and cite entities as
           <code>[E1]</code>. Click a citation to highlight it in the graph.</div>
       </div>
-      <div id="tabSources" hidden><div class="empty">No answer yet — the cited entities show up here.</div></div>
-      <div id="tabTrace" hidden><div class="empty">The retrieval trace shows up here after a question.</div></div>
+      <div id="tabSources" role="tabpanel" aria-labelledby="tabBtnSources" hidden>
+        <div class="empty">No answer yet — the cited entities show up here.</div>
+      </div>
+      <div id="tabTrace" role="tabpanel" aria-labelledby="tabBtnTrace" hidden>
+        <div class="empty">The retrieval trace shows up here after a question.</div>
+      </div>
+      <div id="tabProvenance" role="tabpanel" aria-labelledby="tabBtnProvenance" hidden>
+        <div class="empty">Every sentence in the answer, with the rule that judged it.</div>
+      </div>
     </div>
   </section>
 </main>
+<div id="verdictAnnounce" class="sr-only" role="status" aria-live="polite"></div>
 
 <!-- Reports Overlay -->
 <div id="reportsOverlay">
@@ -2748,6 +2839,9 @@ async function askQuestion() {
   $("tabAnswer").innerHTML =
     `<div class="spinner"><span>⚡</span> Retrieving graph context, then ` +
     `generating an answer with ${esc(S.ragModel || "the model")}…</div>`;
+  // Cleared up front as well as on the error path, so a question that never
+  // returns cannot leave the last answer's grading on screen under a spinner.
+  clearProvenance("Grading the answer as it arrives…");
   startTimer();
   try {
     const res = await api("/api/ask", {
@@ -2772,6 +2866,11 @@ async function askQuestion() {
     }
   } catch (e) {
     $("tabAnswer").innerHTML = `<div class="note">Query failed: ${esc(e.message)}</div>`;
+    // The failed question's verdicts are not on screen, so the previous
+    // question's must not stay there: a panel full of sentences under a
+    // heading about a different question is worse than an empty one.
+    clearProvenance("No answer to grade — the last question failed.");
+    $("verdictAnnounce").textContent = "Query failed";
     toast(`query failed: ${e.message}`, "bad");
   } finally {
     stopTimer();
@@ -2843,10 +2942,33 @@ function renderAnswer(res) {
     addChip("", `${res.context_entities} entities / ${res.context_edges} rels`,
       "size of the retrieved subgraph handed to the model");
   }
-  addChip(res.grounded ? "ok" : "bad", res.grounded ? "grounded" : "not grounded",
-    "whether the model reported finding its answer in the retrieved subgraph");
+  // The verdict is the grader's, not "did the model cite something". Those are
+  // different questions and only one of them means anything: a model that
+  // fabricates a figure and cites a real tag satisfies the second and fails
+  // the first, so the old chip rendered that green. `res.grounded` stays in the
+  // payload because removing a field is a breaking change, and is no longer
+  // what this reads.
+  const verdict = res.verdict || "REFUSED";
+  const verdictChip = {
+    SUPPORTED: ["ok", "supported", "every sentence rests on a fact in the cited evidence"],
+    QUALIFIED: ["warn", "qualified", "nothing failed, but part of it is hedged or reaches past the filings"],
+    REFUSED: ["bad", "refused", "at least one sentence is not supported by the cited evidence"],
+  }[verdict] || ["bad", verdict, "the grader returned a verdict this page does not know"];
+  addChip(verdictChip[0], verdictChip[1], verdictChip[2]);
   if (res.elapsed_sec) addChip("", `${res.elapsed_sec}s`, "retrieval + generation time");
   answer.appendChild(meta);
+
+  // What the reader must not miss, above the answer it applies to. Not
+  // collapsible: violations() is already capped at three plain-English lines
+  // and is written for exactly this audience.
+  const violations = res.violations || [];
+  if (violations.length) {
+    const box = document.createElement("div");
+    box.className = "violations";
+    box.innerHTML = esc("<h4>the grader refused part of this answer</h4>") +
+      '<ul>' + violations.map((v) => "<li>" + esc(v) + "</li>").join("") + "</ul>";
+    answer.appendChild(box);
+  }
 
   const body = document.createElement("div");
   body.id = "answer";
@@ -2902,16 +3024,219 @@ function renderAnswer(res) {
   trace.innerHTML = res.flow
     ? `<div class="note" style="white-space:pre-wrap;font-family:inherit">${esc(res.flow)}</div>`
     : '<div class="empty">No retrieval trace for this answer.</div>';
+
+  renderProvenance(res, tagMap);
+  announceVerdict(res);
+}
+
+const VERDICT_WORDS = {
+  SUPPORTED: "supported",
+  QUALIFIED: "qualified",
+  REFUSED: "refused",
+};
+
+function announceVerdict(res) {
+  // An answer can take 30 seconds to arrive and then be a fabrication. Without
+  // this nothing is announced, so a screen-reader user is told the request
+  // finished and not what it concluded -- the worst case in the product.
+  const box = $("verdictAnnounce");
+  if (!box) return;
+  const verdict = res.verdict || "REFUSED";
+  const word = VERDICT_WORDS[verdict] || verdict.toLowerCase();
+  const parts = [`Answer ${word}`];
+  const mix = res.provenance_mix || {};
+  const counts = Object.keys(mix).map((k) => `${k} ${mix[k]}`).join(", ");
+  if (counts) parts.push(counts);
+  const notes = res.violations || [];
+  if (notes.length) parts.push(...notes);
+  box.textContent = parts.join(". ");
+}
+
+function clearProvenance(message) {
+  // renderAnswer only runs on success, so a second question that errors would
+  // otherwise leave the first question's verdicts on screen, attributed to
+  // nothing. Cleared on every path out of askQuestion.
+  const panel = $("tabProvenance");
+  if (!panel) return;
+  panel.textContent = "";
+  const empty = document.createElement("div");
+  empty.className = "empty";
+  empty.textContent = message || "Every sentence in the answer, with the rule that judged it.";
+  panel.appendChild(empty);
+}
+
+function renderProvenance(res, tagMap) {
+  // Everything here is model prose except the tag, the counts and the flags,
+  // so it all goes through esc() or textContent. The answer body is already
+  // escaped; a panel that concatenated a model's sentence into markup would be
+  // the same hole in a smaller place.
+  const panel = $("tabProvenance");
+  if (!panel) return;
+  panel.textContent = "";
+  const verdicts = res.provenance || [];
+  if (!verdicts.length) {
+    panel.innerHTML = '<div class="empty">' +
+      esc(res.verdict
+        ? "The grader judged no sentences in this answer."
+        : "Every sentence in the answer, with the rule that judged it.") +
+      "</div>";
+    return;
+  }
+
+  // When every sentence failed, ask_rag replaces the answer text with a
+  // rendered refusal. These verdicts still describe what the model originally
+  // wrote, so without this the panel shows sentences the answer above does not
+  // contain and a reader concludes nothing was checked.
+  if (res.gap) {
+    const note = document.createElement("div");
+    note.className = "prov-note";
+    note.textContent =
+      "The answer above was replaced: every sentence failed, so the corpus " +
+      "cannot support it. These are the rules applied to what the model wrote " +
+      "before the replacement.";
+    panel.appendChild(note);
+  }
+
+  const head = document.createElement("div");
+  head.className = "prov-head";
+  const mix = res.provenance_mix || {};
+  for (const tag of Object.keys(mix).sort()) {
+    const c = document.createElement("span");
+    c.className = "chip";
+    c.textContent = `${tag} ${mix[tag]}`;
+    c.title = "sentences graded " + tag;
+    head.appendChild(c);
+  }
+  const invented = res.invented_tags || [];
+  if (invented.length) {
+    const c = document.createElement("span");
+    c.className = "chip bad";
+    c.textContent = `invented tags: ${invented.join(", ")}`;
+    c.title = "cited tags the retriever never issued";
+    head.appendChild(c);
+  }
+  // The answer-level list, which is not the same as the per-sentence flags: a
+  // figure can fail on one sentence and be absent from the aggregate dedupe.
+  // Both are shown because violations() quotes the aggregate in prose and this
+  // is the same set in a form you can point at.
+  const loose = res.ungrounded_figures || [];
+  if (loose.length) {
+    const c = document.createElement("span");
+    c.className = "chip bad";
+    c.textContent = `figures not in any cited source: ${loose.join(", ")}`;
+    c.title = "no cited source contains these numbers";
+    head.appendChild(c);
+  }
+  const wrongFiler = res.misattributed || [];
+  if (wrongFiler.length) {
+    const c = document.createElement("span");
+    c.className = "chip bad";
+    c.textContent = `attributed to: ${wrongFiler.join(", ")}`;
+    c.title = "issuers no cited source was filed by";
+    head.appendChild(c);
+  }
+  panel.appendChild(head);
+
+  const list = document.createElement("div");
+  list.className = "prov";
+  for (const v of verdicts) {
+    const tag = v.provenance || "";
+    const row = document.createElement("div");
+    row.className = "prov-row" +
+      (tag === "GAP" ? " is-bad" : (tag === "INFERRED" || tag === "EXTERNAL" ? " is-warn" : ""));
+
+    const badge = document.createElement("span");
+    badge.className = "ptag t-" + tag;
+    badge.textContent = tag;
+    badge.title = "the rule that judged this sentence";
+    row.appendChild(badge);
+
+    const bodyWrap = document.createElement("div");
+    bodyWrap.className = "pbody";
+
+    const text = document.createElement("div");
+    text.className = "ptext";
+    text.textContent = v.text || "";
+    // Long sentences are clamped and clickable, because one 400-word sentence
+    // otherwise turns the panel into a wall and hides every row after it.
+    if ((v.text || "").length > 240) {
+      text.className = "ptext clipped";
+      text.title = "click to expand";
+      text.onclick = () => text.classList.toggle("clipped");
+    }
+    bodyWrap.appendChild(text);
+
+    const flags = [];
+    for (const c of v.unknown_cites || []) flags.push("cited a tag never issued: " + c);
+    for (const f of v.ungrounded || []) flags.push("figure not in any cited source: " + f);
+    for (const m of v.misattributed || []) flags.push("attributed to " + m + ", which no cited source was filed by");
+    if (flags.length) {
+      const box = document.createElement("div");
+      box.className = "pflags";
+      for (const f of flags) {
+        const chip = document.createElement("span");
+        chip.className = "pflag";
+        chip.textContent = f;
+        box.appendChild(chip);
+      }
+      bodyWrap.appendChild(box);
+    }
+
+    if (v.reason) {
+      const why = document.createElement("div");
+      why.className = "preason";
+      why.textContent = v.reason;
+      bodyWrap.appendChild(why);
+    }
+
+    // The same affordance the answer body has: a citation focuses its node.
+    for (const c of v.cites || []) {
+      const btn = document.createElement("span");
+      btn.className = "chip cite";
+      btn.textContent = "[" + c + "]";
+      btn.onclick = () => { const id = tagMap[c]; if (id) focusOn(id); };
+      const holder = bodyWrap.querySelector(".pflags") || (function () {
+        const b = document.createElement("div");
+        b.className = "pflags";
+        bodyWrap.appendChild(b);
+        return b;
+      })();
+      holder.appendChild(btn);
+    }
+
+    row.appendChild(bodyWrap);
+    list.appendChild(row);
+  }
+  panel.appendChild(list);
 }
 
 function showTab(name) {
-  for (const t of document.querySelectorAll(".tab")) {
-    t.classList.toggle("active", t.dataset.tab === name);
+  // The panel list is derived from the buttons rather than repeated here. It
+  // used to be a literal ["answer", "sources", "trace"], and a tab added to the
+  // markup without being added there silently never opened -- which is exactly
+  // what happened to the provenance tab before it had a test.
+  const tabs = Array.from(document.querySelectorAll(".tab[data-tab]"));
+  for (const t of tabs) {
+    const on = t.dataset.tab === name;
+    t.classList.toggle("active", on);
+    t.setAttribute("aria-selected", on ? "true" : "false");
   }
-  for (const id of ["answer", "sources", "trace"]) {
-    $("tab" + id[0].toUpperCase() + id.slice(1)).hidden = id !== name;
+  for (const t of tabs) {
+    const panel = $("tab" + t.dataset.tab.charAt(0).toUpperCase() + t.dataset.tab.slice(1));
+    if (panel) panel.hidden = t.dataset.tab !== name;
   }
   $("answerWrap").scrollTop = 0;
+}
+
+function moveTabFocus(current, delta) {
+  // Arrow-key navigation, which is what role="tab" promises and what the plain
+  // buttons did not do.
+  const tabs = Array.from(document.querySelectorAll(".tab[data-tab]"));
+  if (!tabs.length) return;
+  const at = tabs.indexOf(current);
+  const next = tabs[(at + delta + tabs.length) % tabs.length];
+  next.focus();
+  showTab(next.dataset.tab);
 }
 
 function toast(msg, kind) {
@@ -3005,6 +3330,24 @@ $("copyAnswer").onclick = async () => {
 };
 for (const t of document.querySelectorAll(".tab")) {
   t.onclick = () => showTab(t.dataset.tab);
+  t.onkeydown = (e) => {
+    if (e.key === "ArrowRight" || e.key === "ArrowDown") {
+      e.preventDefault();
+      moveTabFocus(t, 1);
+    } else if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
+      e.preventDefault();
+      moveTabFocus(t, -1);
+    } else if (e.key === "Home") {
+      e.preventDefault();
+      const first = document.querySelector(".tab[data-tab]");
+      if (first) { first.focus(); showTab(first.dataset.tab); }
+    } else if (e.key === "End") {
+      e.preventDefault();
+      const all = document.querySelectorAll(".tab[data-tab]");
+      const last = all[all.length - 1];
+      if (last) { last.focus(); showTab(last.dataset.tab); }
+    }
+  };
 }
 
 let resizeTimer = null;
