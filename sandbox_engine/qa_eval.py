@@ -20,12 +20,15 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+from .provenance import extract_figures
+
 BASE = "http://127.0.0.1:9000"
 OUT = Path(__file__).resolve().parent / "_run" / "qa_eval"
 
 _NEGATION = re.compile(
     r"not (?:available|provided|found|included|described|stated|specified|covered|part of the context)"
-    r"|cannot (?:be determined|answer)|can't (?:be determined|answer)|no information|out of (?:the )?context"
+    r"|can(?:not|'t) (?:be )?(?:determin|answer|establish|derived|told|said|reported)"
+    r"|is not possible to|no information|out of (?:the )?context"
     r"|does not (?:mention|include|provide|contain|describe)|is not (?:present|included|described)"
     r"|not enough (?:information|context)|not in (?:the )?(?:context|corpus|database|graph)|unavailable"
     r"|no data|not part of|no record|nothing in the context|based on the context.*?(?:not|no )",
@@ -83,8 +86,34 @@ QUESTIONS = [
     ("causal", "Does the causal extraction attribute revenue growth to competitive or customer factors?", "customer", False),
     ("causal", "Does Apple's narrative describe foreign currency exchange rate exposure?", "exchange rate", False),
     ("causal", "Which entity type is used for a named rival company in the causal layer?", "Competitor", False),
+    # -- cross-issuer --------------------------------------------------------
+    # Every other positive row above is Apple, which makes the harness a test of
+    # one issuer's retrieval. That is a real gap rather than a stylistic one:
+    # an answer that reads a figure off one filer's line and attributes it to
+    # another is fully grounded -- the number is in a cited source -- and no
+    # same-issuer question can see it. The figures below are off the corpus as
+    # built: MSFT and NVDA each hold 1x10-K, 3x10-Q and 6x8-K, exactly as AAPL
+    # does, because D1 split them out of the CIK collision.
+    ("fact", "What were Microsoft's net sales for fiscal year 2026?", "331839", False),
+    ("fact", "What was NVIDIA's net sales for the six months ended July 26, 2026?", "177837", False),
+    ("fact", "What was NVIDIA's research and development expense for the three months ended July 26, 2026?", "7054", False),
+    ("fact", "What were Microsoft's net sales for the three months ended March 31, 2026?", "82886", False),
+    ("multihop", "How many 8-K filings are in the corpus for each company?", "6", False),
+    ("multihop", "Which companies are covered by this corpus?", "MSFT", False),
+    ("structural", "Which 10-K item contains NVIDIA's business overview?", "Item 1", False),
     # -- negative / out-of-context ---------------------------------------------
-    ("negative", "What was NVIDIA's research and development expense for fiscal year 2025?", None, True),
+    # A negative control must be a fact the corpus does not hold, and that is
+    # checkable: it was correct to keep "NVIDIA's R&D for fiscal year 2025" out
+    # of scope while NVDA's own filings cover FY2026 and FY2027 only. It is no
+    # longer *why* the row belonged here -- it sat in the negative block because
+    # NVIDIA resolved to an UNKNOWN Company node, and D1 ended that -- so it was
+    # correct by coincidence, which is the kind nothing detects. Its replacement
+    # below is a positive on a period NVDA does file, so the row tests the fact
+    # rather than a premise about the corpus. The remaining controls were never
+    # premised on a filer being unresolvable: the out-of-corpus issuers are
+    # absent, and the Apple ones are scoped to a period or a fact the filings do
+    # not carry.
+    ("negative", "What was NVIDIA's net sales for fiscal year 2024?", None, True),
     ("negative", "What was Tesla's revenue in 2025?", None, True),
     ("negative", "What were Apple's net sales for fiscal year 2018?", None, True),
     ("negative", "What was JPMorgan's net interest income?", None, True),
@@ -106,16 +135,53 @@ def is_unanswerable(text: str) -> bool:
     return bool(_NEGATION.search(low))
 
 
-def grade(expect: str | None, negative: bool, text: str, grounded: bool) -> tuple[str, str]:
+def asserts_a_figure(text: str) -> bool:
+    """Whether *text* states a number, using the grader's own figure extraction.
+
+    Not a second regex for the same job. The provenance module already decides
+    what counts as a reported figure -- form types, fiscal years and small counts
+    are structural and filtered out -- and a harness that disagreed with it about
+    that would score answers the grader would refuse for the opposite reason.
+    """
+    return bool(extract_figures(text or ""))
+
+
+def grade(
+    expect: str | None,
+    negative: bool,
+    text: str,
+    grounded: bool,
+    error: str = "",
+) -> tuple[str, str]:
     """Return ``(verdict, note)``.
 
-    Negative controls pass when the answer refuses to fabricate (ungrounded or
-    explicitly says the fact is absent). Known-fact questions pass when the
-    answer is grounded and contains the expected token.
+    A negative control passes when the answer refuses to fabricate: it is
+    ungrounded, or it says the fact is absent **and states no figure**. Both
+    conditions matter.
+
+    ``error`` carries a failed request. It has to be distinguishable from a
+    refusal, because a dead backend returns no text at all, and an empty answer
+    with nothing cited is indistinguishable from a correct one unless the caller
+    says which it was. Scoring that as a refusal is how a harness reports ten
+    out of ten on a run where the server never answered: the failure looks
+    exactly like the pass.
+
+    The figure condition is what stops a hedge from laundering a fabrication.
+    "Tesla's 2025 revenue was $97,690M, though I cannot determine that" contains
+    a refusal phrase, so a phrase search alone waves it through -- and the
+    negation sits in a clause the answer did not lead with, which is not what a
+    refusal is. A refusal carries no number, so that is the test.
     """
+    if error or not (text or "").strip():
+        # No text at all cannot be a demonstrated refusal, whoever calls this.
+        # Checking it here rather than only in the caller means the two agree
+        # even if a future caller forgets to normalise the error first.
+        return "ERROR", (error or "empty answer")[:120]
     low = text.lower()
     if negative:
-        if grounded and not is_unanswerable(text):
+        if asserts_a_figure(text):
+            return "FAIL", "model stated a figure for an out-of-context fact"
+        if grounded and not is_unanswerable(low):
             return "FAIL", "model answered an out-of-context fact"
         return "PASS", ("ungrounded refuse" if not grounded else "explicit absent")
     if not grounded:
@@ -156,7 +222,15 @@ def main() -> None:
         took = time.perf_counter() - t0
         text = resp.get("text", "") or ""
         grounded = bool(resp.get("grounded"))
-        verdict, note = grade(expect, negative, text, grounded)
+        # A failed request is not a refusal. `ask` reports the failure in the
+        # body, and dropping it here is what let a dead backend score 10/10 on
+        # every negative control: an empty answer with no citations is graded
+        # as a correct "ungrounded refuse". It has to reach the grader as an
+        # error, which is a verdict of its own and never a pass.
+        error = str(resp.get("error", "") or "")
+        if not error and not text:
+            error = "empty answer with no error reported"
+        verdict, note = grade(expect, negative, text, grounded, error)
         results.append({
             "n": i,
             "category": cat,
@@ -171,18 +245,25 @@ def main() -> None:
             "elapsed": round(took, 1),
             "answer": text,
         })
-        flag = "!" if verdict == "FAIL" else " "
+        flag = "!" if verdict in ("FAIL", "ERROR") else " "
         print(f"{i:>2}{flag} [{verdict:4}] {cat:10} {q[:70]}")
-        if verdict == "FAIL" or negative:
+        if verdict in ("FAIL", "ERROR") or negative:
             print(f"      -> grounded={grounded} note={note}")
             print(f"      -> {text[:160]}")
         time.sleep(0.5)
 
     passed = sum(1 for r in results if r["verdict"] == "PASS")
+    # ERROR is counted apart from FAIL and never folded into it. A question the
+    # harness could not ask is not a question the system got wrong, and
+    # averaging the two hides the only case that matters: a run where the server
+    # was down answers nothing and looks like a clean sweep.
+    errored = sum(1 for r in results if r["verdict"] == "ERROR")
     stats = {
         "total": len(results),
         "passed": passed,
-        "failed": len(results) - passed,
+        "failed": sum(1 for r in results if r["verdict"] == "FAIL"),
+        "errored": errored,
+        "scored": len(results) - errored,
         "grounded_ratio": round(
             sum(1 for r in results if r["grounded"]) / len(results), 3
         ),
@@ -190,8 +271,12 @@ def main() -> None:
     }
     for cat in sorted({r["category"] for r in results}):
         subset = [r for r in results if r["category"] == cat]
-        ps = sum(1 for r in subset if r["verdict"] == "PASS")
-        stats["by_category"][cat] = {"total": len(subset), "passed": ps}
+        stats["by_category"][cat] = {
+            "total": len(subset),
+            "passed": sum(1 for r in subset if r["verdict"] == "PASS"),
+            "failed": sum(1 for r in subset if r["verdict"] == "FAIL"),
+            "errored": sum(1 for r in subset if r["verdict"] == "ERROR"),
+        }
 
     (OUT / "report.json").write_text(
         json.dumps({"stats": stats, "results": results}, indent=2, default=str),
@@ -201,8 +286,16 @@ def main() -> None:
     md = [
         "# UFGS QA Evaluation",
         "",
-        f"- total: **{len(results)}**, passed: **{passed}**, failed: **{len(results)-passed}**",
+        f"- total: **{len(results)}**, passed: **{passed}**, "
+        f"failed: **{stats['failed']}**, errored: **{errored}**",
         f"- grounded ratio: **{stats['grounded_ratio']}**",
+    ]
+    if errored:
+        md.append(
+            f"- **{errored} question(s) were not answered.** A run with errors is "
+            f"not a result: the harness could not ask, so nothing was measured."
+        )
+    md += [
         "",
         "| # | cat | verdict | grounded | note | question |",
         "|---|---|---|---|---|---|",
@@ -218,6 +311,12 @@ def main() -> None:
     print(json.dumps(stats, indent=2))
     print(f"report: {OUT / 'report.json'}")
     print(f"table : {OUT / 'report.md'}")
+    if errored:
+        print(
+            f"\n{errored} question(s) errored -- the run is not a result. "
+            f"Check the server before reading the pass rate."
+        )
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

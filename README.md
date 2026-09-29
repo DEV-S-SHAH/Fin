@@ -235,8 +235,8 @@ Natural-language questions in `sandbox_engine.query_ui` are evaluated by `sandbo
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -p "test_*.py"          # 568 tests
-python -m unittest discover -s sandbox_engine -p "test_*.py" # 93 tests
+python -m unittest discover -s tests -p "test_*.py"          # 670 tests
+python -m unittest discover -s sandbox_engine -p "test_*.py" # 112 tests
 ```
 
 Both suites are offline: no network, no key, no database build.
@@ -292,12 +292,11 @@ To add a company, create its folder and drop filings in. Nothing else to edit.
 | `sandbox_engine/loader.py` | Idempotent load into LadybugDB (lookup-before-insert) |
 | `sandbox_engine/benchmarks.py` | The five graph integrity benchmarks (B1–B5) |
 | `sandbox_engine/query_ui.py` | HTTP server, `/api/ask`, graph payload for the UI |
+| `sandbox_engine/router.py` | Discriminated query router (KNOWN, COLD_START, AMBIGUOUS) |
 | `sandbox_engine/cli.py` | Typer entry point |
 | `sandbox_engine/EVAL_SET.md` | 30-question eval set and the live defect register |
-| `graphrag/` | Domain-agnostic PDF → graph package behind the 8765 service |
-| `financial_graphrag.py` | Single-file in-process financial GraphRAG, standalone |
-| `graphrag_synthesis.py` | Retrieval-to-answer half of the above |
-| `document_loader.py`, `graph_extractor.py`, `graph_store.py`, `entity_resolver.py` | Root-level modules the `tests/` suite exercises directly |
+| `sandbox_engine/eval_set.py` | EVAL_SET.md as runnable questions; `provenance_match_rate` |
+| `graphrag/` | Older GraphRAG package, kept for the legacy `financial_graphrag.py` path |
 
 ## Correctness
 
@@ -324,17 +323,30 @@ collisions in the *label* and leaves the nodes distinct. The registry also
 treats "gross"/"net" and "beginning"/"ending" as opposite-sense labels that must
 never be fuzzy-merged.
 
-The `query_ui` server reports which schema it detected at start-up, because the
-Cypher is written against the blueprint vocabulary and `detect_schema` /
-`translate_for_engine` translate on the way out when the database is the engine
-schema instead:
+### What the answer panel is allowed to say
 
-```
-  Web UI       : http://127.0.0.1:9000/
-  Database     : .../sandbox_engine/_run/sandbox.lbug
-  Schema       : engine
-  Graph Stats  : 8720 entities, 9710 relationships
-```
+Every sentence the model writes is graded by rule against the cited evidence,
+and the answer is then reduced to one of three states:
+
+| Verdict | Means |
+|---|---|
+| **supported** | every sentence rests on a fact in the evidence it cited |
+| **qualified** | nothing failed, but part of it is hedged or reaches past the filings |
+| **refused** | at least one sentence is not supported by what it cited |
+
+Refusal dominates: an answer of nine `STATED` sentences and one `GAP` sentence
+is refused, not qualified, because a reader takes the nine and misses the one.
+
+The **Provenance** tab shows every sentence with the rule that judged it, the
+figures it asserts, and the citations that support it — clicking a citation
+highlights the node in the graph, as in the answer itself. A red banner above
+the answer lists anything the grader refused, and screen readers are told the
+verdict when an answer arrives.
+
+The chip is the grader's verdict, not whether the model cited something. Those
+are different questions, and only one of them means anything: a model that
+invents a figure and cites a real entity satisfies the second and fails the
+first.
 
 ## Dependencies
 

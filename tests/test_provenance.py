@@ -19,25 +19,120 @@ The two named cases are the acceptance criteria:
 
 from __future__ import annotations
 
+import re
+import sys
 import unittest
+from pathlib import Path
 
+# The module has a `__main__` block, so it is meant to be runnable on its own as
+# well as under pytest, and that needs the repository root importable -- pytest
+# puts it there for us and a direct `python tests/test_provenance.py` does not.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from sandbox_engine.buffer import NODE_TABLES
 from sandbox_engine.provenance import (
     DERIVED,
     EXTERNAL,
     GAP,
     INFERRED,
+    QUALIFIED,
+    REFUSED,
     STATED,
+    SUPPORTED,
     Evidence,
+    GradedAnswer,
     Source,
     SourceResolver,
     build_evidence,
+    citation_tags,
     extract_figures,
     grade_answer,
     normalise_number,
+    provenance_verdict,
     render_gap,
     serialise_evidence,
     _split_sentences,
+    _issuer_index,
 )
+
+
+class VerdictTests(unittest.TestCase):
+    """One word for an answer, so a reader can act on it.
+
+    The grader speaks per sentence; a reader needs one thing. The reduction
+    lives in the grader's module because the UI, the eval runner and anything
+    that later alerts all need the same one, and a caller that derives its own
+    gets a different answer.
+    """
+
+    @staticmethod
+    def _answer(*verdicts) -> GradedAnswer:
+        return GradedAnswer(verdicts=list(verdicts), text="")
+
+    @staticmethod
+    def _v(tag: str) -> "object":
+        from sandbox_engine.provenance import Verdict
+
+        return Verdict(text="a sentence", provenance=tag)
+
+    def test_all_stated_is_supported(self):
+        self.assertEqual(
+            provenance_verdict(self._answer(self._v(STATED), self._v(STATED))),
+            SUPPORTED,
+        )
+
+    def test_arithmetic_over_cited_facts_is_supported(self):
+        self.assertEqual(
+            provenance_verdict(self._answer(self._v(STATED), self._v(DERIVED))),
+            SUPPORTED,
+        )
+
+    def test_one_gap_among_stated_is_refused(self):
+        """The mixed case, and the reason refusal has to dominate.
+
+        Nine good sentences and one invented figure is not a partial pass. The
+        reader takes the nine and misses the one.
+        """
+        verdicts = [self._v(STATED)] * 9 + [self._v(GAP)]
+        self.assertEqual(provenance_verdict(self._answer(*verdicts)), REFUSED)
+
+    def test_an_ungrounded_figure_refuses_even_with_an_all_stated_mix(self):
+        # The mix is clean; the violation is not. Working from the mix alone
+        # would report SUPPORTED, which is the whole bug.
+        graded = self._answer(self._v(STATED))
+        graded.ungrounded_figures = ["416,161"]
+        self.assertEqual(provenance_verdict(graded), REFUSED)
+
+    def test_a_misattribution_refuses(self):
+        graded = self._answer(self._v(STATED))
+        graded.misattributed = ["MSFT"]
+        self.assertEqual(provenance_verdict(graded), REFUSED)
+
+    def test_a_tag_that_was_never_issued_refuses(self):
+        graded = self._answer(self._v(STATED))
+        graded.invented_tags = ["E99"]
+        self.assertEqual(provenance_verdict(graded), REFUSED)
+
+    def test_gap_alone_refuses(self):
+        # What the error stub and an empty answer look like: gap=False but
+        # nothing judged, which must not be reported as a pass.
+        self.assertEqual(provenance_verdict(self._answer()), REFUSED)
+
+    def test_hedged_and_external_are_qualified_not_supported(self):
+        for tag in (INFERRED, EXTERNAL):
+            with self.subTest(tag=tag):
+                self.assertEqual(
+                    provenance_verdict(self._answer(self._v(STATED), self._v(tag))),
+                    QUALIFIED,
+                )
+
+    def test_the_property_and_the_function_agree(self):
+        graded = self._answer(self._v(STATED))
+        self.assertEqual(graded.verdict, provenance_verdict(graded))
+
+    def test_the_verdict_is_one_of_three_named_states(self):
+        graded = grade_answer("Apple reported net sales of 416,161 [E1].", [])
+        self.assertIn(graded.verdict, (SUPPORTED, QUALIFIED, REFUSED))
 
 
 def src(**kw) -> Source:
@@ -115,6 +210,47 @@ class NumberHandlingTests(unittest.TestCase):
         self.assertEqual(
             extract_figures("filed 2025-10-31 with revenue of 416,161 [E158]"), ["416,161"]
         )
+
+    def test_a_list_of_tags_is_masked_as_one_citation(self):
+        """Regression: only the single-tag form was masked.
+
+        ``[E158, E200]`` left the digits in, so the two tag numbers were
+        reported as figures no evidence could ground and a correct sentence
+        was rejected as fabrication -- the same failure 01c47cc fixed for
+        ``[E158]``, one comma away.
+        """
+        self.assertEqual(
+            extract_figures("net sales 416,161 [E158, E200]"), ["416,161"]
+        )
+        self.assertEqual(
+            extract_figures("net sales 416,161 [E1, E3]"), ["416,161"]
+        )
+
+    def test_every_citation_form_yields_its_tags(self):
+        """One grammar, so the mask, the grader and the UI cannot disagree.
+
+        The tag numbers in a three-digit citation are the giveaway: whichever
+        caller failed to recognise the form reported them as figures or as
+        absent citations.
+        """
+        for text, expected in (
+            ("net sales 416,161 [E1]", ["E1"]),
+            ("net sales 416,161 [E1, E3]", ["E1", "E3"]),
+            ("net sales 416,161 [E1,E3]", ["E1", "E3"]),
+            ("net sales 120,451 [E12->E15]", ["E12", "E15"]),
+            ("net sales 120,451 [E12 -> E15]", ["E12", "E15"]),
+            ("net sales 120,451 [E12 => E15]", ["E12", "E15"]),
+            ("net sales 416,161 [E1] and 281,724 [E158]", ["E1", "E158"]),
+        ):
+            self.assertEqual(citation_tags(text), expected, text)
+            # A tag number surviving tokenisation is the failure this guards.
+            figures = extract_figures(text)
+            self.assertNotIn("158", figures, text)
+            self.assertNotIn("15", figures, text)
+            self.assertNotIn("12", figures, text)
+
+    def test_a_repeated_tag_is_counted_once(self):
+        self.assertEqual(citation_tags("x [E1] y [E1]"), ["E1"])
 
 
 class SentenceSplitTests(unittest.TestCase):
@@ -323,6 +459,265 @@ class GeographicProductTableTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Attribution
+# ---------------------------------------------------------------------------
+
+class IssuerAttributionTests(unittest.TestCase):
+    """A number read off one issuer's line and written on another's.
+
+    The corpus holds several issuers, and every one of them files a Net Sales
+    line, so a model handed a wall of evidence can carry a figure from one to
+    the other. That is the most damaging thing it can do and the figure check
+    cannot see it: the number is in the cited text, it just is not *that
+    issuer's* number. So a sentence that names an issuer the cited sources were
+    not filed by is refused on its own account.
+    """
+
+    APPLE = Source(node_id="m-apple", label="Net Sales (FY2025)", ticker="AAPL",
+                  cik="0000320193", form_type="10-K", fiscal_year="2025")
+    MICROSOFT = Source(node_id="m-msft", label="Net Sales (FY2025)", ticker="MSFT",
+                       cik="0000789019", form_type="10-K", fiscal_year="2025")
+
+    def _evidence(self) -> list[Evidence]:
+        # The Company lines are what link "Apple" to "AAPL": a Company node is
+        # keyed on its own ticker and labelled with its legal name, and they
+        # arrive in the block for every question because retrieval always
+        # includes them.
+        return [
+            Evidence("E1", "Apple Inc — Ticker: AAPL, CIK: 0000320193",
+                     Source(node_id="AAPL", label="Apple Inc", ticker="Apple Inc"),
+                     kind="Company"),
+            Evidence("E2", "Net Sales (FY2025) — Reported: value=416,161.00 USD",
+                     self.APPLE, kind="FinancialMetric"),
+            Evidence("E3", "Microsoft Corporation — Ticker: MSFT, CIK: 0000789019",
+                     Source(node_id="MSFT", label="Microsoft Corporation",
+                            ticker="Microsoft Corporation"),
+                     kind="Company"),
+            Evidence("E4", "Net Sales (FY2025) — Reported: value=281,724.00 USD",
+                     self.MICROSOFT, kind="FinancialMetric"),
+        ]
+
+    def test_apple_figure_attributed_to_microsoft_is_gap(self):
+        """The regression, verbatim: STATED, ungrounded=[], headline metric
+        blind to it."""
+        g = grade_answer(
+            "Microsoft's FY2025 net sales were 416,161 million [E2].", self._evidence()
+        )
+        v = g.verdicts[0]
+        self.assertEqual(v.provenance, GAP, v.reason)
+        self.assertEqual(v.ungrounded, [])
+        self.assertEqual(v.misattributed, ["MSFT"])
+        self.assertEqual(g.misattributed, ["MSFT"])
+        # And the reader is told, in words.
+        self.assertTrue(any("MSFT" in note for note in g.violations()), g.violations())
+
+    def test_the_right_issuer_still_answers_by_every_spelling(self):
+        """A contract that refuses correct answers gets switched off, so the
+        two spellings of one issuer have to resolve to the same issuer."""
+        e = self._evidence()
+        for text in (
+            "Apple's FY2025 net sales were 416,161 million [E2].",
+            "Apple Inc reported 416,161 million [E2].",
+            "AAPL's FY2025 net sales were 416,161 million [E2].",
+        ):
+            g = grade_answer(text, e)
+            self.assertEqual(g.verdicts[0].provenance, STATED, (text, g.verdicts[0].reason))
+            self.assertEqual(g.verdicts[0].misattributed, [], text)
+
+    def test_a_comparison_citing_both_issuers_answers(self):
+        g = grade_answer(
+            "Apple's net sales were 416,161 and Microsoft's were 281,724 [E2] [E4].",
+            self._evidence(),
+        )
+        self.assertEqual(g.verdicts[0].provenance, STATED, g.verdicts[0].reason)
+        self.assertEqual(g.verdicts[0].misattributed, [])
+
+    def test_shown_arithmetic_does_not_launder_a_misattribution(self):
+        g = grade_answer(
+            "Microsoft's net sales were 416,161 - 0 = 416,161 [E2].", self._evidence()
+        )
+        self.assertEqual(g.verdicts[0].provenance, GAP, g.verdicts[0].reason)
+
+    def test_a_figure_cited_to_a_line_that_does_not_carry_it_is_ungrounded(self):
+        """Grounding is per cited tag, not per evidence block.
+
+        The whole block used to be unioned in, which turned any tag into a
+        laundering device: cite one line and every figure anywhere in the
+        evidence became groundable, so a sentence could carry a number off a
+        filing it never cited.
+        """
+        e = self._evidence() + [
+            Evidence("E5", "Net Sales (FY2024) — Reported: value=391,035.00 USD",
+                     self.APPLE, kind="FinancialMetric"),
+        ]
+        g = grade_answer("Apple's FY2024 net sales were 391,035 million [E2].", e)
+        self.assertEqual(g.verdicts[0].provenance, GAP, g.verdicts[0].reason)
+        self.assertIn("391,035", g.ungrounded_figures)
+
+    def test_evidence_with_no_filer_names_no_issuer_to_check_against(self):
+        """An untraced line says nothing about who filed it.
+
+        Without this, every chunk-backed claim -- a business description
+        grounded in Item 1, say -- would be refused for naming the company the
+        chunk is about, which is the first false refusal and enough to get the
+        contract switched off.
+        """
+        chunk = Evidence(
+            "E1",
+            "Business chunk: The Company designs and markets smartphones.",
+            src(section="Business"),
+            kind="DocumentChunk",
+        )
+        g = grade_answer("Apple designs and markets smartphones [E1].", [chunk])
+        self.assertEqual(g.verdicts[0].provenance, STATED, g.verdicts[0].reason)
+        self.assertEqual(g.verdicts[0].misattributed, [])
+
+    def test_naming_no_issuer_at_all_is_still_a_misattribution(self):
+        """The bypass: state the figure, attribute it to nobody.
+
+        "Microsoft's net sales were 416,161 [E2]" is caught by comparing the
+        name against the cited filer. "Net sales were 416,161 [E2]" names
+        nobody, so that comparison finds nothing to compare -- and a reader
+        takes it to be about whatever the question was about. The question's own
+        issuers are the comparison, which is the D-a5 shape: the corpus cannot
+        support the comparison and the sentence appears to supply it.
+        """
+        g = grade_answer(
+            "Net sales were 416,161 million [E2].",
+            self._evidence(),
+            "How many times bigger is Apple's revenue than Microsoft's?",
+        )
+        v = g.verdicts[0]
+        self.assertEqual(v.provenance, GAP, v.reason)
+        self.assertEqual(v.ungrounded, [])
+        self.assertEqual(v.misattributed, ["MSFT"])
+
+    def test_the_same_sentence_under_an_apple_question_is_fine(self):
+        """The rule reads the question, so it must not refuse the same words
+        when the question is about the filer the evidence is filed by."""
+        g = grade_answer(
+            "Net sales were 416,161 million [E2].",
+            self._evidence(),
+            "What were Apple's FY2025 net sales?",
+        )
+        self.assertEqual(g.verdicts[0].provenance, STATED, g.verdicts[0].reason)
+        self.assertEqual(g.verdicts[0].misattributed, [])
+
+    def test_a_bare_figure_with_no_question_issuer_is_not_refused(self):
+        """No question context means no implied claim about anyone.
+
+        Otherwise a fragment quoted out of context -- a figure the reader supplies
+        their own issuer for -- would be refused for a misattribution that was
+        never made.
+        """
+        g = grade_answer("Net sales were 416,161 million [E2].", self._evidence())
+        self.assertEqual(g.verdicts[0].provenance, STATED, g.verdicts[0].reason)
+
+    def test_an_outside_corpus_marker_does_not_launder_a_misattribution(self):
+        """"Currently" used to short-circuit the attribution rule.
+
+        The rule was checked after the outside-corpus markers, so a sentence
+        that said "currently" and then misattributed a figure was graded
+        EXTERNAL -- which is not a refusal, and the misattribution went
+        unreported.
+        """
+        g = grade_answer(
+            "Currently, Microsoft's net sales were 416,161 million [E2].",
+            self._evidence(),
+            "What were Apple's FY2025 net sales?",
+        )
+        v = g.verdicts[0]
+        self.assertEqual(v.provenance, GAP, v.reason)
+        self.assertEqual(v.misattributed, ["MSFT"])
+
+    def test_an_outside_corpus_claim_about_no_filer_is_still_external(self):
+        """The marker rule keeps its job where there is nothing to misattribute."""
+        g = grade_answer(
+            "Analyst consensus puts Apple's FY2026 revenue well above 500,000 "
+            "million [E2].",
+            self._evidence(),
+        )
+        self.assertEqual(g.verdicts[0].provenance, EXTERNAL, g.verdicts[0].reason)
+
+    def test_a_short_issuer_name_is_still_recognised(self):
+        """Below four characters the alias is matched case-sensitively.
+
+        The length floor used to exempt short names entirely, so a misattribution
+        to "3M" was undetectable. Case-sensitivity keeps the floor's purpose --
+        a three-letter ordinary word must not match every time it appears --
+        without dropping the issuer.
+        """
+        three_m = Evidence(
+            "E1", "3M Company — Ticker: MMM, CIK: 0000066740",
+            Source(node_id="MMM", label="3M Company", ticker="3M Company"),
+            kind="Company",
+        )
+        line = Evidence(
+            "E2", "Net Sales (FY2025) — Reported: value=15,000.00 USD",
+            Source(node_id="m3m", label="Net Sales", ticker="MMM", form_type="10-K",
+                   fiscal_year="2025"),
+            kind="FinancialMetric",
+        )
+        apple_co = Evidence(
+            "E3", "Apple Inc — Ticker: AAPL, CIK: 0000320193",
+            Source(node_id="AAPL", label="Apple Inc", ticker="Apple Inc"),
+            kind="Company",
+        )
+        g = grade_answer("3M's net sales were 15,000 million [E2].", [three_m, line])
+        self.assertEqual(g.verdicts[0].provenance, STATED, g.verdicts[0].reason)
+        apple = grade_answer(
+            "Apple's net sales were 15,000 million [E2].", [three_m, line, apple_co]
+        )
+        self.assertEqual(apple.verdicts[0].provenance, GAP, apple.verdicts[0].reason)
+        # The misattribution names the issuer the sentence *credits*, which is
+        # the one absent from the cited sources -- not the one that filed them.
+        self.assertEqual(apple.verdicts[0].misattributed, ["AAPL"])
+        self.assertIn("MMM", apple.verdicts[0].reason)
+
+    def test_a_short_alias_does_not_fire_on_an_ordinary_word(self):
+        """The reason the length floor became a case-sensitivity rule."""
+        e = [
+            Evidence("E1", "Net Sales (FY2025) — Reported: value=15,000.00 USD",
+                     Source(node_id="m1", label="Net Sales", ticker="AAPL",
+                            form_type="10-K", fiscal_year="2025"),
+                     kind="FinancialMetric"),
+        ]
+        g = grade_answer("Net sales were 15,000 million [E1].", e,
+                         "What were Apple's FY2025 net sales?")
+        self.assertEqual(g.verdicts[0].provenance, STATED, g.verdicts[0].reason)
+
+    def test_the_issuer_index_needs_company_lines_to_be_usable(self):
+        """The attribution check is only as good as the evidence it is given.
+
+        A metric line knows the filer's ticker, not the company's name, so a
+        block with no Company evidence cannot name an issuer and cannot detect
+        anything -- and reports no misattribution rather than admitting it
+        could not look. Retrieval always includes the Company nodes, which is
+        what makes that safe; the dependency is real, so it is pinned here.
+        """
+        metrics_only = [self._evidence()[1]]
+        index = _issuer_index(metrics_only)
+        self.assertEqual(sorted(index), ["0000320193", "aapl"])
+        self.assertFalse(
+            any("apple" in key or "microsoft" in key for key in index),
+            "a legal name cannot come from a metric line",
+        )
+        g = grade_answer(
+            "Microsoft's net sales were 416,161 million [E1].",
+            metrics_only,
+            "What were Microsoft's FY2025 net sales?",
+        )
+        self.assertEqual(g.verdicts[0].misattributed, [])
+        # With the Company lines the same sentence is caught.
+        g = grade_answer(
+            "Microsoft's net sales were 416,161 million [E2].",
+            self._evidence(),
+            "What were Microsoft's FY2025 net sales?",
+        )
+        self.assertEqual(g.verdicts[0].misattributed, ["MSFT"])
+
+
+# ---------------------------------------------------------------------------
 # Wiring
 # ---------------------------------------------------------------------------
 
@@ -350,12 +745,20 @@ class ResolverTests(unittest.TestCase):
         test fails loudly instead of silently returning nothing.
         """
 
-        def execute(self, q):
+        def __init__(self):
+            self.queries: list[tuple[str, dict]] = []
+
+        def execute(self, q, params=None):
+            self.queries.append((q, dict(params or {})))
             if q.startswith("MATCH (f:Filing) RETURN f.id"):
                 return [("acc1", "10-K", "2025-10-31", "0000320193-25-000079",
                          "2025-09-27", 2025, "FY")]
             if q.startswith("MATCH (f:Filing)-[r]->(n)"):
-                return [("m1", "acc1", "")]
+                # Answers only for the ids the query asked for, so a resolver
+                # that dropped the filter would be caught by this fixture
+                # returning rows it was never asked about.
+                wanted = set((params or {}).get("ids", []))
+                return [(n, f, c) for n, f, c in (("m1", "acc1", ""), ("elsewhere", "acc2", "1A")) if n in wanted]
             if "REPORTED_IN" in q:
                 return [("m1", "8", "Management's Discussion and Analysis")]
             if "DISAGGREGATED_BY" in q:
@@ -390,6 +793,40 @@ class ResolverTests(unittest.TestCase):
         out = SourceResolver(self.FakeGraph()).sources_for(nodes)
         self.assertIn("c1", out)
 
+    def test_the_filing_traversal_filters_in_the_engine(self):
+        """The ids go in the query, not only in the loop that reads it.
+
+        Batching kept this from being one query per node, but unfiltered it was
+        still one query that looked at every filing-to-node row in the graph --
+        ~9,700 of them -- to pick out the few hundred a broad question
+        retrieved. That is the dominant cost of resolving a Source and it was
+        paid on every question.
+        """
+        graph = self.FakeGraph()
+        nodes = [
+            {"id": "m1", "name": "Net Sales", "type": "FinancialMetric"},
+            {"id": "m2", "name": "Cost of Sales", "type": "FinancialMetric"},
+        ]
+        SourceResolver(graph).sources_for(nodes)
+        traversals = [
+            (q, p) for q, p in graph.queries
+            if q.startswith("MATCH (f:Filing)-[r]->(n)")
+        ]
+        self.assertEqual(len(traversals), 1, graph.queries)
+        query, params = traversals[0]
+        self.assertIn("WHERE n.id IN $ids", query)
+        self.assertEqual(params.get("ids"), ["m1", "m2"])
+
+    def test_a_node_the_query_was_not_asked_about_is_not_traced(self):
+        """The fixture answers only the ids it was given, so this fails if the
+        filter is dropped: "elsewhere" would come back traced."""
+        graph = self.FakeGraph()
+        out = SourceResolver(graph).sources_for(
+            [{"id": "m1", "name": "Net Sales", "type": "FinancialMetric"}]
+        )
+        self.assertIn("m1", out)
+        self.assertNotIn("elsewhere", out)
+
 
 class SegmentResolutionTests(unittest.TestCase):
     """Segments are reachable by two different paths, and only by name.
@@ -402,15 +839,22 @@ class SegmentResolutionTests(unittest.TestCase):
     real segments untraceable, which is what happened before.
     """
 
+    #: Every filing-to-node row the fixture graph holds. The traversal returns
+    #: only the ones whose node is in the id list it is given, so a resolver
+    #: that stopped filtering in the engine would be visible here as a fixture
+    #: that answers the whole graph.
+    ALL_EDGES = [("m1", "f1", "8"), ("unrelated", "f2", "1A")]
+
     class FakeGraph:
-        def execute(self, q):
+        def execute(self, q, params=None):
             if q.startswith("MATCH (f:Filing) RETURN f.id"):
                 return [
                     ("recent", "10-K", "2026-08-26", "acc-recent", "2026-06-30", 2026, "FY"),
                     ("old", "10-K", "2025-08-26", "acc-old", "2025-06-30", 2025, "FY"),
                 ]
             if q.startswith("MATCH (f:Filing)-[r]->(n)"):
-                return []
+                wanted = set((params or {}).get("ids", []))
+                return [(n, f, c) for n, f, c in SegmentResolutionTests.ALL_EDGES if n in wanted]
             if "HAS_SEGMENT" in q:
                 # Reported by two filings; the newer must win.
                 return [("Americas", "old", "2025-08-26"), ("Americas", "recent", "2026-08-26")]
@@ -433,6 +877,37 @@ class SegmentResolutionTests(unittest.TestCase):
         nodes = [{"id": "Americas", "name": "Americas", "type": "Segment"}]
         out = SourceResolver(self.FakeGraph()).sources_for(nodes)
         self.assertEqual(out["Americas"].accession, "acc-recent")
+
+    def test_no_traversal_asks_a_segment_for_a_property_it_does_not_have(self):
+        """The dead fallback, pinned against the real schema.
+
+        A third traversal used to sit in ``sources_for``, keyed on ``s.id``
+        through ``DISAGGREGATED_BY``. ``Segment`` carries ``name`` and
+        ``segment_type`` and nothing else, so that query raised on every
+        database -- and the ``except: pass`` around it made a fallback that
+        had never once run look like a working one. Asserted against
+        :data:`NODE_TABLES` rather than as a string, so it holds whatever the
+        schema grows.
+        """
+        seen: list[str] = []
+
+        class RecordingGraph(SegmentResolutionTests.FakeGraph):
+            def execute(self, q):
+                seen.append(q)
+                return super().execute(q)
+
+        SourceResolver(RecordingGraph()).sources_for(
+            [{"id": "Americas", "name": "Americas", "type": "Segment"}]
+        )
+        self.assertTrue(seen, "the resolver issued no query at all")
+        segment_columns = set(NODE_TABLES["Segment"])
+        for query in seen:
+            for alias in re.findall(r"\(\s*(\w+)\s*:\s*Segment\s*\)", query):
+                for prop in re.findall(rf"\b{alias}\.(\w+)\b", query):
+                    self.assertIn(
+                        prop, segment_columns,
+                        f"Segment has no {prop!r}: {query}",
+                    )
 
 
 class EvidenceTagAndGroundingTests(unittest.TestCase):
@@ -486,10 +961,6 @@ class EvidenceTagAndGroundingTests(unittest.TestCase):
         self.assertEqual(graded.mix, {STATED: 1})
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class UnitRestatementTests(unittest.TestCase):
     """A figure restated in another unit is the cited figure, not a new one.
 
@@ -541,3 +1012,10 @@ class UnitRestatementTests(unittest.TestCase):
     def test_an_uncited_figure_is_still_refused(self):
         g = grade_answer("Net sales were 416,161 million.", self._evidence())
         self.assertTrue(g.gap)
+
+
+# Last in the file, or running it as a script silently skips every TestCase
+# declared after it: `unittest.main()` runs at import time on the classes
+# defined so far, and the rest of the module is never reached.
+if __name__ == "__main__":
+    unittest.main()

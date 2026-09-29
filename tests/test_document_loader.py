@@ -97,8 +97,18 @@ class _TempFileMixin(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
 
     def write(self, name: str, text: str) -> Path:
+        """Write a fixture with the newlines the literal already has.
+
+        ``write_text`` opens in text mode, so on Windows every ``\n`` in the
+        source literal becomes ``\r\n`` on disk -- and the loader faithfully
+        preserves what was written. A test that then compares against the
+        LF-only literal it passed in is comparing against different bytes, and
+        reports a byte-exactness failure for content that survived intact.
+        Pinning the newline here makes the fixture mean the same thing on every
+        platform, which is the only way "survives byte-for-byte" is testable.
+        """
         path = self.dir / name
-        path.write_text(text, encoding="utf-8")
+        path.write_text(text, encoding="utf-8", newline="\n")
         return path
 
 

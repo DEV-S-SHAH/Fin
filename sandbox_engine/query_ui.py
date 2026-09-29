@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import re
+import socket
 import threading
 import time
 import urllib.error
@@ -33,14 +34,19 @@ import webbrowser
 from collections import Counter
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 from urllib.parse import parse_qs, urlparse
 
 import ladybug as lb
 
 from .buffer import NODE_TABLES, REL_TABLES
 from .provenance import (
+    REFUSED,
+    _Alias,
+    issuer_forms,
+    issuer_in_text,
     build_evidence,
+    citation_tags,
     grade_answer,
     render_gap,
     serialise_evidence,
@@ -741,13 +747,11 @@ def _load_api_key() -> str:
 
 MAX_BODY = 128 * 1024
 
-_CITATION_RE = re.compile(r"\[(E\d+)\]")
-
 ANSWER_SYSTEM = """\
 You answer questions using only a tagged evidence block retrieved from financial filings.
 
 Every line of evidence carries a bracketed tag like [E1] or [E12], and a Source showing
-the form and period it came from.
+the ticker that filed it, the form, and the period it came from.
 
 Rules:
 - Use only the supplied evidence. If it does not contain the answer, say so plainly and state what is missing.
@@ -756,7 +760,7 @@ Rules:
 - If you compute a value from cited facts, show the arithmetic so the derivation is visible.
 - Never state a number that is not in the evidence and not derived from it.
 - Do not use outside knowledge. If a fact is not in the evidence, treat it as unknown rather than supplying it.
-- Financial values include scale properties: scale=6 means in millions (e.g. 416161.0 scale=6 is $416,161 million USD). State the units clearly.
+- A figure belongs to the ticker on its own evidence line. When two issuers report the same line item, never carry a number from one line to the other; and when their fiscal periods do not cover the same span, say so instead of comparing them.
 - Answer directly and factually in clean prose or concise bullet points. No preamble.
 """
 
@@ -942,13 +946,157 @@ class KnowledgeGraph:
 
 # ── RAG Retrieval & QA Engine ─────────────────────────────────────────────────
 
-def retrieve_financial_context(kg: KnowledgeGraph, question: str, ticker: str | None = None) -> tuple[str, list[dict], list[dict], dict[str, str], list[str]]:
-    """Retrieves relevant entities and relations matching the question and formats context with tags [E1], [E2]..."""
+#: Spellings a question may use for a segment name the filing abbreviates.
+#: Filers write "U.S." in a country table and "United States" in prose, so a
+#: substring test over the raw question misses the segment a question is plainly
+#: asking about. Kept to abbreviations that are genuinely ambiguous in a filing
+#: and so worth expanding; an ordinary name already matches itself.
+_SEGMENT_ALIASES: dict[str, tuple[str, ...]] = {
+    "u.s": ("united states", "usa", "america", "united states of america"),
+    "us": ("united states", "usa", "u.s", "america"),
+    "uk": ("united kingdom", "britain", "great britain"),
+    "uae": ("united arab emirates",),
+    "greater china": ("china", "mainland china"),
+    "rest of asia pacific": ("asia pacific", "rest of asia", "asia"),
+    "rest of world": ("other countries", "other"),
+    "other countries": ("rest of world", "other"),
+    "emea": ("europe", "middle east", "africa"),
+    "apac": ("asia pacific", "asia"),
+}
+
+
+def _segment_name_matches(name_l: str, q_low: str) -> bool:
+    """Whether a segment name, or a known spelling of it, occurs in the question.
+
+    Matched on word boundaries rather than as a bare substring, so "us" does not
+    fire on "because", "industry" or "focus" -- all of which a substring test
+    would match, seeding the United States segment for a question that never
+    mentioned a country.
+    """
+    if not name_l:
+        return False
+    candidates = (name_l,) + _SEGMENT_ALIASES.get(name_l, ())
+    return any(
+        re.search(rf"(?<![a-z0-9]){re.escape(candidate)}(?![a-z0-9])", q_low)
+        for candidate in candidates
+    )
+
+
+def _period_label(period_code, period_end) -> str:
+    """A period a reader can check, from a metric's own period columns.
+
+    ``period_code`` is the span (``3M``, ``6M``, ``9M``, ``FY``) and
+    ``period_end`` the date it closes on. Two things are deliberately *not*
+    rendered: an absent code yields no word rather than the string ``None``,
+    and ``period_end`` is dropped when it is the ``0001-01-01`` sentinel that
+    stands for "the column header printed only a year" -- 1319 of Microsoft's
+    1897 metrics carry it, and printing it would be worse than printing nothing.
+    """
+    bits: list[str] = []
+    code = str(period_code or "").strip()
+    if code:
+        bits.append(code)
+    end_year = getattr(period_end, "year", None)
+    if end_year and end_year > 1900:
+        bits.append(f"ending {period_end.isoformat()}")
+    if not bits:
+        return ""
+    return "period " + " ".join(bits)
+
+
+#: Periods of one concept kept per issuer for an ordinary question. Three covers
+#: "the latest quarter", "last quarter" and the comparative alongside them.
+_MAX_PERIODS_PER_ISSUER = 3
+#: ...and for a question that asks for the series itself.
+_MAX_PERIODS_PER_ISSUER_SERIES = 16
+_SERIES_WORDS = (
+    "trend", "trends", "over the", "each quarter", "each year", "every quarter",
+    "every year", "history", "historical", "by quarter", "by year", "yearly",
+    "quarterly", "trajectory", "progression", "last n", "past n",
+)
+
+
+def _bound_metric_periods(
+    candidates: list[tuple],
+    q_low: str,
+    filer: dict[str, str],
+    metric_filers: dict[str, set[str]],
+) -> list[tuple]:
+    """Keep the most recent periods of each concept, per issuer.
+
+    Grouping is by concept *and* issuer, so two companies reporting the same
+    measure never crowd each other out -- trimming a comparison to one company
+    would be worse than the token saving. Within a group the newest period ends
+    first, and an undated period sorts last because the graph does not know
+    which of them is the "most recent" the question asked for.
+    """
+    cap = (
+        _MAX_PERIODS_PER_ISSUER_SERIES
+        if any(word in q_low for word in _SERIES_WORDS)
+        else _MAX_PERIODS_PER_ISSUER
+    )
+    groups: dict[tuple[str, str], list[tuple]] = {}
+    for mid, _cname, _stype, _aclass, period_end, concept in candidates:
+        issuers = sorted(
+            {filer[acc] for acc in metric_filers.get(mid, set()) if acc in filer}
+        )
+        key = (concept, issuers[0] if issuers else "")
+        groups.setdefault(key, []).append(
+            (str(period_end or ""), mid, _cname, _stype, _aclass)
+        )
+    kept: list[tuple] = []
+    for entries in groups.values():
+        # Newest end date first; the second pass pins an undated period last
+        # even though reverse sorting put its empty key at the tail already.
+        entries.sort(key=lambda e: e[0], reverse=True)
+        entries.sort(key=lambda e: e[0] == "")
+        for _end, mid, cname, stype, aclass in entries[:cap]:
+            kept.append((mid, cname, stype, aclass, None, ""))
+    return kept
+
+
+def _names_issuer(question: str, ticker: str, legal_name: str | None) -> bool:
+    """Whether the question names this issuer, by ticker or by trading name.
+
+    The stored legal names are "Apple Inc" and "MICROSOFT CORPORATION", neither
+    of which appears in "Compare Apple and Microsoft" -- so a verbatim test finds
+    no issuer in almost every real question and the scoping does nothing. The
+    corporate suffix is what a person drops when they write the company, so it is
+    stripped and the distinctive remainder matched on word boundaries. A short
+    remainder ("3M", "IBM") is not matched here at all: a question is where a
+    quantity gets written as "3M miles", and scoping that to 3M would pull the
+    wrong filer into the prompt. The grader reads answers rather than questions
+    and takes the opposite trade, which is why the two pass the same helper with
+    different answers to that question -- not because either is the correct one
+    in general.
+    """
+    for spelling in issuer_forms(ticker) + issuer_forms(legal_name):
+        if issuer_in_text(question, _Alias(
+            form=spelling.lower(),
+            originals=frozenset({spelling}),
+            issuers=frozenset({ticker}),
+        ), short_names=False):
+            return True
+    return False
+
+
+def retrieve_financial_context(kg: KnowledgeGraph, question: str, ticker: str | None = None) -> tuple[list[dict], list[dict], dict[str, str], list[str]]:
+    """Retrieves relevant entities and relations matching the question and tags them [E1], [E2]...
+
+    Returns ``(nodes, edges, tag_map, seed_ids)``. There is no formatted
+    context string: the prompt is assembled from the evidence block, which
+    carries each line's provenance, so a parallel rendering of the same graph
+    would be a second thing to keep in step and nothing would read it.
+    """
     q_low = question.lower()
 
     # Identify candidate seeds
     seed_nodes: list[dict] = []
     seen_ids: set[str] = set()
+    #: Metric ids the question's own words matched. Drives the segment
+    #: traversal below, which is what makes "long-lived assets in the United
+    #: States" findable when the segment is spelled "U.S".
+    matched_metrics: list[str] = []
 
     def add_node(nid: str, name: str, etype: str, desc: str = "", hint: str = ""):
         if nid not in seen_ids:
@@ -975,12 +1123,27 @@ def retrieve_financial_context(kg: KnowledgeGraph, question: str, ticker: str | 
     except Exception:
         pass
     filings = kg.execute("MATCH (f:Filing) RETURN f.accession_number, f.form_type, f.fiscal_year, f.fiscal_period, f.period_end_date")
+    #: Issuers the question names. "Compare Apple and Microsoft" must not answer
+    #: with NVIDIA's revenue: the words match every issuer equally well, so
+    #: without this the prompt carries a third company's figures and the model
+    #: picks whichever it saw last. Only the filer of a named issuer is evidence
+    #: for a question about that issuer.
+    named: set[str] = {
+        tick
+        for tick, lname, _cik in companies
+        if _names_issuer(question, tick, lname)
+    }
+    #: The filings the question's own words selected. A metric is in scope only
+    #: when one of these reported it.
+    filing_ids: set[str] = set()
     for f in filings:
         acc, form, fy, fp, ped = f[0], f[1], f[2], f[3], f[4]
         # Filter filings to resolved company if ticker is known
         if ticker and filer.get(acc) and filer[acc] != ticker:
             continue
         hint = filer.get(acc, acc)
+        if named and hint not in named:
+            continue
         # match 10-k, 10-q, 8-k, annual, quarterly, 2025
         if ("10-k" in q_low or "annual" in q_low or "year" in q_low) and form == "10-K":
             add_node(acc, f"{form} FY{fy} ({fp})", "Filing", f"Form {form}, Fiscal Year {fy}, Period Ended {ped}", hint)
@@ -991,13 +1154,34 @@ def retrieve_financial_context(kg: KnowledgeGraph, question: str, ticker: str | 
         else:
             # If general query, include all filings
             add_node(acc, f"{form} FY{fy} ({fp})", "Filing", f"Form {form}, Fiscal Year {fy}, Period Ended {ped}", hint)
+        filing_ids.add(acc)
+
+    # Which filing reported which metric.
+    #
+    # Metric names are period-scoped, so "revenue" matches every Net Sales node
+    # in the graph -- every period of every issuer, 251 nodes and 84k characters
+    # of prompt for a two-company comparison, and the model has to guess which
+    # few lines answer the question. Filtering on the filings already selected
+    # removes the issuers the question never named and the forms it never asked
+    # for, and it can only narrow: a metric reachable from a selected filing is
+    # exactly the evidence that filing offers.
+    metric_filers: dict[str, set[str]] = {}
+    for acc, mid in kg.execute(
+        "MATCH (f:Filing)-[:REPORTS_METRIC]->(m:FinancialMetric) "
+        "RETURN f.accession_number, m.metric_id"
+    ):
+        metric_filers.setdefault(mid, set()).add(acc)
 
     # Check metrics
-    metrics = kg.execute("MATCH (m:FinancialMetric) RETURN m.metric_id, m.canonical_name, m.statement_type, m.account_class")
+    metrics = kg.execute(
+        "MATCH (m:FinancialMetric) RETURN m.metric_id, m.canonical_name, "
+        "m.statement_type, m.account_class, m.period_end"
+    )
     # Question text with punctuation collapsed so "shareholders' equity" (straight
     # or curly apostrophe) always matches a stored "shareholders' equity" label.
     q_norm = re.sub(r"[^a-z0-9\s]", " ", q_low)
     q_norm = re.sub(r"\s+", " ", q_norm).strip()
+    candidates: list[tuple] = []
     for m in metrics:
         mid, cname, stype, aclass = m[0], m[1], m[2], m[3]
         name_clean = re.sub(r"\(.*?\)", "", cname).strip().lower()
@@ -1017,15 +1201,64 @@ def retrieve_financial_context(kg: KnowledgeGraph, question: str, ticker: str | 
             keywords.extend(["cost", "cogs"])
 
         if any(kw and kw in q_norm for kw in keywords):
-            add_node(mid, cname, "FinancialMetric", f"Statement: {stype}, Class: {aclass}")
+            if metric_filers.get(mid, set()) & filing_ids:
+                candidates.append((mid, cname, stype, aclass, m[4], name_clean))
+
+    # Bound how many periods of one concept reach the prompt.
+    #
+    # "Compare Apple and Microsoft revenue in the most recent quarter" matches
+    # every period either company ever reported, and the model then has to pick
+    # the right quarter out of a wall of them -- which is how a FY2025 annual and
+    # a Q3 quarter both reach the answer. Keeping the most recent few per issuer
+    # per concept keeps the periods a question about "the latest" or "last
+    # quarter" can mean, and a question that really does want the series says so
+    # ("over the last eight quarters", "trend", "each year") and gets the cap
+    # raised instead of being silently truncated.
+    for mid, cname, stype, aclass, _pend, _concept in _bound_metric_periods(
+        candidates, q_low, filer, metric_filers
+    ):
+        add_node(mid, cname, "FinancialMetric", f"Statement: {stype}, Class: {aclass}")
+        matched_metrics.append(mid)
+
+    segments = kg.execute("MATCH (s:Segment) RETURN s.segment_id, s.dimension_name, s.dimension_type")
+
+    # Segments that a metric the question already matched is broken down by.
+    #
+    # This is the path a question like "how much did it invest in the United
+    # States" needs, and name matching cannot supply it: the segment is stored
+    # as "U.S" while the question says "United States", so an exact-name test
+    # never fires for it. Worse, the segments that *do* match by name --
+    # "China", "Other countries" -- then arrive carrying whichever metric
+    # connects to them, which is net sales, so the model is handed China
+    # 64,377 when it asked about long-lived assets. Traversal from the matched
+    # metric is the structural answer: if the question named the measure, the
+    # dimensions that measure is broken down by are what it is asking about,
+    # whatever those dimensions happen to be called.
+    if matched_metrics:
+        by_name = {
+            (row[1] or ""): (row[0], row[2])
+            for row in segments
+        }
+        try:
+            for sname, sdtype in kg.execute(
+                "MATCH (m:FinancialMetric)-[d:DISAGGREGATED_BY]->(s:Segment) "
+                "RETURN DISTINCT s.dimension_name, s.dimension_type"
+            ):
+                hit = by_name.get(sname or "")
+                if hit:
+                    add_node(hit[0], sname, "Segment",
+                             f"Dimension type: {hit[1] or sdtype}")
+        except Exception:
+            pass
 
     # Check segments
-    segments = kg.execute("MATCH (s:Segment) RETURN s.segment_id, s.dimension_name, s.dimension_type")
     for s in segments:
         sid, name, dtype = s[0], s[1], s[2]
         name_l = (name or "").lower()
         dtype_l = (dtype or "").lower()
-        if name_l in q_low or dtype_l in q_low or "segment" in q_low or "breakdown" in q_low or "geograph" in q_low or "product" in q_low:
+        if (_segment_name_matches(name_l, q_low) or dtype_l in q_low
+                or "segment" in q_low or "breakdown" in q_low
+                or "geograph" in q_low or "product" in q_low):
             add_node(sid, name, "Segment", f"Dimension type: {dtype}")
 
     # Check disclosure events
@@ -1069,20 +1302,42 @@ def retrieve_financial_context(kg: KnowledgeGraph, question: str, ticker: str | 
     _BIZ_WEIGHT = 2
     keywords = set(re.findall(r"[a-z0-9]+", q_low)) - _STOP
     chunk_hits: list[dict[str, Any]] = []
-    for acc, form in ((f[0], f[1]) for f in filings):
-        if form not in ("10-K", "10-Q") or acc not in seen_ids:
-            continue
+    # One query for every filing at once. It used to be run once per filing with
+    # no WHERE, so each run returned every chunk in the corpus -- ~4,700 of
+    # them -- and the caller discarded all but one filing's worth: ~4,700 rows
+    # transferred per filing, twelve times over, to arrive at the same set.
+    #
+    # The WHERE and the RETURN name the same property, and that is the part that
+    # matters. `Filing.id` is `stable_id("filing", ticker, form_type, ...)`, a
+    # hash, while the accession list below is built from
+    # `MATCH (f:Filing) RETURN f.accession_number, ...`. The two are equal only
+    # while the corpus holds no real SEC accession numbers, because
+    # `accession_number` falls back to that same hash when there is none. Bind
+    # the hash against an accession list and the filter matches nothing -- and
+    # a chunk query that matches nothing raises no error and drops every
+    # narrative passage from every answer. Asking for the property the
+    # accession list was actually read from keeps the two in step on either
+    # schema: `accession_number` is renamed to `id` by the engine translation,
+    # so both sides move together.
+    narrative_forms = {
+        f[0]: f[1] for f in filings
+        if f[1] in ("10-K", "10-Q") and f[0] in seen_ids
+    }
+    if narrative_forms:
         for chunk_acc, cid, ctext, csection in kg.execute(
             "MATCH (f:Filing)-[:CONTAINS_CHUNK]->(c:DocumentChunk) "
-            "RETURN f.id, c.id, c.text, c.section"
+            "WHERE f.accession_number IN $accs "
+            "RETURN f.accession_number, c.id, c.text, c.section",
+            {"accs": sorted(narrative_forms)},
         ):
-            if chunk_acc != acc:
+            form = narrative_forms.get(chunk_acc)
+            if not form:
                 continue
             text_low = (ctext or "").lower()
             q_score = sum(1 for kw in keywords if kw in text_low)
             biz_score = sum(1 for term in _BIZ_TERMS if term in text_low)
             chunk_hits.append(
-                {"filing": acc, "id": cid, "text": ctext or "", "section": csection or "",
+                {"filing": chunk_acc, "id": cid, "text": ctext or "", "section": csection or "",
                  "score": q_score + _BIZ_WEIGHT * biz_score, "form": form}
             )
     # Best score first, then 10-K before 10-Q, then a stable tie-break. Never
@@ -1194,12 +1449,12 @@ def retrieve_financial_context(kg: KnowledgeGraph, question: str, ticker: str | 
 
     # Map tag IDs E1, E2, ...
     tag_map: dict[str, str] = {}     # tag -> node_id
-    id_to_tag: dict[str, str] = {}   # node_id -> tag
 
     for idx, node in enumerate(retrieved_nodes, start=1):
-        tag = f"E{idx}"
-        tag_map[tag] = node["id"]
-        id_to_tag[node["id"]] = tag
+        # One direction only. The reverse map existed to render the context
+        # string, and with that gone it was written on every node of every
+        # question and read by nothing.
+        tag_map[f"E{idx}"] = node["id"]
 
     # Query specific relationships between retrieved nodes
     node_ids = set(seen_ids)
@@ -1214,35 +1469,60 @@ def retrieve_financial_context(kg: KnowledgeGraph, question: str, ticker: str | 
             })
 
     # 2. Filing -> FinancialMetric
+    #
+    # The period and the as-printed column header live on the *Metric node*, not
+    # on the edge. ``REPORTS_METRIC`` carries only ``value`` and ``currency``, so
+    # asking it for ``scale``/``period_type``/``raw_label`` returns three nulls
+    # and every figure reaches the prompt as "Reported : value=416,161.00 USD
+    # (), period=None" -- a number with no unit, no column header and no period,
+    # which is why a FY2025 annual and a Q3 quarter were indistinguishable once
+    # they were in the prompt. ``Metric.period_code`` is spelled that way
+    # (buffer.py) precisely so this translation does not rewrite it onto the
+    # segment edge's ``period``; reading it here is what it was named for.
     for r in kg.execute(
         "MATCH (f:Filing)-[x:REPORTS_METRIC]->(m:FinancialMetric) "
-        "RETURN f.accession_number, m.metric_id, x.value, x.scale, x.currency, x.period_type, x.raw_label"
+        "RETURN f.accession_number, m.metric_id, x.value, x.currency, "
+        "m.reported_label, m.period_code, m.period_end"
     ):
-        f_acc, m_id, val, scale, curr, ptype, label = r[0], r[1], r[2], r[3], r[4], r[5], r[6]
+        f_acc, m_id, val, curr, label, pcode, pend = (r[0], r[1], r[2], r[3], r[4], r[5], r[6])
         if f_acc in node_ids and m_id in node_ids:
-            scale_desc = "in millions" if scale == 6 else ("in thousands" if scale == 3 else "")
-            desc = f"Reported {label or ''}: value={val:,.2f} {curr} ({scale_desc}), period={ptype}"
+            desc = f"Reported {label or ''}: value={val:,.2f} {curr or ''}".rstrip()
+            period = _period_label(pcode, pend)
+            if period:
+                desc += f", {period}"
             retrieved_edges.append({
                 "source": f_acc, "target": m_id,
                 "relation": "REPORTS_METRIC",
                 "description": desc,
-                "value": val, "scale": scale, "period_type": ptype,
+                "value": val, "period_type": pcode,
             })
 
     # 3. FinancialMetric -> Segment
+    #
+    # The period is read as ``period_type`` -- the display name the rel's
+    # ``period`` column is published under. Asking for ``fiscal_year`` and
+    # ``fiscal_period`` instead yields nulls, and the evidence then reads
+    # "FYNone None", which leaves the model unable to tell a FY2025 figure
+    # from a FY2024 one. The measure's own name is included because the
+    # segment value is meaningless without it: "segment value=40,274" on its
+    # own could be revenue, assets or anything else, and the model reads the
+    # line rather than the graph. ``d.scale`` is not asked for at all: the
+    # table has no such column, so it was a literal NULL rendering as an empty
+    # "()" after every segment figure.
     for r in kg.execute(
         "MATCH (m:FinancialMetric)-[d:DISAGGREGATED_BY]->(s:Segment) "
-        "RETURN m.metric_id, s.segment_id, d.value, d.scale, d.fiscal_year, d.fiscal_period"
+        "RETURN m.metric_id, s.segment_id, d.value, d.period_type, "
+        "m.canonical_name"
     ):
-        m_id, s_id, val, scale, fy, fp = r[0], r[1], r[2], r[3], r[4], r[5]
+        m_id, s_id, val, period, measure = r[0], r[1], r[2], r[3], r[4]
         if m_id in node_ids and s_id in node_ids:
-            scale_desc = "in millions" if scale == 6 else ("in thousands" if scale == 3 else "")
-            desc = f"Disaggregated segment value={val:,.2f} ({scale_desc}), FY{fy} {fp}"
+            desc = (f"{measure or 'value'}: segment value={val:,.2f}, "
+                    f"period {period or 'unstated'}")
             retrieved_edges.append({
                 "source": m_id, "target": s_id,
                 "relation": "DISAGGREGATED_BY",
                 "description": desc,
-                "value": val, "scale": scale,
+                "value": val, "period_type": period,
             })
 
     # 4. Filing -> DisclosureEvent
@@ -1273,29 +1553,19 @@ def retrieve_financial_context(kg: KnowledgeGraph, question: str, ticker: str | 
                     "description": f"Item {s['code']} · {s['title']}",
                 })
 
-    # Dedupe before the context string is built, not only at the JSON boundary:
+    # Dedupe before anything reads the edges, not only at the JSON boundary:
     # the same edge is reachable from more than one of the queries above, and a
-    # repeated "[E7] --REPORTS_METRIC--> [E9]" line costs prompt budget while
+    # repeated "[E7] --REPORTS_METRIC--> [E9]" costs prompt budget while
     # telling the model nothing new.
     retrieved_edges = merge_edges(retrieved_edges)
 
-    # Build context string for prompt
-    ent_lines = ["ENTITIES:"]
-    for node in retrieved_nodes:
-        t = id_to_tag[node["id"]]
-        desc_part = f": {node['description']}" if node.get("description") else ""
-        ent_lines.append(f'[{t}] "{node["name"]}" ({node["type"]}){desc_part}')
-
-    rel_lines = ["\nRELATIONSHIPS:"]
-    for e in retrieved_edges:
-        s_tag = id_to_tag.get(e["source"])
-        t_tag = id_to_tag.get(e["target"])
-        if s_tag and t_tag:
-            desc_part = f": {e['description']}" if e.get("description") else ""
-            rel_lines.append(f"[{s_tag}] --{e['relation']}--> [{t_tag}]{desc_part}")
-
-    context_str = "\n".join(ent_lines) + "\n" + "\n".join(rel_lines)
-    return context_str, retrieved_nodes, retrieved_edges, tag_map, [n["id"] for n in seed_nodes[:5]]
+    # No context string is built here. It used to be: every node and every edge
+    # rendered to a tagged "[E1] --REPORTS_METRIC--> [E9]" line, joined, and
+    # returned as the first value -- and the one caller unpacked it into a name
+    # it never read, because the prompt is assembled from the evidence block
+    # instead, which carries the provenance each line needs. Fifteen thousand
+    # characters of formatting per question for a string nobody saw.
+    return retrieved_nodes, retrieved_edges, tag_map, [n["id"] for n in seed_nodes[:5]]
 
 
 def _explain_api_error(exc: Exception, state: dict[str, Any]) -> str:
@@ -1405,32 +1675,40 @@ def _where_to_look(question: str) -> list[str]:
     return out
 
 
+def _cold_start_response(ticker: str | None, question: str) -> dict[str, Any]:
+    msg = "Entity not indexed. Triggering JIT pipeline..."
+    return {
+        "status": "cold_start_required",
+        "entity": ticker,
+        "message": msg,
+        "text": msg,
+        "question": question,
+        "grounded": False,
+        "used_tags": [],
+        "tag_map": {},
+    }
+
+
+def _ambiguous_response(question: str) -> dict[str, Any]:
+    msg = "Please specify a company ticker or name (e.g. $AAPL, $MSFT) to answer your question."
+    return {
+        "status": "ambiguous",
+        "message": msg,
+        "text": msg,
+        "prompt": msg,
+        "question": question,
+        "grounded": False,
+        "used_tags": [],
+        "tag_map": {},
+    }
+
+
 def ask_rag(kg: KnowledgeGraph, question: str) -> dict[str, Any]:
     routing = route_query(question, kg)
     if routing.route == EntityRoute.COLD_START:
-        msg = "Entity not indexed. Triggering JIT pipeline..."
-        return {
-            "status": "cold_start_required",
-            "entity": routing.ticker,
-            "message": msg,
-            "text": msg,
-            "question": question,
-            "grounded": False,
-            "used_tags": [],
-            "tag_map": {},
-        }
+        return _cold_start_response(routing.ticker, question)
     if routing.route == EntityRoute.AMBIGUOUS:
-        msg = "Please specify a company ticker or name (e.g. $AAPL, $MSFT) to answer your question."
-        return {
-            "status": "ambiguous",
-            "message": msg,
-            "text": msg,
-            "prompt": msg,
-            "question": question,
-            "grounded": False,
-            "used_tags": [],
-            "tag_map": {},
-        }
+        return _ambiguous_response(question)
 
     state = get_backends().resolve()
     if state["backend"] == "none":
@@ -1438,7 +1716,7 @@ def ask_rag(kg: KnowledgeGraph, question: str) -> dict[str, Any]:
     backend = state["backend"]
 
     t0 = time.perf_counter()
-    context_str, nodes, edges, tag_map, seed_ids = retrieve_financial_context(kg, question, ticker=routing.ticker)
+    nodes, edges, tag_map, seed_ids = retrieve_financial_context(kg, question, ticker=routing.ticker)
 
     # Provenance is resolved here, by code, before the model is called: every
     # retrieved node gets a tag and a Source, and the tags that will be legal to
@@ -1523,21 +1801,24 @@ def ask_rag(kg: KnowledgeGraph, question: str) -> dict[str, Any]:
             "flow": "",
             "graph": None,
             "gap": False,
+            "verdict": REFUSED,
             "provenance_mix": {},
             "provenance": [],
             "invented_tags": [],
             "ungrounded_figures": [],
+            "misattributed": [],
             "violations": [],
         }
 
-    # Extract cited tags. The model sometimes writes arrow-style citations
-    # ("[E2→E15]") to pair a line item with its value; split those back into
-    # plain tags so every cited entity is counted and grounded is true.
-    content_cites = re.sub(
-        r"(\[E\d+)\s*(?:-{1,2}(?:>|→)|=>|→)\s*(E\d+\])", r"\1] [\2", content
+    # Extract cited tags. The grammar is the grader's, so a citation the grader
+    # recognises is a citation the UI counts: the list form "[E1, E3]" and the
+    # pairing form the model writes to put a line item next to its value
+    # ("[E2->E15]") used to be invisible here, so a correctly cited answer came
+    # back with no tags at all and reported itself ungrounded.
+    used_tags = sorted(
+        {t for t in citation_tags(content) if t in tag_map},
+        key=lambda x: int(x[1:]),
     )
-    cited_raw = _CITATION_RE.findall(content_cites)
-    used_tags = sorted(set(t for t in cited_raw if t in tag_map), key=lambda x: int(x[1:]))
 
     # Grade the answer by rule. The model wrote the prose; this decides what it
     # was actually allowed to say, and it never asks the model. If every
@@ -1609,6 +1890,7 @@ def ask_rag(kg: KnowledgeGraph, question: str) -> dict[str, Any]:
         "rag_backend": backend,
         "rag_model": state["model"],
         "gap": graded.gap,
+        "verdict": graded.verdict,
         "provenance_mix": graded.mix,
         "provenance": [
             {
@@ -1617,12 +1899,15 @@ def ask_rag(kg: KnowledgeGraph, question: str) -> dict[str, Any]:
                 "cites": v.cites,
                 "figures": v.figures,
                 "ungrounded": v.ungrounded,
+                "unknown_cites": v.unknown_cites,
+                "misattributed": v.misattributed,
                 "reason": v.reason,
             }
             for v in graded.verdicts
         ],
         "invented_tags": graded.invented_tags,
         "ungrounded_figures": graded.ungrounded_figures,
+        "misattributed": graded.misattributed,
         "violations": graded.violations(),
     }
 
@@ -1757,6 +2042,7 @@ _HTML = r"""<!DOCTYPE html>
   }
   .chip.ok { color: var(--accent-2); border-color: #2c5a48; }
   .chip.bad { color: var(--bad); border-color: #6b2f2c; }
+  .chip.warn { color: var(--warn); border-color: #6b5327; }
   .chip.cite { cursor: pointer; color: var(--accent); border-color: #33507a; }
   .chip.cite:hover { background: #24405f; }
   #answer { white-space: pre-wrap; line-height: 1.6; font-size: 13px; color: #f1f5f9; }
@@ -1775,6 +2061,65 @@ _HTML = r"""<!DOCTYPE html>
   .examples button { font-size: 11px; padding: 4px 8px; border-radius: 999px; text-align: left; }
   .spinner { color: var(--accent); font-size: 13px; display:flex; align-items:center; gap:8px; }
   .empty { color: var(--muted); font-size: 13px; }
+
+  /* ---- provenance ----
+     The grader's output. Deliberately not dismissible and deliberately above
+     the answer text: violations() is the only thing a reader must not miss, and
+     the one badge that looks like a verdict has to be the grader's verdict and
+     not "did the model cite something". */
+  .violations {
+    margin: 0 0 12px; padding: 10px 12px; border-radius: 6px;
+    background: #2a1614; border: 1px solid #6b2f2c; color: var(--bad);
+    font-size: 12.5px; line-height: 1.55;
+  }
+  .violations h4 {
+    margin: 0 0 6px; font-size: 11px; letter-spacing: .5px;
+    text-transform: uppercase; color: var(--bad);
+  }
+  .violations ul { margin: 0; padding-left: 18px; }
+  .violations li { margin-bottom: 4px; }
+  .prov-head {
+    display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+    margin-bottom: 10px;
+  }
+  .prov { display: flex; flex-direction: column; gap: 7px; }
+  .prov-row {
+    display: flex; gap: 9px; align-items: flex-start;
+    padding: 8px 9px; border-radius: 6px;
+    background: var(--panel-2); border: 1px solid var(--line);
+  }
+  .prov-row.is-bad { border-color: #6b2f2c; }
+  .prov-row.is-warn { border-color: #6b5327; }
+  .prov-row .ptag {
+    font-size: 10px; font-weight: 600; letter-spacing: .4px; text-transform: uppercase;
+    padding: 2px 6px; border-radius: 4px; white-space: nowrap;
+    border: 1px solid var(--line); color: var(--muted);
+  }
+  .prov-row .ptag.t-STATED { color: var(--accent-2); border-color: #2c5a48; }
+  .prov-row .ptag.t-DERIVED { color: var(--accent); border-color: #33507a; }
+  .prov-row .ptag.t-INFERRED { color: var(--warn); border-color: #6b5327; }
+  .prov-row .ptag.t-EXTERNAL { color: #c792ea; border-color: #4a3760; }
+  .prov-row .ptag.t-GAP { color: var(--bad); border-color: #6b2f2c; }
+  .prov-row .pbody { flex: 1 1 auto; min-width: 0; }
+  .prov-row .ptext { font-size: 12.5px; line-height: 1.5; color: var(--text); }
+  .prov-row .ptext.clipped {
+    display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .prov-row .preason { margin-top: 5px; font-size: 11.5px; color: var(--muted); }
+  .prov-row .pflags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 5px; }
+  .prov-row .pflag {
+    font-size: 10.5px; padding: 2px 6px; border-radius: 4px;
+    background: #2a1614; border: 1px solid #6b2f2c; color: var(--bad);
+  }
+  .prov-note {
+    margin-bottom: 10px; padding: 8px 10px; border-radius: 6px; font-size: 11.5px;
+    line-height: 1.5; background: #2a2317; border: 1px solid #4a3d20; color: var(--warn);
+  }
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+  }
 
   /* ---- reports overlay ---- */
   #reportsOverlay {
@@ -2036,24 +2381,37 @@ _HTML = r"""<!DOCTYPE html>
         </div>
       </div>
     </div>
-    <div class="tabs">
-      <button class="tab active" data-tab="answer">Answer</button>
-      <button class="tab" data-tab="sources">Sources</button>
-      <button class="tab" data-tab="trace">Trace</button>
+    <div class="tabs" role="tablist" aria-label="Answer detail">
+      <button class="tab active" role="tab" id="tabBtnAnswer" aria-selected="true"
+              aria-controls="tabAnswer" data-tab="answer">Answer</button>
+      <button class="tab" role="tab" id="tabBtnSources" aria-selected="false"
+              aria-controls="tabSources" data-tab="sources">Sources</button>
+      <button class="tab" role="tab" id="tabBtnTrace" aria-selected="false"
+              aria-controls="tabTrace" data-tab="trace">Trace</button>
+      <button class="tab" role="tab" id="tabBtnProvenance" aria-selected="false"
+              aria-controls="tabProvenance" data-tab="provenance">Provenance</button>
       <div class="grow"></div>
       <span class="chip" id="waitTimer" hidden></span>
       <button id="copyAnswer" class="icon ghost" title="Copy answer text">copy</button>
     </div>
     <div id="answerWrap">
-      <div id="tabAnswer">
+      <div id="tabAnswer" role="tabpanel" aria-labelledby="tabBtnAnswer">
         <div class="empty">Answers are generated from the retrieved subgraph and cite entities as
           <code>[E1]</code>. Click a citation to highlight it in the graph.</div>
       </div>
-      <div id="tabSources" hidden><div class="empty">No answer yet — the cited entities show up here.</div></div>
-      <div id="tabTrace" hidden><div class="empty">The retrieval trace shows up here after a question.</div></div>
+      <div id="tabSources" role="tabpanel" aria-labelledby="tabBtnSources" hidden>
+        <div class="empty">No answer yet — the cited entities show up here.</div>
+      </div>
+      <div id="tabTrace" role="tabpanel" aria-labelledby="tabBtnTrace" hidden>
+        <div class="empty">The retrieval trace shows up here after a question.</div>
+      </div>
+      <div id="tabProvenance" role="tabpanel" aria-labelledby="tabBtnProvenance" hidden>
+        <div class="empty">Every sentence in the answer, with the rule that judged it.</div>
+      </div>
     </div>
   </section>
 </main>
+<div id="verdictAnnounce" class="sr-only" role="status" aria-live="polite"></div>
 
 <!-- Reports Overlay -->
 <div id="reportsOverlay">
@@ -2633,6 +2991,9 @@ async function askQuestion() {
   $("tabAnswer").innerHTML =
     `<div class="spinner"><span>⚡</span> Retrieving graph context, then ` +
     `generating an answer with ${esc(S.ragModel || "the model")}…</div>`;
+  // Cleared up front as well as on the error path, so a question that never
+  // returns cannot leave the last answer's grading on screen under a spinner.
+  clearProvenance("Grading the answer as it arrives…");
   startTimer();
   try {
     const res = await api("/api/ask", {
@@ -2657,6 +3018,11 @@ async function askQuestion() {
     }
   } catch (e) {
     $("tabAnswer").innerHTML = `<div class="note">Query failed: ${esc(e.message)}</div>`;
+    // The failed question's verdicts are not on screen, so the previous
+    // question's must not stay there: a panel full of sentences under a
+    // heading about a different question is worse than an empty one.
+    clearProvenance("No answer to grade — the last question failed.");
+    $("verdictAnnounce").textContent = "Query failed";
     toast(`query failed: ${e.message}`, "bad");
   } finally {
     stopTimer();
@@ -2728,10 +3094,33 @@ function renderAnswer(res) {
     addChip("", `${res.context_entities} entities / ${res.context_edges} rels`,
       "size of the retrieved subgraph handed to the model");
   }
-  addChip(res.grounded ? "ok" : "bad", res.grounded ? "grounded" : "not grounded",
-    "whether the model reported finding its answer in the retrieved subgraph");
+  // The verdict is the grader's, not "did the model cite something". Those are
+  // different questions and only one of them means anything: a model that
+  // fabricates a figure and cites a real tag satisfies the second and fails
+  // the first, so the old chip rendered that green. `res.grounded` stays in the
+  // payload because removing a field is a breaking change, and is no longer
+  // what this reads.
+  const verdict = res.verdict || "REFUSED";
+  const verdictChip = {
+    SUPPORTED: ["ok", "supported", "every sentence rests on a fact in the cited evidence"],
+    QUALIFIED: ["warn", "qualified", "nothing failed, but part of it is hedged or reaches past the filings"],
+    REFUSED: ["bad", "refused", "at least one sentence is not supported by the cited evidence"],
+  }[verdict] || ["bad", verdict, "the grader returned a verdict this page does not know"];
+  addChip(verdictChip[0], verdictChip[1], verdictChip[2]);
   if (res.elapsed_sec) addChip("", `${res.elapsed_sec}s`, "retrieval + generation time");
   answer.appendChild(meta);
+
+  // What the reader must not miss, above the answer it applies to. Not
+  // collapsible: violations() is already capped at three plain-English lines
+  // and is written for exactly this audience.
+  const violations = res.violations || [];
+  if (violations.length) {
+    const box = document.createElement("div");
+    box.className = "violations";
+    box.innerHTML = esc("<h4>the grader refused part of this answer</h4>") +
+      '<ul>' + violations.map((v) => "<li>" + esc(v) + "</li>").join("") + "</ul>";
+    answer.appendChild(box);
+  }
 
   const body = document.createElement("div");
   body.id = "answer";
@@ -2787,16 +3176,219 @@ function renderAnswer(res) {
   trace.innerHTML = res.flow
     ? `<div class="note" style="white-space:pre-wrap;font-family:inherit">${esc(res.flow)}</div>`
     : '<div class="empty">No retrieval trace for this answer.</div>';
+
+  renderProvenance(res, tagMap);
+  announceVerdict(res);
+}
+
+const VERDICT_WORDS = {
+  SUPPORTED: "supported",
+  QUALIFIED: "qualified",
+  REFUSED: "refused",
+};
+
+function announceVerdict(res) {
+  // An answer can take 30 seconds to arrive and then be a fabrication. Without
+  // this nothing is announced, so a screen-reader user is told the request
+  // finished and not what it concluded -- the worst case in the product.
+  const box = $("verdictAnnounce");
+  if (!box) return;
+  const verdict = res.verdict || "REFUSED";
+  const word = VERDICT_WORDS[verdict] || verdict.toLowerCase();
+  const parts = [`Answer ${word}`];
+  const mix = res.provenance_mix || {};
+  const counts = Object.keys(mix).map((k) => `${k} ${mix[k]}`).join(", ");
+  if (counts) parts.push(counts);
+  const notes = res.violations || [];
+  if (notes.length) parts.push(...notes);
+  box.textContent = parts.join(". ");
+}
+
+function clearProvenance(message) {
+  // renderAnswer only runs on success, so a second question that errors would
+  // otherwise leave the first question's verdicts on screen, attributed to
+  // nothing. Cleared on every path out of askQuestion.
+  const panel = $("tabProvenance");
+  if (!panel) return;
+  panel.textContent = "";
+  const empty = document.createElement("div");
+  empty.className = "empty";
+  empty.textContent = message || "Every sentence in the answer, with the rule that judged it.";
+  panel.appendChild(empty);
+}
+
+function renderProvenance(res, tagMap) {
+  // Everything here is model prose except the tag, the counts and the flags,
+  // so it all goes through esc() or textContent. The answer body is already
+  // escaped; a panel that concatenated a model's sentence into markup would be
+  // the same hole in a smaller place.
+  const panel = $("tabProvenance");
+  if (!panel) return;
+  panel.textContent = "";
+  const verdicts = res.provenance || [];
+  if (!verdicts.length) {
+    panel.innerHTML = '<div class="empty">' +
+      esc(res.verdict
+        ? "The grader judged no sentences in this answer."
+        : "Every sentence in the answer, with the rule that judged it.") +
+      "</div>";
+    return;
+  }
+
+  // When every sentence failed, ask_rag replaces the answer text with a
+  // rendered refusal. These verdicts still describe what the model originally
+  // wrote, so without this the panel shows sentences the answer above does not
+  // contain and a reader concludes nothing was checked.
+  if (res.gap) {
+    const note = document.createElement("div");
+    note.className = "prov-note";
+    note.textContent =
+      "The answer above was replaced: every sentence failed, so the corpus " +
+      "cannot support it. These are the rules applied to what the model wrote " +
+      "before the replacement.";
+    panel.appendChild(note);
+  }
+
+  const head = document.createElement("div");
+  head.className = "prov-head";
+  const mix = res.provenance_mix || {};
+  for (const tag of Object.keys(mix).sort()) {
+    const c = document.createElement("span");
+    c.className = "chip";
+    c.textContent = `${tag} ${mix[tag]}`;
+    c.title = "sentences graded " + tag;
+    head.appendChild(c);
+  }
+  const invented = res.invented_tags || [];
+  if (invented.length) {
+    const c = document.createElement("span");
+    c.className = "chip bad";
+    c.textContent = `invented tags: ${invented.join(", ")}`;
+    c.title = "cited tags the retriever never issued";
+    head.appendChild(c);
+  }
+  // The answer-level list, which is not the same as the per-sentence flags: a
+  // figure can fail on one sentence and be absent from the aggregate dedupe.
+  // Both are shown because violations() quotes the aggregate in prose and this
+  // is the same set in a form you can point at.
+  const loose = res.ungrounded_figures || [];
+  if (loose.length) {
+    const c = document.createElement("span");
+    c.className = "chip bad";
+    c.textContent = `figures not in any cited source: ${loose.join(", ")}`;
+    c.title = "no cited source contains these numbers";
+    head.appendChild(c);
+  }
+  const wrongFiler = res.misattributed || [];
+  if (wrongFiler.length) {
+    const c = document.createElement("span");
+    c.className = "chip bad";
+    c.textContent = `attributed to: ${wrongFiler.join(", ")}`;
+    c.title = "issuers no cited source was filed by";
+    head.appendChild(c);
+  }
+  panel.appendChild(head);
+
+  const list = document.createElement("div");
+  list.className = "prov";
+  for (const v of verdicts) {
+    const tag = v.provenance || "";
+    const row = document.createElement("div");
+    row.className = "prov-row" +
+      (tag === "GAP" ? " is-bad" : (tag === "INFERRED" || tag === "EXTERNAL" ? " is-warn" : ""));
+
+    const badge = document.createElement("span");
+    badge.className = "ptag t-" + tag;
+    badge.textContent = tag;
+    badge.title = "the rule that judged this sentence";
+    row.appendChild(badge);
+
+    const bodyWrap = document.createElement("div");
+    bodyWrap.className = "pbody";
+
+    const text = document.createElement("div");
+    text.className = "ptext";
+    text.textContent = v.text || "";
+    // Long sentences are clamped and clickable, because one 400-word sentence
+    // otherwise turns the panel into a wall and hides every row after it.
+    if ((v.text || "").length > 240) {
+      text.className = "ptext clipped";
+      text.title = "click to expand";
+      text.onclick = () => text.classList.toggle("clipped");
+    }
+    bodyWrap.appendChild(text);
+
+    const flags = [];
+    for (const c of v.unknown_cites || []) flags.push("cited a tag never issued: " + c);
+    for (const f of v.ungrounded || []) flags.push("figure not in any cited source: " + f);
+    for (const m of v.misattributed || []) flags.push("attributed to " + m + ", which no cited source was filed by");
+    if (flags.length) {
+      const box = document.createElement("div");
+      box.className = "pflags";
+      for (const f of flags) {
+        const chip = document.createElement("span");
+        chip.className = "pflag";
+        chip.textContent = f;
+        box.appendChild(chip);
+      }
+      bodyWrap.appendChild(box);
+    }
+
+    if (v.reason) {
+      const why = document.createElement("div");
+      why.className = "preason";
+      why.textContent = v.reason;
+      bodyWrap.appendChild(why);
+    }
+
+    // The same affordance the answer body has: a citation focuses its node.
+    for (const c of v.cites || []) {
+      const btn = document.createElement("span");
+      btn.className = "chip cite";
+      btn.textContent = "[" + c + "]";
+      btn.onclick = () => { const id = tagMap[c]; if (id) focusOn(id); };
+      const holder = bodyWrap.querySelector(".pflags") || (function () {
+        const b = document.createElement("div");
+        b.className = "pflags";
+        bodyWrap.appendChild(b);
+        return b;
+      })();
+      holder.appendChild(btn);
+    }
+
+    row.appendChild(bodyWrap);
+    list.appendChild(row);
+  }
+  panel.appendChild(list);
 }
 
 function showTab(name) {
-  for (const t of document.querySelectorAll(".tab")) {
-    t.classList.toggle("active", t.dataset.tab === name);
+  // The panel list is derived from the buttons rather than repeated here. It
+  // used to be a literal ["answer", "sources", "trace"], and a tab added to the
+  // markup without being added there silently never opened -- which is exactly
+  // what happened to the provenance tab before it had a test.
+  const tabs = Array.from(document.querySelectorAll(".tab[data-tab]"));
+  for (const t of tabs) {
+    const on = t.dataset.tab === name;
+    t.classList.toggle("active", on);
+    t.setAttribute("aria-selected", on ? "true" : "false");
   }
-  for (const id of ["answer", "sources", "trace"]) {
-    $("tab" + id[0].toUpperCase() + id.slice(1)).hidden = id !== name;
+  for (const t of tabs) {
+    const panel = $("tab" + t.dataset.tab.charAt(0).toUpperCase() + t.dataset.tab.slice(1));
+    if (panel) panel.hidden = t.dataset.tab !== name;
   }
   $("answerWrap").scrollTop = 0;
+}
+
+function moveTabFocus(current, delta) {
+  // Arrow-key navigation, which is what role="tab" promises and what the plain
+  // buttons did not do.
+  const tabs = Array.from(document.querySelectorAll(".tab[data-tab]"));
+  if (!tabs.length) return;
+  const at = tabs.indexOf(current);
+  const next = tabs[(at + delta + tabs.length) % tabs.length];
+  next.focus();
+  showTab(next.dataset.tab);
 }
 
 function toast(msg, kind) {
@@ -2890,6 +3482,24 @@ $("copyAnswer").onclick = async () => {
 };
 for (const t of document.querySelectorAll(".tab")) {
   t.onclick = () => showTab(t.dataset.tab);
+  t.onkeydown = (e) => {
+    if (e.key === "ArrowRight" || e.key === "ArrowDown") {
+      e.preventDefault();
+      moveTabFocus(t, 1);
+    } else if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
+      e.preventDefault();
+      moveTabFocus(t, -1);
+    } else if (e.key === "Home") {
+      e.preventDefault();
+      const first = document.querySelector(".tab[data-tab]");
+      if (first) { first.focus(); showTab(first.dataset.tab); }
+    } else if (e.key === "End") {
+      e.preventDefault();
+      const all = document.querySelectorAll(".tab[data-tab]");
+      const last = all[all.length - 1];
+      if (last) { last.focus(); showTab(last.dataset.tab); }
+    }
+  };
 }
 
 let resizeTimer = null;
@@ -3283,42 +3893,82 @@ def _int_param(qs: dict, name: str, default: int, minimum: int | None = None, ma
 
 # ── Server Runner ─────────────────────────────────────────────────────────────
 
-def bind_server(
-    handler: type[BaseHTTPRequestHandler], host: str, port: int
-) -> ThreadingHTTPServer:
-    """Bind *host*:*port*, turning a busy port into an explanation.
+def parse_ports(spec: str | int | Sequence[int]) -> list[int]:
+    """Turn ``--port 9000,8765`` or ``9000`` into a list of ports.
 
-    ``ThreadingHTTPServer`` binds and listens inside its constructor, so a port
-    already in use surfaces as ``OSError(EADDRINUSE)`` from this call. The bare
-    traceback names the exception and nothing a reader can act on, so the two
-    causes -- another copy of this server, and the graphrag UI on its own port
-    -- are named here instead.
+    A string is split on commas, so the flag reads the way the user would say
+    it. Anything that is not an integer is a typo worth refusing before a
+    socket is bound, not after.
     """
+    if isinstance(spec, int):
+        return [spec]
+    if isinstance(spec, str):
+        parts = [p.strip() for p in spec.split(",") if p.strip()]
+    else:
+        parts = [int(p) for p in spec]
+    ports = []
+    for part in parts:
+        try:
+            ports.append(int(part))
+        except (TypeError, ValueError):
+            raise ValueError(f"not a port number: {part!r}") from None
+    if not ports:
+        raise ValueError("at least one port is required")
+    return ports
+
+
+def _port_is_free(host: str, port: int) -> bool:
+    """Whether *port* can be bound, asked without SO_REUSEADDR.
+
+    ``HTTPServer.allow_reuse_address`` is on, and on Windows SO_REUSEADDR does
+    not mean "ignore TIME_WAIT" as it does on Linux -- it lets a second socket
+    bind a port that is already *listening*, with no error. So a port that is
+    already serving something else binds cleanly here and the two fight over
+    the connections. Probing first turns that into a clear refusal.
+    """
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
-        return ThreadingHTTPServer((host, port), handler)
-    except OSError as exc:
-        if exc.errno != errno.EADDRINUSE:
-            raise
+        probe.bind((host, port))
+        return True
+    except OSError:
+        return False
+    finally:
+        probe.close()
+
+
+def _listeners(host: str, ports: Sequence[int], handler: type) -> list[ThreadingHTTPServer]:
+    """Bind one listener per port, all serving the same *handler*.
+
+    Split out of :func:`serve` so the part that can actually fail is reachable
+    from a test: a second port that fails to bind, or a shutdown that only
+    closes one of them, is invisible in a function that blocks forever and
+    keeps its servers to itself.
+    """
+    taken = [p for p in ports if not _port_is_free(host, p)]
+    if taken:
         raise OSError(
-            errno.EADDRINUSE,
-            f"port {port} on {host} is already in use.\n"
-            f"  Another copy of this server is probably still running: "
-            f"lsof -nP -iTCP:{port} -sTCP:LISTEN\n"
-            f"  Or pick another port: --port <n>, or {UI_PORT_ENV}=<n>\n"
-            f"  (The other service here, the graphrag UI, defaults to 8765; "
-            f"set PORT_GRAPHRAG_UI to move it.)",
-        ) from None
+            f"port already in use: {', '.join(str(p) for p in taken)}. "
+            f"Stop whatever is serving it, or name different ports with --port."
+        )
+    servers = []
+    try:
+        for number in ports:
+            server = ThreadingHTTPServer((host, number), handler)
+            server.daemon_threads = True
+            servers.append(server)
+    except Exception:
+        # One port already taken must not leave the earlier ones listening.
+        for server in servers:
+            server.server_close()
+        raise
+    return servers
 
 
-def serve(host: str = "127.0.0.1", port: int | None = None, open_browser: bool = True,
-          read_only: bool = True, db_path: Path | None = None) -> None:
+def serve(host: str = "127.0.0.1", port: int | Sequence[int] = 9000,
+          open_browser: bool = True, read_only: bool = True,
+          db_path: Path | None = None) -> None:
     _configure_logging()
-    port = default_ui_port() if port is None else port
-
-    if db_path is not None and not db_path.is_file():
-        log.error("No graph database at %s", db_path)
-        raise SystemExit(1)
-
+    ports = parse_ports(port)
     db_path = db_path or resolve_db_path()
     if db_path is None:
         log.error(
@@ -3338,15 +3988,16 @@ def serve(host: str = "127.0.0.1", port: int | None = None, open_browser: bool =
 
     kg = KnowledgeGraph(db_path, read_only=read_only)
     handler = type("_BoundHandler", (_Handler,), {"kg": kg})
-    server = bind_server(handler, host, port)
-    server.daemon_threads = True
+    servers = _listeners(host, ports, handler)
 
-    url = f"http://{host}:{server.server_address[1]}/"
+    primary = f"http://{host}:{ports[0]}/"
     stats = kg.stats()
     print(f"\n{'='*70}")
     print(f"  GraphRAG Viewer & Question Answering Engine")
     print(f"{'='*70}")
-    print(f"  Web UI       : {url}")
+    for number in ports:
+        suffix = "" if number == ports[0] else "   (same server, same graph)"
+        print(f"  Web UI       : http://{host}:{number}/{suffix}")
     print(f"  Database     : {db_path}")
     print(f"  Schema       : {stats['schema']}")
     print(f"  Graph Stats  : {stats['nodes']} entities, {stats['edges']} relationships")
@@ -3361,48 +4012,55 @@ def serve(host: str = "127.0.0.1", port: int | None = None, open_browser: bool =
     print(f"{'='*70}\n")
 
     if open_browser:
-        threading.Timer(0.6, lambda: webbrowser.open(url)).start()
+        threading.Timer(0.6, lambda: webbrowser.open(primary)).start()
 
+    # One thread per extra port; the main thread serves the first, so Ctrl-C
+    # lands where the user is looking.
+    for server in servers[1:]:
+        threading.Thread(
+            target=server.serve_forever, daemon=True,
+            name=f"http-{server.server_address[1]}",
+        ).start()
     try:
-        server.serve_forever()
+        servers[0].serve_forever()
     except KeyboardInterrupt:
         print("\nStopping server...")
     finally:
-        server.shutdown()
-        server.server_close()
+        for server in servers:
+            server.shutdown()
+            server.server_close()
         kg.close()
 
 
 def _main() -> None:
     _configure_logging()
-    p = argparse.ArgumentParser(prog="python -m sandbox_engine.query_ui",
-                                description="GraphRAG Question Answering UI for the Blueprint LadybugDB")
-    p.add_argument("--port", type=int, default=None,
-                   help="port to listen on (default: $%s, else %d)"
-                        % (UI_PORT_ENV, DEFAULT_UI_PORT))
+    p = argparse.ArgumentParser(
+        prog="python -m sandbox_engine.query_ui",
+        description="GraphRAG Question Answering UI for the Blueprint LadybugDB",
+    )
+    p.add_argument("--port", default="9000",
+                   help="one port, or several separated by commas -- all served "
+                        "from the same process over one graph handle, e.g. "
+                        "--port 9000,8765")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--no-browser", action="store_true")
     p.add_argument("--db", type=Path, default=None,
-                   help="Database file to serve (default: %s). Use a separate "
-                        "copy of the graph to run a second UI on another port; "
+                   help="Database file to serve. Only needed to serve a "
+                        "different graph than the one found automatically; "
                         "LadybugDB locks the file, so two servers cannot share "
-                        "one path." % _DB_CANDIDATES[0])
+                        "one path. For a second port, pass --port instead.")
     p.add_argument("--read-write", action="store_true",
                    help="Open the database read-write (takes an exclusive lock, "
                         "so no other server can share the file)")
     args = p.parse_args()
     try:
-        serve(args.host, args.port, open_browser=not args.no_browser,
+        ports = parse_ports(args.port)
+        serve(args.host, ports, open_browser=not args.no_browser,
               read_only=not args.read_write, db_path=args.db)
     except OSError as exc:
-        # A busy port is an operator decision, not a crash: report it and exit
-        # non-zero rather than printing a traceback from inside http.server.
         log.error("%s", exc)
         raise SystemExit(1)
     except ValueError as exc:
-        # Same reasoning for a mistyped PORT_QUERY_UI: a one-character slip is
-        # not worth a traceback, and a different exit code keeps it
-        # distinguishable from the port-already-in-use case above.
         log.error("%s", exc)
         raise SystemExit(2)
 

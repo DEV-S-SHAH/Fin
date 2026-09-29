@@ -188,7 +188,7 @@ class TestRouter(unittest.TestCase):
             self.assertIn("Please specify a company ticker", ambig_res["message"])
 
             # 5. Test retrieve_financial_context with specific ticker
-            ctx, nodes, edges, tag_map, seeds = retrieve_financial_context(kg, "Apple revenue", ticker="AAPL")
+            nodes, edges, tag_map, seeds = retrieve_financial_context(kg, "Apple revenue", ticker="AAPL")
             company_nodes = [n for n in nodes if n.get("type") == "Company"]
             self.assertEqual(len(company_nodes), 1)
             self.assertEqual(company_nodes[0]["id"], "AAPL")
