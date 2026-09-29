@@ -2315,7 +2315,7 @@ class FilingParser:
 # Blueprint compatibility layer
 # ---------------------------------------------------------------------------
 
-# 35 canonical metric seeds matching ingest_sandbox._METRIC_SEEDS
+# 35 canonical metric seeds for the blueprint schema
 # (metric_id, canonical_name, statement_type, account_class)
 METRIC_SEEDS_BLUEPRINT: list[tuple[str, str, str, str]] = [
     # income statement
