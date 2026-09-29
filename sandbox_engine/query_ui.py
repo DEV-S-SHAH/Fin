@@ -21,6 +21,8 @@ import os
 import re
 import threading
 import time
+import urllib.error
+import urllib.request
 import webbrowser
 from collections import Counter
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -442,10 +444,10 @@ OLLAMA_BASE_URL = _setting(
 ).rstrip("/")
 OLLAMA_MODEL = _setting("RAG_OLLAMA_MODEL", "llama3.2")
 
-#: Which backend phrases the answers: ``"ollama"`` (local, default) or
-#: ``"nvidia"`` (hosted, needs a key). Local is the default because it needs no
-#: credential and no network; the hosted NVIDIA model runs with thinking enabled.
-RAG_BACKEND = _setting("RAG_BACKEND", "ollama").lower()
+#: An explicit pin still wins, so a reader with a working key can force the
+#: local model (no network, no cost) by setting ``RAG_BACKEND=ollama``. Anything
+#: else -- including the absent case -- resolves on credentials and reachability.
+RAG_BACKEND = _setting("RAG_BACKEND", "auto").lower()
 
 #: Generous, because a local 3B model on CPU is slower than a hosted one, and
 #: the first request also pays the model load. The UI's fetch has no deadline
@@ -459,12 +461,154 @@ RAG_TIMEOUT = float(_setting("RAG_TIMEOUT", "900"))
 #: and the model answers from half a graph.
 RAG_NUM_CTX = int(_setting("RAG_NUM_CTX", "16384"))
 
+#: Probing a server that is not running is a refused connection, not a hang, so
+#: the deadline only bounds a wedged one. Thirty seconds is short enough that
+#: starting ``ollama serve`` after the UI is already up is noticed without a
+#: restart, and long enough that the probe is not repeated on every question.
+_OLLAMA_PROBE_TTL = 30.0
+_OLLAMA_PROBE_TIMEOUT = 2.0
 
-def _rag_settings() -> tuple[str, str, str, bool]:
-    """``(base_url, model, api_key, needs_key)`` for the active backend."""
-    if RAG_BACKEND == "nvidia":
-        return NVIDIA_BASE_URL, NVIDIA_MODEL, NVIDIA_API_KEY, True
-    return OLLAMA_BASE_URL, OLLAMA_MODEL, "ollama", False
+
+class RagBackends:
+    """Resolves which model phrases answers, re-evaluated on every request.
+
+    The backend used to be one module constant read at import, which made the
+    wrong choice permanent: a reader with a working key in ``.env`` still got
+    the local backend unless they also knew to set ``RAG_BACKEND=nvidia``, and
+    the only remedy was editing a file and restarting. Resolution is a function
+    of observable state -- which credentials exist, whether the local server
+    answers -- so it belongs here rather than in a name someone has to remember.
+
+    A key entered in the browser lives here and nowhere else. It is not written
+    to ``.env``, not logged, and not included in any response body; it dies with
+    the process.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._session_key = ""
+        self._forced = RAG_BACKEND if RAG_BACKEND in ("nvidia", "ollama") else ""
+        self._stored_key_rejected = ""
+        self._probe: tuple[float, bool, list[str]] = (0.0, False, [])
+
+    def set_session_key(self, key: str) -> None:
+        with self._lock:
+            self._session_key = key.strip()
+            self._stored_key_rejected = ""
+
+    def clear_session_key(self) -> None:
+        with self._lock:
+            self._session_key = ""
+
+    def set_backend(self, name: str) -> None:
+        """Pin a backend, or pass ``"auto"`` to hand the choice back."""
+        with self._lock:
+            self._forced = name.strip().lower() if name.strip().lower() in ("nvidia", "ollama") else ""
+
+    def reject_key(self) -> str:
+        """Record that the active key was refused upstream, and return its source.
+
+        A 401 or 403 means the credential exists and was not accepted. Left
+        alone, auto-resolution would pick the same key again for the next
+        question, so the reader would be offered the identical failure once per
+        attempt. The stored key is marked rather than the session key cleared so
+        that a key typed into the browser survives a rotation of the stored one.
+        """
+        with self._lock:
+            if self._session_key:
+                self._session_key = ""
+                return "the key entered in this browser"
+            self._stored_key_rejected = "1"
+            return "the key in .env or the environment"
+
+    def ollama_models(self, refresh: bool = False) -> tuple[bool, list[str]]:
+        """Whether the local server answers, and which models it has pulled."""
+        with self._lock:
+            checked, reachable, models = self._probe
+            if not refresh and (time.monotonic() - checked) < _OLLAMA_PROBE_TTL:
+                return reachable, models
+        reachable, models = self._probe_ollama()
+        with self._lock:
+            self._probe = (time.monotonic(), reachable, models)
+        return reachable, models
+
+    def _probe_ollama(self) -> tuple[bool, list[str]]:
+        url = f"{OLLAMA_BASE_URL}/models"
+        try:
+            with urllib.request.urlopen(url, timeout=_OLLAMA_PROBE_TIMEOUT) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+        except (urllib.error.URLError, OSError, ValueError, TimeoutError):
+            return False, []
+        names = []
+        for entry in payload.get("data") or []:
+            name = (entry or {}).get("id")
+            if name:
+                names.append(str(name))
+        return True, sorted(names)
+
+    def resolve(self) -> dict[str, Any]:
+        """The backend to use now, and why. Never raises."""
+        stored = _load_api_key()
+        with self._lock:
+            session_key = self._session_key
+            forced = self._forced
+            stored_rejected = bool(self._stored_key_rejected)
+
+        reachable, models = self.ollama_models()
+        base_key = {
+            "key_present": False,
+            "key_source": "",
+            "stored_key_rejected": stored_rejected,
+            "ollama_reachable": reachable,
+            "ollama_models": models,
+            "forced": forced,
+        }
+
+        if forced == "ollama":
+            return {**base_key, "backend": "ollama", "base_url": OLLAMA_BASE_URL,
+                    "model": OLLAMA_MODEL, "reason": "RAG_BACKEND=ollama pins the local model."}
+        if forced == "nvidia":
+            if session_key or (stored and not stored_rejected):
+                return self._nvidia(session_key or stored, base_key)
+            return {**base_key, "backend": "none", "base_url": NVIDIA_BASE_URL,
+                    "model": NVIDIA_MODEL,
+                    "reason": "RAG_BACKEND=nvidia is set but no API key was found."}
+
+        if session_key:
+            return self._nvidia(session_key, base_key)
+        if stored and not stored_rejected:
+            return self._nvidia(stored, base_key)
+        if reachable:
+            reason = ("No NVIDIA key found, and the local model server is running, "
+                      f"so answers use {OLLAMA_MODEL}.")
+            if stored_rejected:
+                reason = ("The stored NVIDIA key was refused upstream, so answers "
+                          f"use the local model {OLLAMA_MODEL} instead.")
+            return {**base_key, "backend": "ollama", "base_url": OLLAMA_BASE_URL,
+                    "model": OLLAMA_MODEL, "reason": reason}
+        return {**base_key, "backend": "none", "base_url": "", "model": "",
+                "reason": ("No NVIDIA key was found and no local model server is "
+                           "running, so there is nothing to phrase answers with.")}
+
+    def _nvidia(self, key: str, base: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            source = "browser" if self._session_key else "file"
+        reason = ("Using the hosted NVIDIA model." if source == "file"
+                  else "Using the hosted NVIDIA model with the key from this browser.")
+        return {**base, "backend": "nvidia", "base_url": NVIDIA_BASE_URL,
+                "model": NVIDIA_MODEL, "key_present": True, "key_source": source,
+                "reason": reason}
+
+    def credentials(self, backend: str) -> tuple[str, str]:
+        """``(api_key, base_url)`` for *backend*. Local runs on a placeholder."""
+        if backend != "nvidia":
+            return "ollama", OLLAMA_BASE_URL
+        with self._lock:
+            session_key = self._session_key
+        return session_key or _load_api_key(), NVIDIA_BASE_URL
+
+
+BACKENDS = RagBackends()
 
 
 
@@ -494,9 +638,6 @@ def _load_api_key() -> str:
 
 
 NVIDIA_API_KEY = _load_api_key()
-
-# Resolved after the key is loaded, since the hosted backend needs it.
-RAG_BASE_URL, RAG_MODEL, RAG_KEY, RAG_NEEDS_KEY = _rag_settings()
 
 MAX_BODY = 128 * 1024
 
@@ -548,6 +689,7 @@ class KnowledgeGraph:
         return self._raw_execute(cypher, params)
 
     def stats(self) -> dict[str, Any]:
+        state = BACKENDS.resolve()
         node_tables = ["Company", "Filing", "FinancialMetric", "Segment", "DisclosureEvent", "DocumentChunk"]
         rel_tables = ["SUBMITTED", "REPORTS_METRIC", "DISAGGREGATED_BY", "DISCLOSES_EVENT", "CONTAINS_CHUNK"]
         counts = {}
@@ -572,8 +714,15 @@ class KnowledgeGraph:
             "rel_counts": rel_counts,
             "entity_types": entity_types,
             "schema": self.schema,
-            "rag_model": RAG_MODEL,
-            "rag_backend": RAG_BACKEND,
+            "rag_model": state["model"],
+            "rag_backend": state["backend"],
+            "rag_reason": state["reason"],
+            "rag_needs_input": state["backend"] == "none",
+            "rag_key_source": state["key_source"],
+            "rag_stored_key_rejected": state["stored_key_rejected"],
+            "rag_ollama_reachable": state["ollama_reachable"],
+            "rag_ollama_models": state["ollama_models"],
+            "rag_forced": state["forced"],
         }
 
     def all_entities(self, query: str = "", limit: int = 500) -> list[dict[str, Any]]:
@@ -1028,7 +1177,7 @@ def retrieve_financial_context(kg: KnowledgeGraph, question: str) -> tuple[str, 
     return context_str, retrieved_nodes, retrieved_edges, tag_map, [n["id"] for n in seed_nodes[:5]]
 
 
-def _explain_api_error(exc: Exception) -> str:
+def _explain_api_error(exc: Exception, state: dict[str, Any]) -> str:
     """Turn an upstream failure into something the reader can act on.
 
     A bare ``403 Authorization failed`` in the answer box looks like a bug in
@@ -1038,30 +1187,37 @@ def _explain_api_error(exc: Exception) -> str:
     worth naming, because "Failed to fetch" gives the reader nothing to act on.
     """
     status = getattr(exc, "status_code", None)
-    if RAG_BACKEND == "ollama":
+    if state["backend"] == "ollama":
         name = type(exc).__name__
         if name in ("APIConnectionError", "ConnectError", "ConnectionError"):
             return (
-                f"Could not reach the local model server at {RAG_BASE_URL}. "
+                f"Could not reach the local model server at {OLLAMA_BASE_URL}. "
                 f"Start it with `ollama serve` and confirm "
-                f"`ollama list` shows {RAG_MODEL}. The graph explorer below "
+                f"`ollama list` shows {OLLAMA_MODEL}. The graph explorer below "
                 f"does not need it."
             )
         if name in ("APITimeoutError", "Timeout"):
             return (
-                f"{RAG_MODEL} did not answer within {RAG_TIMEOUT:.0f}s. A local "
+                f"{OLLAMA_MODEL} did not answer within {RAG_TIMEOUT:.0f}s. A local "
                 f"model on CPU can be slow; raise RAG_TIMEOUT if the question "
                 f"is a large one."
             )
-        return f"Error talking to the local model {RAG_MODEL}: {exc}"
+        return f"Error talking to the local model {OLLAMA_MODEL}: {exc}"
     if status in (401, 403):
+        where = BACKENDS.reject_key()
+        recovered = BACKENDS.resolve()
+        if recovered["backend"] == "ollama":
+            tail = (f" Answers are no longer routed to a refused key; the next "
+                    f"question will use the local model {OLLAMA_MODEL} instead.")
+        else:
+            tail = (" No local model server is running, so enter a working key "
+                    "above before asking again.")
         return (
-            f"NVIDIA refused the request ({status}). The key in "
-            f"sandbox_engine/.env authenticates but has no inference "
-            f"entitlement for {NVIDIA_MODEL}, so answering is unavailable. "
-            f"Check the key's permissions at build.nvidia.com, or set a "
-            f"working NVIDIA_API_KEY in the environment. The graph explorer "
-            f"below does not need it."
+            f"NVIDIA refused the request ({status}). The key from {where} "
+            f"authenticates but has no inference entitlement for {NVIDIA_MODEL}, "
+            f"so answering is unavailable. Check the key's permissions at "
+            f"build.nvidia.com, or enter a different one above.{tail} The graph "
+            f"explorer below does not need it."
         )
     if status in (410, 504):
         return (
@@ -1074,37 +1230,51 @@ def _explain_api_error(exc: Exception) -> str:
     return f"Error communicating with {NVIDIA_MODEL}: {exc}"
 
 
+def _unavailable_answer(state: dict[str, Any]) -> dict[str, Any]:
+    """The payload for a question that has no model to phrase it.
+
+    The reader can act on this, so it names the two ways out rather than
+    reporting a missing setting: paste a key, or start the local server. The
+    graph explorer keeps working either way, which the message says outright.
+    """
+    return {
+        "error": state["reason"] + (
+            " Paste an NVIDIA API key above to use the hosted model, or run "
+            f"`ollama serve` and pull {OLLAMA_MODEL} for a local one. The graph "
+            "explorer below does not need either."
+        ),
+        "needs_input": True,
+        "rag": state,
+        "id": "n/a",
+    }
+
+
 def ask_rag(kg: KnowledgeGraph, question: str) -> dict[str, Any]:
-    if RAG_NEEDS_KEY and not RAG_KEY:
-        return {
-            "error": (
-                "NVIDIA_API_KEY is not set, so the question box is disabled. "
-                "Export it and restart to enable GraphRAG answers, or run the "
-                "local model instead with RAG_BACKEND=ollama; the graph "
-                "explorer does not need it."
-            ),
-            "id": "n/a",
-        }
+    state = BACKENDS.resolve()
+    if state["backend"] == "none":
+        return _unavailable_answer(state)
+    backend = state["backend"]
 
     t0 = time.perf_counter()
     context_str, nodes, edges, tag_map, seed_ids = retrieve_financial_context(kg, question)
 
     log.info("Retrieved %d entities and %d relationships for: %s", len(nodes), len(edges), question)
 
-    # One client for whichever backend is configured; both speak the
+    # One client for whichever backend resolved; both speak the
     # OpenAI-compatible chat API, so only the URL, the model and the timeout
     # differ. The timeout is explicit because the default (10 minutes for a
     # hosted call, but far less in practice for a stalled local socket) is what
     # turns a slow model into a browser-side "Failed to fetch".
+    api_key, base_url = BACKENDS.credentials(backend)
     client = OpenAI(
-        base_url=RAG_BASE_URL,
-        api_key=RAG_KEY,
+        base_url=base_url,
+        api_key=api_key,
         timeout=RAG_TIMEOUT,
         max_retries=0,
     )
 
     request: dict[str, Any] = {
-        "model": RAG_MODEL,
+        "model": state["model"],
         "messages": [
             {"role": "system", "content": ANSWER_SYSTEM},
             {
@@ -1117,13 +1287,13 @@ def ask_rag(kg: KnowledgeGraph, question: str) -> dict[str, Any]:
         "max_tokens": 16384,
         "stream": False,
     }
-    if RAG_BACKEND == "ollama":
+    if backend == "ollama":
         # Ollama-specific knobs ride along in extra_body; the hosted API would
         # reject them as unknown parameters.
         request["extra_body"] = {
             "options": {"num_ctx": RAG_NUM_CTX, "temperature": 0.2},
         }
-    elif RAG_BACKEND == "nvidia":
+    elif backend == "nvidia":
         # Nemotron's thinking mode, exactly as the NVIDIA quickstart passes it.
         # The reasoning trace comes back on the message as ``reasoning_content``
         # and is surfaced by the worksheet view alongside the answer.
@@ -1143,10 +1313,10 @@ def ask_rag(kg: KnowledgeGraph, question: str) -> dict[str, Any]:
         if not content and reasoning:
             content = reasoning
     except Exception as exc:
-        log.error("RAG call to %s failed: %s", RAG_MODEL, exc)
+        log.error("RAG call to %s (%s) failed: %s", state["model"], backend, exc)
         return {
             "question": question,
-            "text": _explain_api_error(exc),
+            "text": _explain_api_error(exc, state),
             "reasoning": "",
             "grounded": False,
             "used_tags": [],
@@ -1223,6 +1393,8 @@ def ask_rag(kg: KnowledgeGraph, question: str) -> dict[str, Any]:
         "flow": flow,
         "graph": graph_payload,
         "elapsed_sec": round(elapsed, 2),
+        "rag_backend": backend,
+        "rag_model": state["model"],
     }
 
 
@@ -1478,6 +1650,14 @@ _HTML = r"""<!DOCTYPE html>
   #askBox { min-height: 62px; max-height: 220px; resize: vertical; font-size: 13px; line-height: 1.45; }
   .examples { max-height: 92px; overflow-y: auto; padding-right: 4px; margin-top: 8px; }
   .examples button { font-size: 11px; padding: 4px 8px; border-radius: 999px; text-align: left; }
+  #keyPanel { margin-top: 10px; padding: 10px; border: 1px solid var(--line);
+    border-radius: 8px; background: var(--panel-2); }
+  #keyPanel[hidden] { display: none; }
+  #keyPanel .note { margin: 0; }
+  #keyInput { flex: 1; min-width: 0; font-family: var(--mono); font-size: 12px;
+    padding: 6px 8px; border-radius: 6px; border: 1px solid var(--line);
+    background: var(--bg); color: var(--fg); }
+  #keyPrivacy { font-size: 10px; line-height: 1.3; }
   .tabs { display: flex; align-items: center; gap: 4px; padding: 6px 10px;
     border-bottom: 1px solid var(--line); background: var(--panel); flex: 0 0 auto; }
   .tab { background: transparent; border: 1px solid transparent; font-size: 12px; padding: 4px 9px; }
@@ -1613,6 +1793,19 @@ _HTML = r"""<!DOCTYPE html>
         <span class="chip" title="Keyboard shortcut">ctrl+enter</span>
       </div>
       <div class="examples" id="examples"></div>
+      <div id="keyPanel" hidden>
+        <div class="note" id="keyNote"></div>
+        <div class="row" style="margin-top:8px">
+          <input id="keyInput" type="password" autocomplete="off" spellcheck="false"
+                 placeholder="nvapi-…" aria-label="NVIDIA API key" style="flex:1">
+          <button id="keySave" class="primary">use key</button>
+        </div>
+        <div class="row" style="margin-top:6px">
+          <button id="keyForget" class="icon ghost" hidden>forget key</button>
+          <button id="useLocal" class="icon ghost" hidden>use local model</button>
+          <span class="count" id="keyPrivacy"></span>
+        </div>
+      </div>
     </div>
     <div class="tabs">
       <button class="tab active" data-tab="answer">Answer</button>
@@ -2006,16 +2199,78 @@ svg.addEventListener("click", (e) => {
   if (best) focusEntity(best.id);
 });
 
+const BACKEND_LABEL = { nvidia: "NVIDIA NIM", ollama: "local Ollama" };
+
+// The panel is the only place a key can be typed, and it appears only when
+// there is a decision to make: nothing to phrase answers with, or a key that
+// was refused. A reader with a working key never sees it.
+function applyRagState(s) {
+  S.ragModel = s.rag_model || "";
+  S.ragBackend = s.rag_backend || "";
+  const where = BACKEND_LABEL[S.ragBackend];
+  const chip = where ? `${S.ragModel} · ${where}` : "no model available";
+  $("modelChip").textContent = chip;
+  $("modelChip").title = s.rag_reason || "";
+  $("modelChip").className = "chip" + (where ? "" : " bad");
+  $("modelName").textContent = where ? `(${S.ragModel}, ${where})` : "(disabled)";
+
+  const blocked = s.rag_backend === "none" || s.rag_stored_key_rejected;
+  $("askBtn").disabled = blocked;
+  $("askBox").placeholder = blocked
+    ? "Answering is off until a model is available — see the note below."
+    : "e.g. What was Apple's total net sales in 2025 and how much came from the Americas segment?";
+  $("keyPanel").hidden = !blocked;
+  if (!blocked) return;
+
+  const bits = [s.rag_reason];
+  if (s.rag_stored_key_rejected) {
+    bits.push("Paste a different key below, or start the local model.");
+  } else {
+    bits.push(`Get a key at ${"https://build.nvidia.com"} and paste it below.`);
+  }
+  if (!s.rag_ollama_reachable) {
+    bits.push(`Or run \`ollama serve\` then \`ollama pull ${"llama3.2"}\` and press “use local model”.`);
+  } else {
+    const pulled = (s.rag_ollama_models || []).join(", ");
+    bits.push(pulled
+      ? `The local server is up with ${pulled}.`
+      : "The local server is up but has no models pulled yet.");
+  }
+  $("keyNote").textContent = bits.join(" ");
+  $("useLocal").hidden = !s.rag_ollama_reachable;
+  $("keyForget").hidden = s.rag_key_source !== "browser";
+  $("keyPrivacy").textContent =
+    "Held in memory for this server process only — never written to disk, gone on restart.";
+  $("keyInput").value = "";
+}
+
+async function postRag(body) {
+  try {
+    applyRagState(await api("/api/rag", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }));
+  } catch (e) {
+    $("keyNote").textContent = e.message;
+  }
+}
+
+$("keySave").onclick = () => {
+  const key = $("keyInput").value.trim();
+  if (!key) { $("keyNote").textContent = "Paste a key first."; return; }
+  postRag({ key, backend: "nvidia" });
+};
+
+$("keyForget").onclick = () => postRag({ key: "", backend: "auto" });
+$("useLocal").onclick = () => postRag({ backend: "ollama" });
+$("keyInput").addEventListener("keydown", (e) => { if (e.key === "Enter") $("keySave").click(); });
+
 async function loadStats() {
   try {
     const s = await api("/api/stats");
-    S.ragModel = s.rag_model || "";
-    S.ragBackend = s.rag_backend || "";
     $("stats").textContent = `${s.nodes} entities · ${s.edges} relationships`;
-    const where = S.ragBackend === "nvidia" ? "NVIDIA NIM" : "local Ollama";
-    $("modelChip").textContent = `${S.ragModel || "no model"} · ${where}`;
-    $("modelChip").title = `Answers are phrased by ${S.ragModel || "no model"} via ${where}`;
-    $("modelName").textContent = S.ragModel ? `(${S.ragModel}, ${where})` : "";
+    applyRagState(s);
     if (s.schema) {
       const b = document.createElement("span");
       b.className = "chip";
@@ -2157,6 +2412,16 @@ async function askQuestion() {
       body: JSON.stringify({ question: q }),
     });
     renderAnswer(res);
+    if (res.rag) applyRagState(res.rag);
+    if (res.rag_backend) {
+      S.ragBackend = res.rag_backend;
+      const where = BACKEND_LABEL[res.rag_backend];
+      $("modelChip").className = "chip" + (where ? "" : " bad");
+    }
+    if (res.needs_input) {
+      $("keyInput").focus();
+      toast("no model is available to phrase the answer", "bad");
+    }
     if (res.graph) {
       const citedIds = (res.used_tags || []).map((t) => res.tag_map[t]).filter(Boolean);
       loadGraph(res.graph, { cited: citedIds });
@@ -2167,7 +2432,9 @@ async function askQuestion() {
   } finally {
     stopTimer();
     S.busy = false;
-    $("askBtn").disabled = false;
+    // Not unconditionally false: a server with nothing to phrase answers must
+    // not look ready, or the button invites a question that cannot be answered.
+    $("askBtn").disabled = S.ragBackend === "none";
     $("askBtn").textContent = "ask";
   }
 }
@@ -2688,6 +2955,8 @@ class _Handler(BaseHTTPRequestHandler):
             hops = _int_param(qs, "hops", 2, minimum=1, maximum=3)
             limit = _int_param(qs, "limit", 250, maximum=500)
             return self._json(self.kg.neighborhood(seeds, hops=hops, limit=limit))
+        if p == "/api/rag":
+            return self._json(BACKENDS.resolve())
         if p == "/api/reports":
             # List all canned reports
             return self._json({
@@ -2708,7 +2977,46 @@ class _Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/api/ask":
             return self._api_ask()
+        if parsed.path == "/api/rag":
+            return self._api_rag()
         return self._err(404, f"no route: {parsed.path}")
+
+    def _api_rag(self) -> None:
+        """Accept a key or a backend choice, then report what is now in effect.
+
+        The key is held in process memory and never echoed back: a response
+        that repeated it would put the credential in the browser's devtools
+        history and in any proxy log between here and the tab.
+        """
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            return self._err(400, "invalid Content-Length")
+        if length <= 0:
+            return self._err(400, "empty body")
+        if length > MAX_BODY:
+            return self._err(413, "body too large")
+        try:
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+        except Exception as exc:
+            return self._err(400, f"invalid JSON: {exc}")
+        if not isinstance(payload, dict):
+            return self._err(400, "expected a JSON object")
+
+        if "backend" in payload:
+            requested = str(payload.get("backend") or "auto").strip().lower()
+            if requested not in ("auto", "nvidia", "ollama"):
+                return self._err(400, f"unknown backend: {requested}")
+            BACKENDS.set_backend(requested)
+
+        if "key" in payload:
+            key = str(payload.get("key") or "").strip()
+            if key and not key.lower().startswith("nvapi-"):
+                return self._err(400, "that does not look like an NVIDIA API key "
+                                       "(expected it to start with nvapi-)")
+            BACKENDS.set_session_key(key)
+
+        return self._json(BACKENDS.resolve())
 
     def _api_ask(self) -> None:
         try:
@@ -2772,17 +3080,12 @@ def serve(host: str = "127.0.0.1", port: int = 9000, open_browser: bool = True,
     print(f"  Web UI       : {url}")
     print(f"  Database     : {db_path}")
     print(f"  Graph Stats  : {stats['nodes']} entities, {stats['edges']} relationships")
-    where = "NVIDIA NIM" if RAG_BACKEND == "nvidia" else "local Ollama"
-    print(f"  RAG Model    : {RAG_MODEL} via {where} ({RAG_BASE_URL})")
-    if RAG_NEEDS_KEY:
-        # The only setting that silently degrades rather than raising, so it is
-        # the one worth reporting. A typo in the env var name, or a .env that
-        # was never filled in, otherwise looks like a broken model.
-        key_state = "found" if RAG_KEY else (
-            "MISSING -- answers will not be phrased; set NVIDIA_API_KEY in "
-            ".env or the environment"
-        )
-        print(f"  API Key      : {key_state}")
+    where = {"nvidia": "NVIDIA NIM", "ollama": "local Ollama"}.get(stats["rag_backend"], "unavailable")
+    print(f"  RAG Model    : {stats['rag_model'] or 'none'} via {where}")
+    print(f"  Why          : {stats['rag_reason']}")
+    if stats["rag_backend"] == "none":
+        print(f"  Answers      : DISABLED. Paste a key in the browser, or run "
+              f"`ollama serve` and `ollama pull {OLLAMA_MODEL}`, then re-ask.")
     print(f"  RAG Timeout  : {RAG_TIMEOUT:.0f}s")
     print(f"  Press Ctrl-C to stop")
     print(f"{'='*70}\n")

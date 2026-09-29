@@ -23,30 +23,39 @@ system packages.
 ### macOS / Linux
 
 ```bash
-git clone https://github.com/DEV-S-SHAH/FIn.git
+git clone https://github.com/DEV-S-SHAH/Fin.git
 cd Fin
 
 python3.13 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-python -m sandbox_engine --reset          # build the graph, run 5 benchmarks
-python -m sandbox_engine.query_ui         # http://127.0.0.1:9000
+python setup.py                        # prompts for your NVIDIA key, verifies it
+python -m sandbox_engine --reset       # build the graph, run 5 benchmarks
+python -m sandbox_engine.query_ui      # http://127.0.0.1:9000
 ```
+
+`setup.py` writes the key to `.env`, which is gitignored. The key is never in
+the repository, so every clone asks for its own — a leaked repo is not a leaked
+credential. Skip it entirely and the UI will use a local model instead, or ask
+for a key in the browser. The graph explorer works with no key at all.
+
 
 ### Windows (PowerShell)
 
 ```powershell
-git clone https://github.com/DEV-S-SHAH/FIn.git
+git clone https://github.com/DEV-S-SHAH/Fin.git
 cd Fin
 
 py -3.13 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 
+python setup.py
 python -m sandbox_engine --reset
 python -m sandbox_engine.query_ui
 ```
+
 
 If PowerShell refuses to activate the venv, its execution policy is blocking
 it. Either run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once, or
@@ -64,40 +73,55 @@ called out in full:
 ## Enabling LLM answers
 
 Ingestion and the benchmarks need no credential. The key is only for the
-question box in the UI, which is off by default and points at a local Ollama
-server. To use a hosted model instead:
+question box in the UI. You do not have to configure a backend: the UI works
+out what it can use, and says so in the header.
+
+| Found | Uses |
+| --- | --- |
+| A key in the environment or `.env` | hosted NVIDIA model |
+| No key, Ollama answering on `127.0.0.1:11434` | local `llama3.2` |
+| Neither | the question box asks for a key, or offers the local model |
+
+Resolution happens per request, not once at startup, so starting `ollama serve`
+or entering a key takes effect without a restart. A key the provider refuses
+with 401 or 403 is set aside rather than offered again, and the UI falls back to
+whatever else is available.
+
+To use a hosted model, get a key at [build.nvidia.com](https://build.nvidia.com)
+and put it in either `.env`:
 
 ```bash
 cp .env.example .env          # Windows: Copy-Item .env.example .env
 ```
 
-Then edit `.env`:
-
 ```dotenv
-RAG_BACKEND=nvidia
 NVIDIA_API_KEY=nvapi-your-key-here
 ```
 
-Get a key at [build.nvidia.com](https://build.nvidia.com) and restart the UI.
 `.env` is gitignored and the key is never committed — `.env.example` is the
 tracked template.
 
+You can also paste a key into the browser instead of writing a file. That key is
+held in the server's memory for the life of the process and is never written to
+disk, logged, or sent back to the page.
+
 Every RAG setting is read from the process environment first and `.env` second,
-so both of these work and the environment wins:
+so this works and the environment wins:
 
 ```bash
-RAG_BACKEND=nvidia NVIDIA_API_KEY=nvapi-... python -m sandbox_engine.query_ui
+NVIDIA_API_KEY=nvapi-... python -m sandbox_engine.query_ui
 ```
 
-To run locally with Ollama instead, install [Ollama](https://ollama.com), leave
-`RAG_BACKEND=ollama`, and pull a model (`ollama pull llama3.2`).
+To force the local model even with a key present — no network, no cost — set
+`RAG_BACKEND=ollama` after installing [Ollama](https://ollama.com) and pulling a
+model (`ollama pull llama3.2`).
 
 ### How the key is read
 
 `sandbox_engine/query_ui.py` accepts `NVIDIA_API_KEY` or `OPENAI_API_KEY`, from
 the environment, from `sandbox_engine/.env`, or from the repo-root `.env`. It
-prints whether a key was found at startup, and answers from the graph without
-one rather than failing.
+reports which backend it resolved to and why at startup, and the same reason is
+in the model chip's tooltip.
 
 ## What's in the repository
 
