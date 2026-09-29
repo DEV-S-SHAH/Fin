@@ -91,6 +91,31 @@ class NumberHandlingTests(unittest.TestCase):
         self.assertEqual(extract_figures("net sales were 416,161"), ["416,161"])
         self.assertEqual(extract_figures("margin of 31.97%"), ["31.97%"])
 
+    def test_a_citation_tag_is_not_a_reported_figure(self):
+        """Regression: ``[E158]`` was read as the figure ``158``.
+
+        No evidence item can ever ground the number a tag happens to end in, so
+        a correct sentence citing a three-digit tag was rejected as fabrication
+        and a correct answer was replaced with a GAP.
+        """
+        self.assertEqual(
+            extract_figures("net sales were 416,161 million [E158]"), ["416,161"]
+        )
+        self.assertEqual(
+            extract_figures("net sales were 416,161 million [E158] per the 10-K [E4]"),
+            ["416,161"],
+        )
+
+    def test_the_arrow_citation_form_is_also_masked(self):
+        # The model writes this when it pairs a line item with its value.
+        self.assertEqual(extract_figures("line item [E12] reported 120,451 [E2→E15]"), ["120,451"])
+        self.assertEqual(extract_figures("total [E101] of 98,000 [E102→E103]"), ["98,000"])
+
+    def test_masking_tags_does_not_hide_a_real_figure(self):
+        self.assertEqual(
+            extract_figures("filed 2025-10-31 with revenue of 416,161 [E158]"), ["416,161"]
+        )
+
 
 class SentenceSplitTests(unittest.TestCase):
     def test_decimals_do_not_split_a_sentence(self):

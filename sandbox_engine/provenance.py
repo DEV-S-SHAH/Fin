@@ -159,11 +159,18 @@ def extract_figures(text: str) -> list[str]:
     """
     if not text:
         return []
+    # A citation tag is a pointer this module issued, not a claim about
+    # magnitude, so it has to be masked before tokenising. Otherwise ``[E158]``
+    # yields the figure ``158``, which no evidence item can ever ground, and a
+    # perfectly good sentence is rejected as fabrication. The arrow form the
+    # model writes when pairing a line item with its value is masked too.
+    masked = re.sub(r"\[E\d+(?:\s*(?:[-]{1,2}(?:>|→)|=>|→)\s*E?\d+)*\]", " ", text)
     # Dates have to go before tokenising: ``2025-10-31`` otherwise yields the
     # two figures ``-10`` and ``-31``, and an answer that merely mentions when
     # a filing was filed would be reported as inventing numbers.
-    masked = re.sub(r"\d{4}-\d{2}-\d{2}", " ", text)
+    masked = re.sub(r"\d{4}-\d{2}-\d{2}", " ", masked)
     masked = re.sub(r"\b\d{1,2}/\d{1,2}/\d{2,4}\b", " ", masked)
+
 
     out: list[str] = []
     for raw in re.findall(r"\(?-?[\d][\d,]*\.?\d*\)?%?", masked):
