@@ -68,6 +68,7 @@ FINANCIAL_STOP_WORDS: frozenset[str] = frozenset({
     "GROWTH", "MARGIN", "INCOME", "PROFIT", "LOSS", "REPORT", "FILING", "YEAR",
     "ANNUAL", "LATEST", "PRICE", "VALUE", "BREAK", "DOWN", "SALES", "REVENUE",
     "TOP", "LINE", "SEGMENT", "EVENT", "CHUNK", "TABLE", "DATA", "CORPUS",
+    "JP",
 })
 
 #: Built-in company aliases mapping ticker -> (entity_name, aliases)
@@ -115,6 +116,18 @@ COMPANY_ALIASES: dict[str, tuple[str, tuple[str, ...]]] = {
         "Meta Platforms, Inc.",
         ("meta", "meta platforms", "facebook", "instagram"),
     ),
+    "JPM": (
+        "JPMorgan Chase & Co.",
+        (
+            "jpmorgan chase co",
+            "jpmorgan chase",
+            "jp morgan chase co",
+            "jp morgan chase",
+            "jp morgan",
+            "jpmorgan",
+            "jpm",
+        ),
+    ),
 }
 
 # Precompute ranked alias patterns sorted by length descending (longest pattern first)
@@ -141,8 +154,8 @@ def extract_candidate_entity(query: str) -> tuple[Optional[str], Optional[str]]:
 
     Checks:
     1. Cashtag pattern: $TICKER
-    2. Uppercase token: TICKER (filtering out stop words)
-    3. Alias dictionary fallback: matches alias phrases (e.g. 'Apple', 'Rivian')
+    2. Alias dictionary matching: matches known company alias phrases (e.g. 'Apple', 'Rivian', 'JP Morgan')
+    3. Uppercase token: TICKER (filtering out stop words)
     """
     if not isinstance(query, str) or not query.strip():
         return None, None
@@ -154,16 +167,7 @@ def extract_candidate_entity(query: str) -> tuple[Optional[str], Optional[str]]:
         entity_name = COMPANY_ALIASES.get(ticker, (None, ()))[0]
         return ticker, entity_name
 
-    # 2. Uppercase token matching
-    stripped = _strip_possessives(query)
-    uppercase_tokens = _UPPERCASE_RE.findall(stripped)
-    for token in uppercase_tokens:
-        if len(token) >= 2 and token not in FINANCIAL_STOP_WORDS:
-            ticker = token
-            entity_name = COMPANY_ALIASES.get(ticker, (None, ()))[0]
-            return ticker, entity_name
-
-    # 3. Fall back to alias dictionary
+    # 2. Alias dictionary matching (e.g. 'Apple', 'Rivian', 'JP Morgan', 'Tesla')
     # Normalize text by removing punctuation and collapsing spaces
     norm_text = re.sub(r"[^a-z0-9\s]", " ", _strip_possessives(query).lower())
     padded_norm = f" {re.sub(r'\s+', ' ', norm_text).strip()} "
@@ -172,6 +176,15 @@ def extract_candidate_entity(query: str) -> tuple[Optional[str], Optional[str]]:
         pattern_norm = re.sub(r"[^a-z0-9\s]", " ", pattern)
         padded_pattern = f" {re.sub(r'\s+', ' ', pattern_norm).strip()} "
         if padded_pattern in padded_norm:
+            return ticker, entity_name
+
+    # 3. Uppercase token matching (unlisted / unmapped tickers like $COIN, PLTR, BABA)
+    stripped = _strip_possessives(query)
+    uppercase_tokens = _UPPERCASE_RE.findall(stripped)
+    for token in uppercase_tokens:
+        if len(token) >= 2 and token not in FINANCIAL_STOP_WORDS:
+            ticker = token
+            entity_name = COMPANY_ALIASES.get(ticker, (None, ()))[0]
             return ticker, entity_name
 
     return None, None

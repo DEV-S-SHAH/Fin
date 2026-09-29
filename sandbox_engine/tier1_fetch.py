@@ -61,6 +61,7 @@ DEFAULT_TICKER_CIK: dict[str, str] = {
     "GOOGL": "0001652044",
     "META": "0001326801",
     "NFLX": "0001065280",
+    "JPM": "0000019617",
 }
 
 

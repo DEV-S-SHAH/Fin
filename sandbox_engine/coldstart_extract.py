@@ -69,6 +69,17 @@ class ColdStartExtractor:
         self.model = model
         self.timeout = min(float(timeout), MAX_EXTRACTION_BUDGET_SECONDS)
 
+    @classmethod
+    def extract(
+        cls,
+        text: str,
+        ticker: str = "",
+        timeout: Optional[float] = None,
+    ) -> ExtractionPayload:
+        """Class-level extraction matching ColdStartExtractor.extract(text, ticker)."""
+        extractor = cls() if isinstance(cls, type) else cls
+        return extractor.extract_triples(text, target_ticker=ticker, timeout=timeout)
+
     def _call_provider(
         self, text: str, target_ticker: str, timeout: float
     ) -> str:

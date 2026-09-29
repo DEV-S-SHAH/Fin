@@ -16,6 +16,7 @@ import threading
 import unittest
 import urllib.error
 import urllib.request
+from unittest.mock import patch
 from http.server import ThreadingHTTPServer
 
 from sandbox_engine import provenance, query_ui
@@ -86,7 +87,7 @@ class AskTransportTests(unittest.TestCase):
             raise RuntimeError("ladybug: cannot bind DISAGGREGATED_BY")
 
         query_ui.ask_rag = explode
-        self.addCleanup(setattr, query_ui, "ask_rag", self.saved_ask)
+        self.addCleanup(setattr, query_ui, "ask_rag", self.__class__.saved_ask)
 
         try:
             status, body = self._post_ask()
@@ -107,7 +108,7 @@ class AskTransportTests(unittest.TestCase):
             return {"question": question, "text": "Net sales were $46.7B.", "grounded": True}
 
         query_ui.ask_rag = ok
-        self.addCleanup(setattr, query_ui, "ask_rag", self.saved_ask)
+        self.addCleanup(setattr, query_ui, "ask_rag", self.__class__.saved_ask)
 
         status, body = self._post_ask()
         self.assertEqual(status, 200)
@@ -127,6 +128,7 @@ class AskTransportTests(unittest.TestCase):
     def test_sse_streaming_response(self):
         """POST /api/ask with Accept: text/event-stream must return valid SSE events."""
         query_ui.ask_rag = lambda kg, q: {"answer": "Streaming test answer", "evidence": []}
+        self.addCleanup(setattr, query_ui, "ask_rag", self.__class__.saved_ask)
         req = urllib.request.Request(
             f"http://127.0.0.1:{self.port}/api/ask",
             data=json.dumps({"question": "What is Apple revenue?"}).encode("utf-8"),
@@ -142,6 +144,66 @@ class AskTransportTests(unittest.TestCase):
             self.assertIn("event: status", body)
             self.assertIn("event: token", body)
             self.assertIn("event: done", body)
+
+    def test_post_ask_cold_start_full_execution(self):
+        """POST /api/ask with cold-start entity executes JIT pipeline and returns 5-section analysis directly."""
+        sample_10k = (
+            "<html><body>"
+            "<div>Item 1. Business</div>"
+            "<p>Rivian designs, develops, and manufactures electric adventure vehicles.</p>"
+            "<div>Item 1A. Risk Factors</div>"
+            "</body></html>"
+        )
+        with patch(
+            "sandbox_engine.tier1_fetch.SECRuntimeFetcher.fetch_latest_filing_html",
+            return_value=(sample_10k, {"form": "10-K"}),
+        ):
+            status, body = self._post_ask("What are $RIVN delivery numbers?")
+            self.assertEqual(status, 200)
+            self.assertEqual(body.get("route"), "COLD_START")
+            self.assertIn("1. Executive Summary & Thesis", body.get("answer", ""))
+            self.assertIn("2. Direct Dependencies", body.get("answer", ""))
+            self.assertIn("3. Second-Order Contagion", body.get("answer", ""))
+            self.assertIn("4. Capital Allocation & Margin Outlook", body.get("answer", ""))
+            self.assertIn("5. Verifiable Evidence Chain", body.get("answer", ""))
+            self.assertIn("provenance", body)
+            self.assertTrue(len(body.get("provenance", "")) > 0)
+            self.assertIn("graph", body)
+            self.assertIn("nodes", body["graph"])
+            self.assertIn("edges", body["graph"])
+            self.assertTrue(len(body["graph"]["nodes"]) > 0)
+
+    def test_sse_cold_start_full_execution(self):
+        """POST /api/ask with cold-start entity over SSE streams tokens and returns complete analysis in done event."""
+        sample_10k = (
+            "<html><body>"
+            "<div>Item 1. Business</div>"
+            "<p>Rivian designs, develops, and manufactures electric adventure vehicles.</p>"
+            "<div>Item 1A. Risk Factors</div>"
+            "</body></html>"
+        )
+        with patch(
+            "sandbox_engine.tier1_fetch.SECRuntimeFetcher.fetch_latest_filing_html",
+            return_value=(sample_10k, {"form": "10-K"}),
+        ):
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{self.port}/api/ask",
+                data=json.dumps({"question": "What are $RIVN delivery numbers?"}).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json",
+                    "Accept": "text/event-stream",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                content_type = resp.headers.get("Content-Type", "")
+                self.assertIn("text/event-stream", content_type)
+                body = resp.read().decode("utf-8")
+                self.assertIn("event: status", body)
+                self.assertIn("event: token", body)
+                self.assertIn("event: done", body)
+                self.assertIn("COLD_START", body)
+                self.assertIn("Executive Summary", body)
+                self.assertIn("provenance", body)
 
 
 class ClientMessageTests(unittest.TestCase):

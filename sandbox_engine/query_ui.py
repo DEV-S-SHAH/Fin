@@ -1756,7 +1756,11 @@ def ask_rag(kg: KnowledgeGraph, question: str) -> dict[str, Any]:
 
             # Step 3: Extract 15-30 financial triples
             extractor = ColdStartExtractor()
-            payload = extractor.extract_triples(cleaned_text, target_ticker=ticker)
+            payload = (
+                extractor.extract(cleaned_text, ticker)
+                if hasattr(extractor, "extract")
+                else extractor.extract_triples(cleaned_text, target_ticker=ticker)
+            )
 
             # Step 4: Stitch ephemeral overlay onto backbone
             overlay = InMemoryOverlayGraph(kg_connection=kg)
@@ -4048,7 +4052,11 @@ class _Handler(BaseHTTPRequestHandler):
                     "message": "Extracting financial triples...",
                 })
                 extractor = ColdStartExtractor()
-                payload = extractor.extract_triples(cleaned_text, target_ticker=ticker)
+                payload = (
+                    extractor.extract(cleaned_text, ticker)
+                    if hasattr(extractor, "extract")
+                    else extractor.extract_triples(cleaned_text, target_ticker=ticker)
+                )
 
                 # Step 3: Overlay stitching
                 self._send_sse("status", {

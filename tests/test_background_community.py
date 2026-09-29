@@ -8,6 +8,8 @@ import unittest
 from pathlib import Path
 import networkx as nx
 
+from unittest.mock import patch
+
 from sandbox_engine.background import BackgroundIngestQueue
 from sandbox_engine.community import CommunityDetector
 
@@ -19,8 +21,21 @@ class TestBackgroundCommunity(unittest.TestCase):
         self.temp_dir = tempfile.mkdtemp(prefix="coldstart_staging_test_")
         self.staging_path = Path(self.temp_dir)
         self.queue = BackgroundIngestQueue(staging_dir=self.staging_path)
+        sample_10k = (
+            "<html><body>"
+            "<div>Item 1. Business</div>"
+            "<p>Tesla designs, develops, manufactures, and sells electric vehicles and energy systems.</p>"
+            "<div>Item 1A. Risk Factors</div>"
+            "</body></html>"
+        )
+        self.fetch_patcher = patch(
+            "sandbox_engine.tier1_fetch.SECRuntimeFetcher.fetch_latest_filing_html",
+            return_value=(sample_10k, {"form": "10-K"}),
+        )
+        self.fetch_patcher.start()
 
     def tearDown(self):
+        self.fetch_patcher.stop()
         self.queue.shutdown(wait=True)
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
@@ -57,13 +72,34 @@ class TestBackgroundCommunity(unittest.TestCase):
         self.assertEqual(len(lines), 1)
         record = lines[0]
         self.assertEqual(record["ticker"], "TSLA")
-        self.assertEqual(record["status"], "staged")
+        self.assertEqual(record["status"], "extracted")
         self.assertIn("timestamp", record)
-        self.assertEqual(record["metadata"]["source"], "10-K")
+        self.assertIn("payload", record)
 
         # Verify zero temporary files remain
         tmp_files = list(self.staging_path.glob(".*.tmp.*"))
         self.assertEqual(len(tmp_files), 0, f"Dangling temporary files found: {tmp_files}")
+
+    def test_background_worker_error_handling(self):
+        """Assert background worker captures fetch/extract exceptions and writes status: failed."""
+        with patch(
+            "sandbox_engine.tier1_fetch.SECRuntimeFetcher.fetch_latest_filing_html",
+            side_effect=RuntimeError("SEC EDGAR Network Down"),
+        ):
+            enqueued = self.queue.enqueue_coldstart_sync("FAIL")
+            self.assertTrue(enqueued)
+            self.queue.shutdown(wait=True)
+
+        target_file = self.staging_path / "FAIL.jsonl"
+        self.assertTrue(target_file.exists())
+        with open(target_file, "r", encoding="utf-8") as f:
+            lines = [json.loads(line) for line in f if line.strip()]
+
+        self.assertEqual(len(lines), 1)
+        record = lines[0]
+        self.assertEqual(record["ticker"], "FAIL")
+        self.assertEqual(record["status"], "failed")
+        self.assertIn("SEC EDGAR Network Down", record["error"])
 
     def test_non_blocking_behavior(self):
         """Assert enqueue_coldstart_sync returns in < 10ms without waiting for worker completion."""
