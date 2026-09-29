@@ -85,6 +85,7 @@ place. Long-lived servers should open once at startup and keep the handle.
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import re
@@ -97,6 +98,7 @@ from functools import lru_cache
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 import ladybug as lb
+import pyarrow as pa
 
 __all__ = [
     "BUFFER_POOL_MB",
@@ -155,6 +157,12 @@ _ALIAS_JOIN = ", "
 
 ENTITY_TABLE = "Entity"
 RELATION_TABLE = "RELATION"
+
+#: Column order of each table, which is also the order ``COPY`` maps by position.
+#: Named rather than derived from the DDL so the reader, the writer and the
+#: bulk loader cannot drift apart without a name to grep for.
+ENTITY_COLUMNS = ("id", "name", "category", "description", "aliases")
+RELATION_COLUMNS = ("from", "to", "action", "context")
 
 _NODE_DDL = (
     f"CREATE NODE TABLE IF NOT EXISTS {ENTITY_TABLE} ("
@@ -497,46 +505,57 @@ def _sql_int(value: Any, name: str) -> str:
     return str(value)
 
 
-def _sql_path(path: Any) -> str:
-    """Render a file path as a quoted SQL string literal for ``COPY``.
+def _read_csv(path: Any, columns: Sequence[str], header: bool = True) -> pa.Table:
+    """Read a CSV into an Arrow table shaped for a bound ``COPY``.
 
-    ``COPY ... FROM`` will not take a bound parameter: the binder reports "Trying
-    to scan from unsupported data type STRING" and only understands dataframes or
-    Arrow tables, neither of which this module depends on. The path must be
-    inlined, which makes a caller-supplied string part of the SQL, so this
-    function is the security boundary.
+    This engine's ``COPY`` has exactly one form, ``COPY <table> FROM $data``,
+    and $data must be an Arrow table. There is no ``FROM 'path'`` to fall back
+    on: the grammar stops at the keyword -- ``Parser exception: Invalid input
+    <COPY Entity FROM ">: expected rule oC_Statement`` -- so a loader written
+    against the path form does not degrade, it fails on the first call. Every
+    other bulk load in this repository already uses the bound form.
 
-    The engine's parser accepts double-quoted and single-quoted string literals
-    but **not** SQL-standard quote doubling (``''``) and **not** backslash
-    escapes -- both raise "extraneous input". So the quoting is chosen per path
-    rather than escaped:
+    Reading the file here rather than letting the engine do it has two
+    consequences worth stating, because they are the whole reason the path
+    quoting this function used to need is gone:
 
-    * no double quote -> double-quote it, which lets a single quote sit inside
-      (``/data/it's here.csv``);
-    * a double quote but no single quote -> single-quote it;
-    * both -> refused, because the engine offers no way to express that literal.
+    * **The path is never part of the SQL.** It is a Python string handed to
+      ``open``, so no path can inject a statement and no path needs a quoting
+      scheme. A path may contain any character the filesystem accepts, which is
+      why a file called ``it's data`` or ``we"ird`` is no longer special.
+    * **The header is Python's decision.** The engine's own ``COPY`` defaults to
+      ``HEADER=false`` and ingests the header row as data, which put an entity
+      literally named ``name`` into the store. Reading the row here means the
+      flag cannot be forgotten, mis-cased or silently defaulted.
 
-    A NUL is refused too: it truncates the path in the C++ layer, which would
-    quietly read a different file than the caller asked for.
+    Every column is a STRING because both tables are all-STRING, and ``COPY``
+    maps by position: the file must hold exactly *columns*, in order, and a
+    short row is padded rather than shifted.
     """
     if not isinstance(path, str):
         raise TypeError(f"path must be a str, got {type(path).__name__}")
     if not path:
         raise ValueError("path must not be empty")
     if "\x00" in path:
+        # A NUL truncates the name in the OS layer, so the caller would be
+        # reading a different file than the one it named.
         raise ValueError("path must not contain a NUL byte")
-    has_double = '"' in path
-    has_single = "'" in path
-    if has_double and has_single:
-        raise ValueError(
-            "path contains both quote characters and this engine's parser can "
-            f"express neither: {path!r}"
-        )
-    quote = "'" if has_double else '"'
-    return quote + path + quote
+    with open(path, "r", encoding="utf-8", newline="") as handle:
+        rows = list(csv.reader(handle))
+    if header and rows:
+        rows = rows[1:]
+    try:
+        data = {
+            name: [row[i] if i < len(row) else "" for row in rows]
+            for i, name in enumerate(columns)
+        }
+    except IndexError:  # pragma: no cover - rows are padded above
+        raise ValueError(f"{path} has no column {i + 1} of {len(columns)}") from None
+    return pa.table({name: pa.array(values, type=pa.string()) for name, values in data.items()})
 
 
 def _rows_of(conn: Any, query: str, params: Mapping[str, Any] | None = None) -> Iterator[dict[str, Any]]:
+    """Yield rows as dicts without buffering the whole result."""
 
     """Yield rows as dicts without buffering the whole result."""
     result = conn.execute(query, dict(params) if params else None)
@@ -914,16 +933,23 @@ class GraphStore:
         normalisation, so the CSV must already hold exactly the schema's columns
         in order.
 
-        This engine's ``COPY`` defaults to ``HEADER=false``, which silently
-        ingests the header row as an entity, so the option is explicit here. The
-        path is inlined rather than bound because ``COPY`` will not take a bound
-        string; see :func:`_sql_path`.
+        The CSV is read here and handed over as a bound Arrow table, because that
+        is the only ``COPY`` form this engine's grammar has; see :func:`_read_csv`
+        for what that buys and why the path no longer needs quoting. The header
+        row is this function's decision rather than a string literal in the
+        statement, because the engine's own default is ``HEADER=false`` and would
+        ingest it as data.
         """
         self.require_schema()
-        flags = "(HEADER='true')" if header else "(HEADER='false')"
-        self._execute(f"COPY {ENTITY_TABLE} FROM {_sql_path(entity_csv)} {flags}")
+        self._execute(
+            f"COPY {ENTITY_TABLE} FROM $data",
+            {"data": _read_csv(entity_csv, ENTITY_COLUMNS, header)},
+        )
         if relation_csv:
-            self._execute(f"COPY {RELATION_TABLE} FROM {_sql_path(relation_csv)} {flags}")
+            self._execute(
+                f"COPY {RELATION_TABLE} FROM $data",
+                {"data": _read_csv(relation_csv, RELATION_COLUMNS, header)},
+            )
 
     # -- introspection -----------------------------------------------------
 

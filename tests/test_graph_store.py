@@ -102,10 +102,15 @@ class StoreTestCase(unittest.TestCase):
     def open_at(self, path: str, **kw) -> gs.GraphStore:
         """Open ``path`` as its own store.
 
-        A second handle on a path that is already open does not raise: it opens
-        and then silently diverges from the first, each seeing only some of the
-        writes. Tests that need a *different* dataset therefore need a different
-        path, not a second open of the same one.
+        A second handle on a path that is already open is refused: the engine
+        takes an exclusive lock on the database file, and a second open fails
+        with ``IO exception: Could not set lock on file ...``. That is the
+        better of the two behaviours -- the earlier one opened and then silently
+        diverged, each handle seeing only some of the writes -- but it means a
+        test that needs a *different* dataset has to name a *different* path
+        rather than open the same one twice. Those are the only two shapes a
+        test here can want: this class's ``setUp`` already holds
+        ``self.path`` open, so a second dataset is ``open_at`` on a new name.
         """
         store = gs.open_store(path, **kw)
         self.addCleanup(store.close)
@@ -210,7 +215,15 @@ class SchemaTests(StoreTestCase):
 
 
 class BulkCopyTests(StoreTestCase):
-    """`COPY` takes an inlined path, so path quoting is a tested boundary."""
+    """`COPY` reads a bound Arrow table, so the path is data and not SQL.
+
+    The loader used to inline the path into ``COPY Entity FROM "<path>"``, which
+    needed a per-path quoting scheme and refused any path it could not express.
+    This engine's grammar has no ``FROM 'literal'`` form at all -- it stops at
+    the keyword -- so that call did not degrade, it raised on the first load.
+    Reading the CSV here and binding the table is the form the engine has, and it
+    removes the quoting question rather than answering it.
+    """
 
     HEADER = "id,name,category,description,aliases\n"
     REL_HEADER = "FROM,TO,action,context\n"
@@ -255,27 +268,34 @@ class BulkCopyTests(StoreTestCase):
             self.assertEqual(store.counts()["entities"], 4)
             self.assertIn("name", {r["name"] for r in gs._fetch(store.conn, "MATCH (e:Entity) RETURN e.name AS name")})
 
-    def test_paths_containing_quotes_are_quoted_per_path(self):
-        # The parser takes double- or single-quoted literals but supports
-        # neither SQL-standard quote doubling nor backslash escapes, so the
-        # quote character is chosen rather than escaped.
-        for dirname, quoted in [("it's data", '"'), ('we"ird', "'"), ("plain", '"')]:
+    def test_a_path_containing_quote_characters_still_loads(self):
+        # The regression: the path used to be inlined into the statement, so it
+        # needed a quoting scheme and a path it could not express was refused.
+        # Nothing in the path reaches SQL now, so there is nothing to quote.
+        for dirname in ("it's data", 'we"ird', "both'\"kinds", "plain"):
             with self.subTest(dirname=dirname):
-                with self.open_at(os.path.join(self._tmp.name, f"q{dirname}.lbug")) as store:
+                target = os.path.join(self._tmp.name, f"q{dirname}.lbug")
+                try:
+                    os.makedirs(os.path.join(self._tmp.name, dirname), exist_ok=True)
+                except OSError as exc:
+                    # Windows refuses a double quote in a path component
+                    # outright, so the filesystem -- not the loader -- is what
+                    # rules this case out there. Skipped rather than asserted,
+                    # so POSIX keeps the coverage instead of losing it.
+                    self.skipTest(f"this filesystem rejects the path: {exc}")
+                with self.open_at(target) as store:
                     entity_csv, relation_csv = self.write_csvs(dirname)
                     store.copy_from_csv(entity_csv, relation_csv)
                     self.assertEqual(store.counts(), {"entities": 2, "relations": 1})
 
-    def test_a_path_with_both_quote_characters_is_refused(self):
-        self.assertEqual(gs._sql_path("/tmp/it's fine.csv"), "\"/tmp/it's fine.csv\"")
-        self.assertEqual(gs._sql_path('/tmp/say "hi".csv'), "'/tmp/say \"hi\".csv'")
-        self.assertEqual(gs._sql_path("/tmp/plain.csv"), '"/tmp/plain.csv"')
-        with self.assertRaises(ValueError):
-            gs._sql_path("/tmp/both'\"kinds.csv")
+    def test_an_unusable_path_is_refused_before_the_file_is_opened(self):
+        # The validation that mattered when the path was SQL, and still does:
+        # a NUL truncates the name in the OS layer, so the caller would read a
+        # different file than the one it named.
         for bad in ("", 5, None, "a\x00b"):
             with self.subTest(bad=bad):
                 with self.assertRaises((TypeError, ValueError)):
-                    gs._sql_path(bad)
+                    gs._read_csv(bad, gs.ENTITY_COLUMNS)
 
     def test_copy_is_not_idempotent_and_says_so(self):
         with self.open() as store:
@@ -629,7 +649,7 @@ class PivotSearchTests(StoreTestCase):
             self.assertEqual(gs.find_pivot_nodes(empty.conn, "lagrangian"), [])
 
     def test_accents_fold_together(self):
-        with self.open() as store:
+        with self.open_at(os.path.join(self._tmp.name, "folded.lbug")) as store:
             store.ingest_entities([ent("emile", "Émile Durkheim", ["Durkheim"])])
             self.assertEqual(gs.find_pivot_nodes(store.conn, "emile durkheim"), ["emile"])
             self.assertEqual(gs.find_pivot_nodes(store.conn, "Émile"), ["emile"])
@@ -838,7 +858,7 @@ class ExpansionTests(StoreTestCase):
 
     def test_node_reachable_at_several_hops_appears_once(self):
         # lagrangian is 1 hop from action and also 2 hops via a longer route.
-        with self.open() as store:
+        with self.open_at(os.path.join(self._tmp.name, "severalhops.lbug")) as store:
             store.ingest_graph(
                 {
                     "nodes": [ent("a", "A"), ent("b", "B"), ent("c", "C")],
@@ -885,7 +905,7 @@ class ExpansionTests(StoreTestCase):
         self.assertEqual(gs.expand_relevance(self.conn, ["does-not-exist"], 2), [])
 
     def test_self_loops_are_not_traversed(self):
-        with self.open() as store:
+        with self.open_at(os.path.join(self._tmp.name, "selfloop.lbug")) as store:
             store.ingest_entities([ent("a", "A")])
             store.connection.execute(
                 "MATCH (a:Entity {id:'a'}) CREATE (a)-[r:RELATION]->(a) "
@@ -894,7 +914,7 @@ class ExpansionTests(StoreTestCase):
             self.assertEqual(gs.expand_relevance(store.conn, ["a"], 2), [])
 
     def test_cycles_terminate(self):
-        with self.open() as store:
+        with self.open_at(os.path.join(self._tmp.name, "cycle.lbug")) as store:
             store.ingest_graph(
                 {
                     "nodes": [ent(x, x.upper()) for x in ("a", "b", "c")],
@@ -958,7 +978,7 @@ class ExpansionTests(StoreTestCase):
             )
 
     def test_expansion_on_an_empty_database(self):
-        with self.open() as store:
+        with self.open_at(os.path.join(self._tmp.name, "empty.lbug")) as store:
             self.assertEqual(gs.expand_relevance(store.conn, ["anything"], 2), [])
 
 
