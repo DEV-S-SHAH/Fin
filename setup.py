@@ -116,6 +116,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--base-url", default=os.environ.get("NVIDIA_BASE_URL", DEFAULT_BASE))
     parser.add_argument("--no-verify", action="store_true",
                         help="write the key without spending a request on it")
+    parser.add_argument("--replace", action="store_true",
+                        help="overwrite an existing .env with a new key "
+                             "(without this, a second run refuses rather than overwrite)")
     args = parser.parse_args(argv)
 
     env = read_env(ENV_PATH)
@@ -127,10 +130,17 @@ def main(argv: list[str] | None = None) -> int:
             print(f"No key in {display_path(ENV_PATH)}. Run `python setup.py` to add one, or")
             print("`python -m sandbox_engine.query_ui` to use a local model instead.")
             return 1
-    elif key:
+    elif key and not args.replace:
+        # The refusal is deliberate: overwriting a live credential on a
+        # re-run would destroy a key the reader did not mean to change. What was
+        # missing is the way out. This used to end "Run setup.py again to
+        # replace it with a different key", which advertised the one run this
+        # branch exists to refuse -- so the only route left was editing the file
+        # by hand, with no hint that it was a route. --replace is that route,
+        # and it is opt-in so the refusal still holds for a plain re-run.
         print(f"A key is already in {display_path(ENV_PATH)} "
-              f"(not shown). Pass --check to verify it, or --backend ollama to switch to a")
-        print("local model. Run setup.py again to replace it with a different key.")
+              f"(not shown). Pass --check to verify it, --backend ollama to switch to a")
+        print("local model, or --replace to overwrite it with a different key.")
         return 1
     else:
         print("Get an API key at https://build.nvidia.com\n")
