@@ -954,7 +954,13 @@ class ProviderContractTests(_StubOpenAI, unittest.TestCase):
     def test_resolve_client_falls_back_to_heuristic(self):
         from graphrag.llm import resolve_client
 
-        self.assertEqual(resolve_client().name, "heuristic")
+        # The auto path probes localhost:11434 before giving up, so on a
+        # machine with a local model running this asserted the machine rather
+        # than the resolver, and passed or failed with Ollama's state. The
+        # probe is what the test has to control: refusing the connection is
+        # what "no credentials present" means here.
+        with unittest.mock.patch("httpx.Client.get", side_effect=OSError("no local model")):
+            self.assertEqual(resolve_client().name, "heuristic")
 
     def test_explicit_heuristic_provider(self):
         from graphrag.llm import resolve_client

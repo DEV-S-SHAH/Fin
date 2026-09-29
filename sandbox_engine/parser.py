@@ -157,6 +157,14 @@ _TRAILING_UNIT_RE = re.compile(
 _PCT_SUFFIX_RE = re.compile(r"\s*%\s*$")
 #: A '%' anywhere: a share of a segment, not a segment itself.
 _PERCENT_RE = re.compile(r"%")
+#: A cell that is *only* a unit marker like the ``%``/``pts`` cells a
+#: statement generator emits beside (or inside) the margin columns. These
+#: filers do not suffix every margin cell with ``%``; the column band carries
+#: one unit cell per period and the numbers are bare.
+_PERCENT_UNIT_RE = re.compile(
+    r"^(?:%|pct\.?|percentage|points?|bps\.?|basis\s+points|%\s*of\s+revenue)$",
+    re.I,
+)
 
 
 def clean_text(value: Any) -> str:
@@ -496,10 +504,23 @@ _PERIOD_RE = re.compile(
     re.I,
 )
 _ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
+_BARE_YEAR_KEY = re.compile(r"FY(?:19|20)\d{2}")
 #: A header cell that is pure decoration, not a period. Without this, the word
 #: "Years" in a banner row is read as a period label.
 _PERIOD_STOPWORDS = frozenset(
     {"year", "years", "ended", "as of", "months", "weeks", "date", "dates"}
+)
+
+#: A period banner that carries no year, which :data:`_PERIOD_RE` misses. A
+#: balance-sheet table's "As of June 30" and "Year Ended June 30" caption rows
+#: are headers, not segment names, and without this they enter the ``Segment``
+#: table as if a country were a reporting unit.
+_BANNER_RE = re.compile(
+    rf"(?:{_MONTHS})\s+\d{{1,2}}\b"                          # June 30
+    rf"|\b(?:year|years|month|months|week|weeks|quarter|quarters)\s+ended\b"
+    rf"|\bthree\s+months\s+ended\b"
+    rf"|^\s*(?:as\s+of)\b",
+    re.I,
 )
 
 _MONTH_NAMES = (
@@ -656,13 +677,33 @@ class PeriodGroup:
     columns: list[int]
     duration: str = ""
     year_end: tuple[int, int] | None = None
+    filing_period_end: str = ""
     start: str = ""
     days: int = 0
     cumulative: bool = False
 
     @property
     def key(self) -> str:
-        return self.period_key(self.label)
+        return self._resolve(self.period_key(self.label))
+
+    def _resolve(self, key: str) -> str:
+        """Give a bare-year column the filing's own period end.
+
+        Some tables print a year and no date in any cell. A fiscal year is not
+        a calendar one, so "2025" is ambiguous -- on Microsoft's September close
+        it means the year ended 2025-06-30, not December 2025 -- and reading it
+        as a calendar year files one period under two identities and leaves the
+        node with no end date at all. The filing already states when its period
+        ended, and the year printed on the column agrees with it, so the end date
+        is recovered rather than guessed. A comparative column that disagrees
+        with the filing's year keeps its bare year, because that is genuinely all
+        the table said about it.
+        """
+        if not self.filing_period_end or not _BARE_YEAR_KEY.fullmatch(key):
+            return key
+        if key[2:] != self.filing_period_end[:4]:
+            return key
+        return self.filing_period_end
 
     @property
     def full_key(self) -> str:
@@ -727,13 +768,35 @@ class PeriodGroup:
         return int(year.group(1)) if year else None
 
 
+def filing_period_end_iso(metadata: dict[str, Any]) -> str:
+    """The filing's own period end as ``YYYY-MM-DD``, or ``""``.
+
+    Recovered rather than recomputed, because the cover page states it and a
+    re-derivation from the fiscal year and form type is only ever as good as the
+    assumptions behind it. Anything that is not already a full date is dropped: a
+    partial date would resolve a bare year to the wrong day.
+    """
+    for key in ("period_end", "period_end_date"):
+        match = re.search(
+            r"((?:19|20)\d{2})-(\d{2})-(\d{2})", str(metadata.get(key, ""))
+        )
+        if match:
+            return match.group(0)
+    return ""
+
+
 def detect_period_groups(
-    frame: pd.DataFrame, scan: int = 6, year_end: tuple[int, int] | None = None
+    frame: pd.DataFrame,
+    scan: int = 6,
+    year_end: tuple[int, int] | None = None,
+    filing_period_end: str = "",
 ) -> tuple[int, list[PeriodGroup]]:
     """Locate the header row and group its columns by period.
 
-    Returns the row index too, because the duration banner lives in the rows
-    *above* the dates.
+    Returns the row index too, because the duration banner usually lives in the
+    rows *above* the dates. When the filer splits the date across cells, the
+    banner sits in the header row's own caption column instead and
+    :func:`_groups_in_row` has already read it.
 
     The header is the row yielding the most distinct period groups. This is
     hazard 2 from the module docstring: the "Years ended" banner row above the
@@ -746,8 +809,9 @@ def detect_period_groups(
         if len(groups) > len(best):
             best_row, best = index, groups
     for group in best:
-        group.duration = _duration_above(frame, group, best_row)
+        group.duration = _duration_above(frame, group, best_row) or group.duration
         group.year_end = year_end
+        group.filing_period_end = filing_period_end
         group.start, group.days = period_span(group.duration, group.key)
         group.cumulative = is_cumulative_period(
             group.duration, group.start, group.year_end
@@ -772,14 +836,40 @@ def _duration_above(frame: pd.DataFrame, group: PeriodGroup, header_row: int) ->
     return ""
 
 
+#: A caption that ends in a month and day but no year, so the year must live in
+#: a different cell. Microsoft's income statement prints
+#: ``Three Months Ended September 30, | 2025``.
+_MONTH_DAY_TAIL = re.compile(rf"(?:{_MONTHS})\s+\d{{1,2}}\s*,?\s*$", re.I)
+_BARE_YEAR_CELL = re.compile(r"(?:Q[1-4]\s*)?(?:FY\s*)?(?:19|20)\d{2}", re.I)
+
+
+def _split_banner(row: list[str]) -> str:
+    """The caption that carries a period's month and day, if there is one.
+
+    Read alone, a bare-year cell gives ``period_key`` nothing but a year, and
+    the period collapses to ``FY2025`` -- the calendar year, not Microsoft's
+    September fiscal year. Prefixing this caption onto the year restores the
+    full date, and carries the duration with it.
+    """
+    for text in row:
+        if _MONTH_DAY_TAIL.search(text):
+            return text.rstrip(" ,") + ", "
+    return ""
+
+
 def _groups_in_row(frame: pd.DataFrame, index: int) -> list[PeriodGroup]:
     row = [_cell(value) for value in frame.iloc[index].tolist()]
     if not any(_PERIOD_RE.search(text) for text in row):
         return []
+    banner = _split_banner(row)
     groups: list[PeriodGroup] = []
     for column, text in enumerate(row):
         if not _PERIOD_RE.search(text) or text.lower() in _PERIOD_STOPWORDS:
             continue
+        # Rejoin a date the filer split across two cells. Only a bare year takes
+        # the caption; a cell that already holds a full date is left alone.
+        if banner and _BARE_YEAR_CELL.fullmatch(text.strip()):
+            text = banner + text.strip()
         # Merge into the previous group when the date repeats in an adjacent
         # column. The inline-XBRL generator emits the value twice across two
         # columns, and those are one measurement, not two.
@@ -787,7 +877,10 @@ def _groups_in_row(frame: pd.DataFrame, index: int) -> list[PeriodGroup]:
             if PeriodGroup.period_key(text) == PeriodGroup.period_key(groups[-1].label):
                 groups[-1].columns.append(column)
                 continue
-        groups.append(PeriodGroup(label=text, columns=[column]))
+        group = PeriodGroup(label=text, columns=[column])
+        if banner:
+            group.duration = duration_code(banner)
+        groups.append(group)
     return [group for group in groups if group.key]
 
 
@@ -859,6 +952,38 @@ def _number_in_group(values: Sequence[Any], columns: Sequence[int]) -> Number | 
     return None
 
 
+def _group_is_percent(values: Sequence[Any], columns: Sequence[int]) -> bool:
+    """True if a cell inside the period band is a bare unit marker.
+
+    NVDA's MD&A margin table prints ``73.4 % 72.4 %`` as separate cells, so a
+    ``%`` token sits *between* the period's values. ``parse_number`` never sees
+    it and the cell stays currency-shaped. A ``` pts``` change column is the
+    same story. A pure unit cell inside the band marks the whole measurement.
+    """
+    for column in columns:
+        if 0 <= column < len(values) and _PERCENT_UNIT_RE.match(
+            clean_text(values[column])
+        ):
+            return True
+    return False
+
+
+def _column_belongs_percent(frame: pd.DataFrame, columns: Sequence[int]) -> bool:
+    """True if *any* row of the table carries a unit marker in *columns*.
+
+    The generator decorates a ``% of Revenue`` table inconsistently: the
+    ``Revenue`` and ``Net income`` rows print a ``%`` cell inside the period
+    band, but the cost and margin rows below them do not. The unit is a column
+    property, not a row property, so it has to be decided once per column over
+    the whole frame rather than per cell -- otherwise the same bare 75.0 lands
+    under both a percent and a currency ``Gross Margin``.
+    """
+    for _, row in frame.iterrows():
+        if _group_is_percent(row.tolist(), columns):
+            return True
+    return False
+
+
 def classify_statement(labels: Sequence[str]) -> str:
     """Vote a table into a statement category from its row labels."""
     joined = " ".join(labels).lower()
@@ -874,6 +999,7 @@ def extract_cells(
     frame: pd.DataFrame,
     min_rows: int = 2,
     year_end: tuple[int, int] | None = None,
+    filing_period_end: str = "",
 ) -> tuple[str, list[TableCell]]:
     """Turn a statement table into ``(statement_category, cells)``.
 
@@ -885,12 +1011,17 @@ def extract_cells(
     period to key a metric by, and storing it would produce an identity that
     collides with every other single-column table in the filing.
     """
-    _, groups = detect_period_groups(frame, year_end=year_end)
+    _, groups = detect_period_groups(
+        frame, year_end=year_end, filing_period_end=filing_period_end
+    )
     if len(groups) < 2:
         return "", []
     label_end = max(1, groups[0].columns[0])
     cells: list[TableCell] = []
     labels: list[str] = []
+    percent_groups: dict[int, bool] = {
+        id(group): _column_belongs_percent(frame, group.columns) for group in groups
+    }
 
     for _, row in frame.iterrows():
         values = row.tolist()
@@ -902,6 +1033,8 @@ def extract_cells(
             number = _number_in_group(values, group.columns)
             if number is None:
                 continue
+            if percent_groups[id(group)]:
+                number = Number(number.value, True)
             canonical, category = canonical_metric(label, number.is_percent)
             if canonical:
                 cells.append(
@@ -965,6 +1098,18 @@ _SEGMENT_MEASURES: tuple[tuple[re.Pattern[str], str, str], ...] = (
     (re.compile(r"\bcost of sales\b", re.I), "Cost of Sales", "income_statement"),
     (re.compile(r"\bnet sales\b", re.I), "Net Sales", "income_statement"),
 )
+
+
+#: Separator for a registry scope. A control character rather than a space or a
+#: pipe because tickers and period keys never contain one, so no two distinct
+#: (filer, period) pairs can flatten onto the same scope string.
+_SCOPE_SEP = "\x1f"
+
+
+def _metric_scope(period: str, ticker: str = "") -> str:
+    """Registry scope for a metric: the filer and the period, never the period
+    alone. See :meth:`FilingParser._metric_id` for why the filer is in it."""
+    return f"{(ticker or '?').strip().upper()}{_SCOPE_SEP}{period}"
 
 
 def _is_measure_total(label: str, measure: str) -> bool:
@@ -1512,8 +1657,26 @@ class FilingParser:
 
     # -- identity ---------------------------------------------------------
 
-    def _metric_id(self, name: str, period: str) -> tuple[str, str]:
+    def _metric_id(
+        self, name: str, period: str, ticker: str = ""
+    ) -> tuple[str, str]:
         """``(node_id, canonical_name)`` for a metric concept in *period*.
+
+        The scope is the **filer** as well as the period, and the filer is the
+        part that is easy to leave out. Scoping on the period alone makes one
+        node per concept per period for the whole corpus, so every filer's
+        "Long-Lived Assets (FY2025)" collapses onto a single node and a
+        question about one issuer's long-lived assets is answered with figures
+        lifted from all three. The merge is silent because every edge is
+        individually well-formed and every endpoint exists -- it surfaces only
+        as an answer that mixes two companies' books.
+
+        The filer is the first component of the scope and is kept even when it
+        is unknown, so a filing that failed to resolve a ticker lands in a
+        scope of its own rather than in the bare-period scope it would collide
+        with. Resolution never crosses a partition boundary, so this is a
+        structural guarantee rather than a tuned threshold -- see
+        :mod:`sandbox_engine.entity_resolver`.
 
         Returns the *entity's* name, not the incoming surface form. An entity
         keeps the name it was created with and is never renamed, so two filings
@@ -1521,17 +1684,15 @@ class FilingParser:
         spelling -- otherwise the loader's first-write-wins would make the
         stored name depend on which file was read first.
         """
-        resolution = self.registry.register(
-            "metric", name, scope=period if PERIOD_SCOPED_METRICS else ""
-        )
-        entity = self.registry.partition("metric", period if PERIOD_SCOPED_METRICS else "").get(
+        scope = _metric_scope(period, ticker) if PERIOD_SCOPED_METRICS else ""
+        resolution = self.registry.register("metric", name, scope=scope)
+        entity = self.registry.partition("metric", scope).get(
             resolution.canonical_id
         )
         canonical = entity.name if entity else name
         return resolution.canonical_id, (
             f"{canonical} ({period})" if PERIOD_SCOPED_METRICS else canonical
         )
-
 
     # -- tables ------------------------------------------------------------
 
@@ -1891,14 +2052,19 @@ class FilingParser:
         candidates: list[dict[str, Any]] = []
         currency = metadata["currency"]
         year_end = self._year_end(raw)
+        filing_period_end = filing_period_end_iso(metadata)
         for frame in self.tables(raw):
             if frame is None or frame.empty:
                 continue
-            category, cells = extract_cells(frame, year_end=year_end)
+            category, cells = extract_cells(
+                frame, year_end=year_end, filing_period_end=filing_period_end
+            )
             if not cells:
                 continue
             for cell in cells:
-                node_id, name = self._metric_id(cell.canonical_name, cell.period)
+                node_id, name = self._metric_id(
+                    cell.canonical_name, cell.period, metadata.get("ticker", "")
+                )
                 metrics[node_id] = {
                     "id": node_id,
                     "canonical_name": name,
@@ -2024,10 +2190,13 @@ class FilingParser:
         totals: list[dict[str, Any]] = []
         frames = self.tables(raw)
         year_end = self._year_end(raw)
+        filing_period_end = filing_period_end_iso(metadata)
         for index, frame in enumerate(frames):
             if frame is None or frame.empty:
                 continue
-            _, groups = detect_period_groups(frame, year_end=year_end)
+            _, groups = detect_period_groups(
+                frame, year_end=year_end, filing_period_end=filing_period_end
+            )
             if len(groups) < 2:
                 continue
             label_end = max(1, groups[0].columns[0])
@@ -2059,7 +2228,9 @@ class FilingParser:
                         if number is None or not group.year:
                             continue
                         totals.append({
-                            "metric": self._metric_id(measure, group.full_key)[0],
+                            "metric": self._metric_id(
+                                measure, group.full_key, metadata.get("ticker", "")
+                            )[0],
                             "measure": measure,
                             "category": category,
                             "period": group.full_key,
@@ -2093,7 +2264,9 @@ class FilingParser:
                 entity = self.registry.partition("segment").get(resolution.canonical_id)
                 canonical = entity.name if entity else name
                 segments[canonical] = {"name": canonical, "segment_type": kind}
-                host_id, _ = self._metric_id(measure, group.full_key)
+                host_id, _ = self._metric_id(
+                    measure, group.full_key, metadata.get("ticker", "")
+                )
                 edges.append(
                     {
                         "value": float(number.value),
@@ -2128,7 +2301,7 @@ class FilingParser:
         text = re.sub(r"\s*\(\d+\)\s*$", "", text)        # "China (1)" -> "China"
         if not text or text.lower() in _DASHES or len(text) > 60:
             return ""
-        if _PERIOD_RE.search(text) or _PERCENT_RE.search(text):
+        if _PERIOD_RE.search(text) or _BANNER_RE.search(text) or _PERCENT_RE.search(text):
             return ""
         if segment_measure(text) is not None:
             return ""

@@ -665,10 +665,25 @@ class EntityRegistry:
 
     # -- index maintenance ------------------------------------------------
 
+    def _index_key(self, name: str) -> str:
+        """The lookup key for a surface name.
+
+        ``normalise`` maps every punctuation mark to a space, so a trailing
+        `` (%)`` marker vanishes and a percent margin key-crashes into its
+        currency twin. The marker is part of metric identity by design
+        (:func:`canonical_concept`), so it has to survive into the key: append
+        the spellable token ``percent`` only for names that end in the marker.
+        Only metrics ever carry it, so other kinds are untouched.
+        """
+        key = normalise(name)
+        if key and name.strip().endswith("(%)"):
+            key += " percent"
+        return key
+
     def _index(self, entity: CanonicalEntity) -> None:
-        self._name_index.setdefault(normalise(entity.name), entity.id)
+        self._name_index.setdefault(self._index_key(entity.name), entity.id)
         for alias in entity.aliases:
-            self._alias_index.setdefault(normalise(alias), set()).add(entity.id)
+            self._alias_index.setdefault(self._index_key(alias), set()).add(entity.id)
         for surface in entity.variants():
             for token in tokenize(surface):
                 self._token_index.setdefault(token, set()).add(entity.id)
@@ -687,7 +702,7 @@ class EntityRegistry:
         registered by an earlier filing, and registering it here would create a
         node for an entity the run never described.
         """
-        key = normalise(name)
+        key = self._index_key(name)
         if not key:
             return None
         found = self._name_index.get(key)
@@ -814,13 +829,13 @@ class EntityRegistry:
         incoming = [str(a).strip() for a in raw_aliases if str(a).strip() and str(a) != name]
 
         # -- 1. exact name
-        exact = self._name_index.get(normalise(name))
+        exact = self._name_index.get(self._index_key(name))
         if exact is not None:
             self.stats["exact_name_hits"] += 1
             return self._merge(exact, name, incoming, category, description, "name", 1.0, name)
 
         # -- 2. exact alias
-        alias_hits = self._alias_index.get(normalise(name))
+        alias_hits = self._alias_index.get(self._index_key(name))
         if alias_hits:
             self.stats["exact_alias_hits"] += 1
             return self._merge(
