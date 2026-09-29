@@ -235,11 +235,14 @@ Natural-language questions in `sandbox_engine.query_ui` are evaluated by `sandbo
 When cold start triggers:
 - **`sandbox_engine/tier1_fetch.py`**: Fetches the latest filing directly from SEC EDGAR under a strict 2.5s SLA budget (2.0s socket timeout) with zero silent drops, retrying transient HTTP 429s once using `Retry-After` with jitter.
 - **`sandbox_engine/tier1_clean.py`**: Extracts high-signal narrative sections (Item 1 Business for 10-K, Item 2 MD&A for 10-Q) using universal section extractors, strips HTML markup/tables/scripts, and caps output at 6,000 tokens (preserving sentence boundaries).
+- **`sandbox_engine/coldstart_schema.py`**: Enforces strict typed Pydantic taxonomies for financial entities (`Company`, `Executive`, `Supplier`, `Competitor`, `RiskFactor`) and relations (`SOURCES_FROM`, `SERVES_AS`, `COMPETES_WITH`, `EXPOSED_TO`, `LED_DIVISION`), disallowing self-loops and limiting quotes to <= 30 words.
+- **`sandbox_engine/coldstart_extract.py`**: Extracts 15–30 typed triples under a strict 3.5s SLA timeout budget, ranking excess triples by confidence.
+- **`sandbox_engine/stitch.py`**: Maintains an ephemeral `networkx.DiGraph` overlay, normalizes entities via `ConceptRegistry` and `stable_id`, stitches into the read-only LadybugDB backbone, and deduplicates arcs in memory in < 1.0s.
 
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -p "test_*.py"          # 677 tests
+python -m unittest discover -s tests -p "test_*.py"          # 686 tests
 python -m unittest discover -s sandbox_engine -p "test_*.py" # 112 tests
 ```
 
@@ -254,6 +257,7 @@ Both suites are offline: no network, no key, no database build.
 | `tests/test_provenance.py` | 43 | Citation provenance |
 | `tests/test_document_loader.py` | 44 | PDF chunking |
 | `tests/test_router.py` | 15 | Query routing (KNOWN, COLD_START, AMBIGUOUS), entity filtering |
+| `tests/test_coldstart_stitch.py` | 9 | Schema validation, extractor budget/SLA, in-memory backbone stitching |
 | `tests/test_tier1_fetch.py` | 7 | SEC runtime fetching SLA, rate limit backoff, section cleaning & token cap |
 | `tests/test_query_ui_transport.py` | 7 | `query_ui` request transport |
 | `tests/test_setup.py` | 11 | `setup.py` key handling |
@@ -300,6 +304,9 @@ To add a company, create its folder and drop filings in. Nothing else to edit.
 | `sandbox_engine/router.py` | Discriminated query router (KNOWN, COLD_START, AMBIGUOUS) |
 | `sandbox_engine/tier1_fetch.py` | Runtime SEC EDGAR filing fetcher (< 2.5s SLA budget) |
 | `sandbox_engine/tier1_clean.py` | High-signal section slicing (Item 1/2) and token capping |
+| `sandbox_engine/coldstart_schema.py` | Pydantic schema validation for entities and relations |
+| `sandbox_engine/coldstart_extract.py` | Fast LLM triple extraction (15–30 triples, < 3.5s SLA) |
+| `sandbox_engine/stitch.py` | In-memory overlay graph & backbone stitching (< 1.0s) |
 | `sandbox_engine/cli.py` | Typer entry point |
 | `sandbox_engine/EVAL_SET.md` | 30-question eval set and the live defect register |
 | `sandbox_engine/eval_set.py` | EVAL_SET.md as runnable questions; `provenance_match_rate` |
@@ -358,7 +365,7 @@ first.
 ## Dependencies
 
 Pinned in `requirements.txt`: `ladybug`, `pandas`, `lxml`, `beautifulsoup4`,
-`pyarrow`, `pypdf`, `openai`, `typer`. All have wheels for 3.13 on macOS, Linux
+`pyarrow`, `pypdf`, `openai`, `typer`, `pydantic`, `networkx`. All have wheels for 3.13 on macOS, Linux
 and Windows, so `pip install -r requirements.txt` needs no compiler.
 
 `pypdf` is pinned rather than optional because `graphrag/document.py` imports
