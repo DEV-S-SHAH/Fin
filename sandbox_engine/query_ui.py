@@ -19,6 +19,7 @@ import json
 import logging
 import os
 import re
+import socket
 import threading
 import time
 import urllib.error
@@ -27,7 +28,7 @@ import webbrowser
 from collections import Counter
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 from urllib.parse import parse_qs, urlparse
 
 import ladybug as lb
@@ -3741,8 +3742,91 @@ def _int_param(qs: dict, name: str, default: int, minimum: int | None = None, ma
 
 # ── Server Runner ─────────────────────────────────────────────────────────────
 
-def serve(host: str = "127.0.0.1", port: int = 9000, open_browser: bool = True,
-          read_only: bool = True, db_path: Path | None = None) -> None:
+def parse_ports(spec: str | int | Sequence[int]) -> list[int]:
+    """Turn ``--port 9000,8765`` or ``9000`` into a list of ports.
+
+    A string is split on commas, so the flag reads the way the user would say
+    it. Anything that is not an integer is a typo worth refusing before a
+    socket is bound, not after.
+    """
+    if isinstance(spec, int):
+        return [spec]
+    if isinstance(spec, str):
+        parts = [p.strip() for p in spec.split(",") if p.strip()]
+    else:
+        parts = [int(p) for p in spec]
+    ports = []
+    for part in parts:
+        try:
+            ports.append(int(part))
+        except (TypeError, ValueError):
+            raise ValueError(f"not a port number: {part!r}") from None
+    if not ports:
+        raise ValueError("at least one port is required")
+    return ports
+
+
+def _port_is_free(host: str, port: int) -> bool:
+    """Whether *port* can be bound, asked without SO_REUSEADDR.
+
+    ``HTTPServer.allow_reuse_address`` is on, and on Windows SO_REUSEADDR does
+    not mean "ignore TIME_WAIT" as it does on Linux -- it lets a second socket
+    bind a port that is already *listening*, with no error. So a port that is
+    already serving something else binds cleanly here and the two fight over
+    the connections. Probing first turns that into a clear refusal.
+    """
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        probe.bind((host, port))
+        return True
+    except OSError:
+        return False
+    finally:
+        probe.close()
+
+
+def _listeners(host: str, ports: Sequence[int], handler: type) -> list[ThreadingHTTPServer]:
+    """Bind one listener per port, all serving the same *handler*.
+
+    Split out of :func:`serve` so the part that can actually fail is reachable
+    from a test: a second port that fails to bind, or a shutdown that only
+    closes one of them, is invisible in a function that blocks forever and
+    keeps its servers to itself.
+    """
+    taken = [p for p in ports if not _port_is_free(host, p)]
+    if taken:
+        raise OSError(
+            f"port already in use: {', '.join(str(p) for p in taken)}. "
+            f"Stop whatever is serving it, or name different ports with --port."
+        )
+    servers = []
+    try:
+        for number in ports:
+            server = ThreadingHTTPServer((host, number), handler)
+            server.daemon_threads = True
+            servers.append(server)
+    except Exception:
+        # One port already taken must not leave the earlier ones listening.
+        for server in servers:
+            server.server_close()
+        raise
+    return servers
+
+
+def serve(host: str = "127.0.0.1", port: int | Sequence[int] = 9000,
+          open_browser: bool = True, read_only: bool = True,
+          db_path: Path | None = None) -> None:
+    """Serve the UI on one port or several, over a single graph handle.
+
+    Several ports, one database, one process. The alternative is a second
+    server on a second copy of the graph, and the reason that is not the
+    default is the `--db` help text: LadybugDB takes an exclusive lock on the
+    file, so two processes cannot share one path. A duplicate is 2 GB here and
+    it is stale the moment the first is rebuilt, which is a worse failure than
+    not having a second port at all. Two listeners over one handle cost a
+    socket and nothing else.
+    """
+    ports = parse_ports(port)
     db_path = db_path or resolve_db_path()
     if db_path is None:
         log.error(
@@ -3756,15 +3840,16 @@ def serve(host: str = "127.0.0.1", port: int = 9000, open_browser: bool = True,
 
     kg = KnowledgeGraph(db_path, read_only=read_only)
     handler = type("_BoundHandler", (_Handler,), {"kg": kg})
-    server = ThreadingHTTPServer((host, port), handler)
-    server.daemon_threads = True
+    servers = _listeners(host, ports, handler)
 
-    url = f"http://{host}:{port}/"
+    primary = f"http://{host}:{ports[0]}/"
     stats = kg.stats()
     print(f"\n{'='*70}")
     print(f"  GraphRAG Viewer & Question Answering Engine")
     print(f"{'='*70}")
-    print(f"  Web UI       : {url}")
+    for number in ports:
+        suffix = "" if number == ports[0] else "   (same server, same graph)"
+        print(f"  Web UI       : http://{host}:{number}/{suffix}")
     print(f"  Database     : {db_path}")
     print(f"  Graph Stats  : {stats['nodes']} entities, {stats['edges']} relationships")
     where = {"nvidia": "NVIDIA NIM", "ollama": "local Ollama"}.get(stats["rag_backend"], "unavailable")
@@ -3778,33 +3863,46 @@ def serve(host: str = "127.0.0.1", port: int = 9000, open_browser: bool = True,
     print(f"{'='*70}\n")
 
     if open_browser:
-        threading.Timer(0.6, lambda: webbrowser.open(url)).start()
+        threading.Timer(0.6, lambda: webbrowser.open(primary)).start()
 
+    # One thread per extra port; the main thread serves the first, so Ctrl-C
+    # lands where the user is looking.
+    for server in servers[1:]:
+        threading.Thread(
+            target=server.serve_forever, daemon=True,
+            name=f"http-{server.server_address[1]}",
+        ).start()
     try:
-        server.serve_forever()
+        servers[0].serve_forever()
     except KeyboardInterrupt:
         print("\nStopping server...")
     finally:
-        server.shutdown()
-        server.server_close()
+        for server in servers:
+            server.shutdown()
+            server.server_close()
         kg.close()
 
 
 def _main() -> None:
     p = argparse.ArgumentParser(prog="python -m sandbox_engine.query_ui",
                                 description="GraphRAG Question Answering UI for the Blueprint LadybugDB")
-    p.add_argument("--port", type=int, default=9000)
+    p.add_argument("--port", default="9000",
+                   help="one port, or several separated by commas -- all served "
+                        "from the same process over one graph handle, e.g. "
+                        "--port 9000,8765")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--no-browser", action="store_true")
     p.add_argument("--db", type=Path, default=None,
-                   help="Database file to serve. Use a separate copy of the "
-                        "graph to run a second UI on another port; LadybugDB "
-                        "locks the file, so two servers cannot share one path.")
+                   help="Database file to serve. Only needed to serve a "
+                        "different graph than the one found automatically; "
+                        "LadybugDB locks the file, so two servers cannot share "
+                        "one path. For a second port, pass --port instead.")
     p.add_argument("--read-write", action="store_true",
                    help="Open the database read-write (takes an exclusive lock, "
                         "so no other server can share the file)")
     args = p.parse_args()
-    serve(args.host, args.port, open_browser=not args.no_browser,
+    ports = parse_ports(args.port)
+    serve(args.host, ports, open_browser=not args.no_browser,
           read_only=not args.read_write, db_path=args.db)
 
 
