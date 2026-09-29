@@ -18,7 +18,7 @@ import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
 
-from sandbox_engine import query_ui
+from sandbox_engine import provenance, query_ui
 
 
 class _StubGraph:
@@ -153,7 +153,7 @@ class RetrievalRobustnessTests(unittest.TestCase):
         corpus happens to have none today, which is exactly why it survived.
         """
         class G:
-            def execute(self, q):
+            def execute(self, q, params=None):
                 return {
                     "MATCH (c:Company) RETURN c.ticker, c.legal_name, c.cik": [("AAPL", "Apple Inc.", "1")],
                     "MATCH (c:Company)-[:SUBMITTED]->(f:Filing)": [],
@@ -177,10 +177,53 @@ class RetrievalRobustnessTests(unittest.TestCase):
                     return key
             return "CONTAINS_CHUNK" if "CONTAINS_CHUNK" in query else ""
 
-        ctx, nodes, edges, tag_map, seeds = query_ui.retrieve_financial_context(
+        nodes, edges, tag_map, seeds = query_ui.retrieve_financial_context(
             G(), "what are the segments and risks"
         )
-        self.assertIsInstance(ctx, str)
+        # The return value is what the prompt is built from: the nodes, the
+        # edges between them, and a tag for every node. It used to lead with a
+        # rendered context string that the one caller unpacked and never read.
+        self.assertTrue(nodes)
+        self.assertEqual(
+            set(tag_map), {f"E{i}" for i in range(1, len(nodes) + 1)}
+        )
+        self.assertEqual(sorted(tag_map.values()), sorted(n["id"] for n in nodes))
+
+
+class CitationGrammarTests(unittest.TestCase):
+    """The UI and the grader must read a citation the same way.
+
+    They each had their own pattern, and they had drifted. The UI's matched a
+    bare ``[E1]`` only, so a model that cited a list -- ``[E1, E3]``, the form
+    the grader itself documents -- produced a correct, fully cited answer that
+    reported no tags at all and was then shown to the reader as ungrounded. The
+    grader's mask had the mirror defect: it did not cover the list form either,
+    so ``[E158, E200]`` reported the figures ``158`` and ``200`` and failed a
+    correct sentence as fabrication.
+    """
+
+    def test_the_ui_uses_the_graders_grammar(self):
+        self.assertIs(query_ui.citation_tags, provenance.citation_tags)
+        self.assertFalse(
+            hasattr(query_ui, "_CITATION_RE"),
+            "a second citation grammar is back in the UI",
+        )
+
+    def test_a_list_of_tags_reaches_used_tags(self):
+        tag_map = {"E1": "a", "E2": "b", "E3": "c"}
+        self.assertEqual(
+            sorted(
+                {t for t in query_ui.citation_tags("x 416,161 [E1, E3]") if t in tag_map},
+                key=lambda x: int(x[1:]),
+            ),
+            ["E1", "E3"],
+        )
+
+    def test_the_pairing_form_counts_as_citing_both_tags(self):
+        """``[E2->E15]`` is how the model pairs a line item with its value."""
+        text = "Net sales 120,451 [E2->E15]"
+        self.assertEqual(query_ui.citation_tags(text), ["E2", "E15"])
+        self.assertEqual(provenance.extract_figures(text), ["120,451"])
 
 
 if __name__ == "__main__":

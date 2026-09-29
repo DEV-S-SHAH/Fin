@@ -48,6 +48,8 @@ __all__ = [
     "render_gap",
     "normalise_number",
     "extract_figures",
+    "citation_tags",
+    "LEGAL_NAME_NOISE",
 ]
 
 STATED = "STATED"
@@ -58,9 +60,43 @@ GAP = "GAP"
 
 _ALL_TAGS = (STATED, DERIVED, INFERRED, EXTERNAL, GAP)
 
-#: A citation is ``[E1]`` or ``[E1, E3]``. Anchored so ``[E12]`` does not read as
-#: ``[E1]`` followed by junk.
-_CITATION = re.compile(r"\[(E\d+(?:\s*,\s*E\d+)*)\]")
+# ---------------------------------------------------------------------------
+# Citations
+# ---------------------------------------------------------------------------
+
+#: What may sit between two tags inside one pair of brackets. The comma is the
+#: list form the grader accepts; the arrows are the pairing form the model
+#: writes to put a line item next to its value.
+_CITATION_SEP = r"\s*(?:,|[-]{1,2}(?:>|→)|=>|→)\s*"
+
+#: One grammar for a citation, in every form a model writes one: a bare tag
+#: ``[E1]``, a list ``[E1, E3]``, and a pairing ``[E2->E15]`` or ``[E2 -> E15]``.
+#:
+#: It has to be *one*. It was three -- the mask in :func:`extract_figures`, the
+#: grader's own pattern, and ``query_ui._CITATION_RE`` -- and they had drifted
+#: apart, which is only visible in the two ways that matter: the mask did not
+#: cover the comma form, so ``[E158, E200]`` reported the figures ``158`` and
+#: ``200`` and failed a perfectly good sentence as fabrication, while the UI's
+#: pattern did not cover it either and read a correctly cited sentence as
+#: citing nothing at all. The three callers now share this one.
+_CITATION = re.compile(rf"\[(E\d+(?:{_CITATION_SEP}E\d+)*)\]")
+
+
+def citation_tags(text: str) -> list[str]:
+    """Every tag cited in *text*, in order of first appearance, once each.
+
+    Split on the very separator the pattern above was built from, so what this
+    returns and what :func:`extract_figures` blanks out cannot disagree about
+    where one citation ends and the next begins.
+    """
+    found: list[str] = []
+    for group in _CITATION.findall(text or ""):
+        for part in re.split(_CITATION_SEP, group):
+            part = part.strip()
+            if part and part not in found:
+                found.append(part)
+    return found
+
 
 #: Where a sentence says it did arithmetic. Without one of these, a number that
 #: is not in the evidence is not a derivation, it is an invention.
@@ -86,22 +122,6 @@ _EXTERNAL_MARKERS = re.compile(
     r"analyst|consensus estimate|market share|third[- ]party|"
     r"according to (?:reports|news|analysts)|currently|as of today)\b",
     re.IGNORECASE,
-)
-
-#: Phrases that concede the corpus does not cover it. Not a shortcut for the
-#: tagger -- a sentence saying "I don't know" still has to be judged on whether
-#: it needed to -- but the GAP renderer uses them to recognise its own output.
-_GAP_PHRASES = (
-    "not disclosed",
-    "not in the corpus",
-    "does not disclose",
-    "do not disclose",
-    "no disclosure",
-    "not reported",
-    "cannot be determined",
-    "not covered",
-    "no such disclosure",
-    "not available in",
 )
 
 #: Numbers that are structural rather than reported: form types, fiscal years,
@@ -162,9 +182,11 @@ def extract_figures(text: str) -> list[str]:
     # A citation tag is a pointer this module issued, not a claim about
     # magnitude, so it has to be masked before tokenising. Otherwise ``[E158]``
     # yields the figure ``158``, which no evidence item can ever ground, and a
-    # perfectly good sentence is rejected as fabrication. The arrow form the
-    # model writes when pairing a line item with its value is masked too.
-    masked = re.sub(r"\[E\d+(?:\s*(?:[-]{1,2}(?:>|→)|=>|→)\s*E?\d+)*\]", " ", text)
+    # perfectly good sentence is rejected as fabrication. The list and pairing
+    # forms are masked by the same grammar the grader parses tags with, because
+    # a mask that recognises fewer citations than the grader does turns a
+    # correct answer into a fabrication report.
+    masked = _CITATION.sub(" ", text)
     # Dates have to go before tokenising: ``2025-10-31`` otherwise yields the
     # two figures ``-10`` and ``-31``, and an answer that merely mentions when
     # a filing was filed would be reported as inventing numbers.
@@ -244,9 +266,18 @@ class Source:
     """Where a fact is filed. One of these exists for every citable fact.
 
     The fields are the ones an auditor would ask for, and every one of them is
-    read off the graph rather than inferred: which filing, what form, when it
-    was filed, and which item inside it. ``accession`` is the SEC's own id for
-    the document; ``section`` is the human-facing place in it.
+    read off the graph rather than inferred: who filed it, which filing, what
+    form, when it was filed, and which item inside it. ``accession`` is the SEC's
+    own id for the document; ``section`` is the human-facing place in it.
+
+    ``ticker`` and ``cik`` are the filer, and they are the field a corpus with
+    more than one issuer cannot do without: every issuer files a 10-K, so a
+    citation that names only form, fiscal year and filing date describes three
+    different annual reports equally well, and a figure read off one of them
+    cannot be told from a figure read off another. "How many times bigger is
+    Apple's revenue than Microsoft's" is unanswerable while a citation cannot
+    say whose revenue it is citing -- the model is right to refuse, because
+    nothing it was shown carried the attribution.
     """
 
     node_id: str
@@ -259,15 +290,19 @@ class Source:
     period_end: str = ""
     fiscal_year: str = ""
     fiscal_period: str = ""
+    ticker: str = ""
+    cik: str = ""
 
     @property
     def short(self) -> str:
-        bits = [b for b in (self.form_type, self.section or self.item_code) if b]
+        bits = [b for b in (self.ticker, self.form_type, self.section or self.item_code) if b]
         return " · ".join(bits) or self.label
 
     def cite(self) -> str:
-        """One-line reference, e.g. ``10-K FY2025 (FY) filed 2025-10-31, Item 1 Business``."""
+        """One-line reference, e.g. ``AAPL · 10-K FY2025 (FY) filed 2025-10-31, Item 1 Business``."""
         parts: list[str] = []
+        if self.ticker:
+            parts.append(self.ticker)
         head = self.form_type
         if self.fiscal_year:
             head += f" FY{self.fiscal_year}"
@@ -285,19 +320,10 @@ class Source:
             parts.append(f"Item {self.item_code}")
         return ", ".join(parts) or self.label
 
-    def to_dict(self) -> dict[str, str]:
-        return {
-            "node_id": self.node_id,
-            "label": self.label,
-            "form_type": self.form_type,
-            "filing_date": self.filing_date,
-            "accession": self.accession,
-            "item_code": self.item_code,
-            "section": self.section,
-            "period_end": self.period_end,
-            "fiscal_year": self.fiscal_year,
-            "fiscal_period": self.fiscal_period,
-        }
+    # No ``to_dict``: a Source reaches the reader as the string it writes itself
+    # in :meth:`cite`, which is what ``serialise_evidence`` and the block
+    # renderer both use. A second serialisation would be a second thing to keep
+    # in step with the twelve fields above, for no reader.
 
 
 @dataclass
@@ -319,6 +345,88 @@ class Evidence:
         return f"[{self.tag}] {self.provenance} · {self.text}  ⟵ {self.source.cite()}"
 
 
+# ---------------------------------------------------------------------------
+# Who filed it
+# ---------------------------------------------------------------------------
+
+#: The legal name a filing carries and the name a person writes it under differ
+#: only by a corporate suffix -- "Microsoft Corporation" is filed, "Microsoft"
+#: is written -- so an issuer is matched on the distinctive remainder, with the
+#: same suffixes ``query_ui`` drops when it reads a question. Shared rather than
+#: repeated, for the same reason the citation grammar is: two copies of one
+#: grammar is how the two readers of a citation stopped agreeing. A remainder
+#: under four characters is never an issuer: a two- or three-letter fragment is
+#: far more likely to be an ordinary word than a company name.
+LEGAL_NAME_NOISE = re.compile(
+    r"[,\.]|\s+(?:inc|corporation|corp|ltd|plc|co|company|holdings)\b"
+)
+
+
+def _issuer_of(ev: Evidence) -> str:
+    """The issuer an evidence line belongs to, or ``""`` when it names none.
+
+    A Company node is keyed on its own ticker, so that line already says which
+    issuer it is; every other line carries the filer's ticker, read across
+    ``Company-[:SUBMITTED]->Filing``. An untraced line names nobody, and that
+    is not an issuer to hold a sentence against.
+    """
+    src = ev.source
+    if ev.kind == "Company":
+        return src.node_id or src.ticker
+    return src.ticker
+
+
+def _issuer_forms(name: str) -> list[str]:
+    """The spellings a sentence may use to refer to *name*."""
+    out: list[str] = []
+    for candidate in LEGAL_NAME_NOISE.split(str(name or "").lower()):
+        candidate = candidate.strip()
+        if len(candidate) >= 4 and candidate not in out:
+            out.append(candidate)
+    return out
+
+
+def _issuer_index(evidence: Iterable[Evidence]) -> dict[str, set[str]]:
+    """Every spelling the corpus knows an issuer by -> the issuers claiming it.
+
+    Read off the Sources rather than off a hard-coded list of companies, so it
+    holds for whichever issuers a graph actually holds. A Company line is where
+    the two spellings of one issuer meet: its key is the ticker and its label
+    is the legal name, so "apple" and "AAPL" resolve to the same issuer without
+    anything having to parse the evidence text.
+    """
+    index: dict[str, set[str]] = {}
+    for ev in evidence:
+        src = ev.source
+        issuer = _issuer_of(ev)
+        if not issuer:
+            continue
+        if ev.kind == "Company":
+            names = (src.label, src.ticker, src.node_id)
+        else:
+            # A filer's ticker and CIK sit on the same line, so they are the
+            # same issuer by construction.
+            names = (src.ticker, src.cik)
+        for name in names:
+            for form in _issuer_forms(name):
+                index.setdefault(form, set()).add(issuer)
+    return index
+
+
+def _issuers_named(sentence: str, index: dict[str, set[str]]) -> set[str]:
+    """The known issuers *sentence* refers to, by name or by ticker.
+
+    Matched on word boundaries, so "us" never fires inside "because" and a
+    ticker-shaped fragment of a longer word is not an issuer.
+    """
+    low = sentence.lower()
+    named: set[str] = set()
+    for form, issuers in index.items():
+        if re.search(rf"(?<![a-z0-9]){re.escape(form)}(?![a-z0-9])", low):
+            named |= issuers
+    return named
+
+
 @dataclass
 class Verdict:
     """What the rules decided about one sentence, and why."""
@@ -330,6 +438,7 @@ class Verdict:
     ungrounded: list[str] = field(default_factory=list)
     reason: str = ""
     unknown_cites: list[str] = field(default_factory=list)
+    misattributed: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -339,9 +448,12 @@ class GradedAnswer:
     verdicts: list[Verdict]
     text: str
     gap: bool = False
-    cited_tags: list[str] = field(default_factory=list)
+    #: No ``cited_tags``: every cited tag is already on the verdict that cited
+    #: it, and :func:`serialise_evidence` walks the verdicts. A second copy
+    #: would be a list that can disagree with the verdicts it summarises.
     invented_tags: list[str] = field(default_factory=list)
     ungrounded_figures: list[str] = field(default_factory=list)
+    misattributed: list[str] = field(default_factory=list)
 
     @property
     def mix(self) -> dict[str, int]:
@@ -360,6 +472,12 @@ class GradedAnswer:
         if self.ungrounded_figures:
             uniq = sorted(set(self.ungrounded_figures))
             out.append("figures not present in any cited source: " + ", ".join(uniq))
+        if self.misattributed:
+            uniq = sorted(set(self.misattributed))
+            out.append(
+                "claims attributed to an issuer no cited source was filed by: "
+                + ", ".join(uniq)
+            )
         return out
 
 
@@ -407,8 +525,36 @@ class SourceResolver:
                 }
                 if not idx.get(fid) or len(cand["accession"]) > len(idx[fid]["accession"]):
                     idx[fid] = cand
-            self._filings = idx
+            self._filings = self._with_filers(idx)
         return self._filings
+
+    def _with_filers(self, idx: dict[str, dict[str, str]]) -> dict[str, dict[str, str]]:
+        """Attach the submitting issuer to every filing in *idx*.
+
+        The filer is a fact, not a label: ``Company-[:SUBMITTED]->Filing`` is the
+        only edge into a filing, so the ticker is read across it rather than
+        parsed out of a metric's name. ``query_ui`` independently builds the same
+        accession->ticker map for the graph view and stops there, which is why a
+        filing reached from three issuers rendered as three identical boxes and
+        every figure off one of them reached the prompt unattributed.
+        """
+        try:
+            rows = self.kg.execute(
+                "MATCH (c:Company)-[:SUBMITTED]->(f:Filing) "
+                "RETURN f.id, c.ticker, c.cik"
+            )
+        except Exception:
+            rows = []
+        for fid, ticker, cik in rows:
+            entry = idx.get(fid)
+            if entry is None or not ticker:
+                continue
+            entry["ticker"] = str(ticker or "")
+            entry["cik"] = str(cik or "")
+        for entry in idx.values():
+            entry.setdefault("ticker", "")
+            entry.setdefault("cik", "")
+        return idx
 
     def _filing_for(self, node_ids: Iterable[str]) -> dict[str, str]:
         """node id -> the filing that reports it, for the ids we can reach."""
@@ -416,9 +562,19 @@ class SourceResolver:
         out: dict[str, str] = {}
         if not ids:
             return out
-        q = "MATCH (f:Filing)-[r]->(n) RETURN n.id, f.id, coalesce(r.item_code, '')"
+        # The id list goes in the query, not in the loop. A broad question
+        # retrieves a few hundred nodes out of a graph where every filing
+        # reaches every metric, segment, event and chunk it reports: the
+        # unfiltered traversal transfers ~9,700 rows to pick out a few hundred,
+        # which is the dominant cost of resolving sources and was paid on every
+        # question. Batching kept it from being one query per node; without the
+        # WHERE it was still one query that looked at everything.
+        q = (
+            "MATCH (f:Filing)-[r]->(n) WHERE n.id IN $ids "
+            "RETURN n.id, f.id, coalesce(r.item_code, '')"
+        )
         try:
-            rows = self.kg.execute(q)
+            rows = self.kg.execute(q, {"ids": sorted(ids)})
         except Exception:
             return out
         for node_id, filing_id, item_code in rows:
@@ -442,6 +598,14 @@ class SourceResolver:
         # Metric, and ``BROKEN_DOWN_BY`` from a RawFact (which reaches a filing
         # through the Section it was reported in) -- and the corpus splits
         # across them: 16 segments on one path, 6 on the other. Both are needed.
+        #
+        # These two traversals are the *whole* of segment resolution. A third
+        # used to sit in :meth:`sources_for`, keyed on ``s.id`` through a
+        # ``DISAGGREGATED_BY`` edge, and it never ran: that edge is named
+        # ``HAS_SEGMENT`` on the engine schema and ``Segment`` has no ``id`` at
+        # all, so the query raised on every database and the ``except: pass``
+        # around it reported the fallback as working. Keying on ``name`` is
+        # what makes the join real, and the same key is used here.
         #
         # A segment is reported by several filings, so "which filing" needs a
         # rule. Prefer the most recent, which is the filing a reader would
@@ -527,16 +691,6 @@ class SourceResolver:
         node_ids = [n.get("id", "") for n in nodes if n.get("id")]
         filing_of = self._filing_for(node_ids)
         section_of = self._section_for(node_ids)
-        # A Segment reaches its filing through the metric that disaggregates it.
-        indirect: dict[str, str] = {}
-        try:
-            for seg_id, m_id in self.kg.execute(
-                "MATCH (m)-[:DISAGGREGATED_BY]->(s:Segment) RETURN s.id, m.id"
-            ):
-                if seg_id in set(node_ids) and m_id in filing_of:
-                    indirect[seg_id] = filing_of[m_id]
-        except Exception:
-            pass
 
         out: dict[str, Source] = {}
         for node in nodes:
@@ -556,6 +710,8 @@ class SourceResolver:
                 out[nid] = Source(
                     node_id=nid,
                     label=label or own.get("form_type", ""),
+                    ticker=own.get("ticker", ""),
+                    cik=own.get("cik", ""),
                     form_type=own.get("form_type", ""),
                     filing_date=own.get("filing_date", ""),
                     accession=own.get("accession", ""),
@@ -565,7 +721,7 @@ class SourceResolver:
                 )
                 continue
 
-            fid = filing_of.get(nid) or indirect.get(nid)
+            fid = filing_of.get(nid)
             meta = filings.get(fid or "", {})
             item_code, title = section_of.get(nid, ("", ""))
             # A chunk knows its own section; prefer it over a structural guess.
@@ -574,15 +730,24 @@ class SourceResolver:
             if not meta and not item_code and not title:
                 # Company nodes have a filing behind them via SUBMITTED, which
                 # is many-to-one; a company is still citeable, so fall back to
-                # its own identity rather than dropping it.
+                # its own identity rather than dropping it. A Company's own key
+                # is its ticker, so the filer fields are its identity.
                 if node_type == "Company":
-                    out[nid] = Source(node_id=nid, label=label, form_type="", section="")
+                    out[nid] = Source(
+                        node_id=nid,
+                        label=label,
+                        ticker=label,
+                        form_type="",
+                        section="",
+                    )
                 else:
                     self._unresolved.add(nid)
                 continue
             out[nid] = Source(
                 node_id=nid,
                 label=label,
+                ticker=meta.get("ticker", ""),
+                cik=meta.get("cik", ""),
                 form_type=meta.get("form_type", ""),
                 filing_date=meta.get("filing_date", ""),
                 accession=meta.get("accession", ""),
@@ -709,15 +874,6 @@ def _split_sentences(text: str) -> list[str]:
     return out
 
 
-def _citations(sentence: str) -> list[str]:
-    found: list[str] = []
-    for group in _CITATION.findall(sentence):
-        for part in re.split(r"\s*,\s*", group):
-            if part and part not in found:
-                found.append(part)
-    return found
-
-
 def grade_answer(
     answer: str,
     evidence: list[Evidence],
@@ -733,32 +889,58 @@ def grade_answer(
     2. outside-corpus markers                  -> EXTERNAL
     3. a figure in it that is in no cited fact, and no arithmetic shown
                                                 -> GAP (fabrication)
-    4. arithmetic shown over cited facts       -> DERIVED
-    5. cites real evidence and asserts a fact  -> STATED
-    6. hedged, cites nothing                   -> INFERRED, but only if a STATED
+    4. names an issuer no cited source was filed by
+                                                -> GAP (misattribution)
+    5. arithmetic shown over cited facts       -> DERIVED
+    6. cites real evidence and asserts a fact  -> STATED
+    7. hedged, cites nothing                   -> INFERRED, but only if a STATED
                                                   sentence precedes it; else GAP
-    7. nothing supports it                     -> GAP
+    8. nothing supports it                     -> GAP
     """
     by_tag = {ev.tag: ev for ev in evidence}
-    grounded = _figure_keys(" ".join(ev.text for ev in evidence))
-    grounded |= _figure_keys(" ".join(ev.source.cite() for ev in evidence))
+    issuers = _issuer_index(evidence)
 
-    # Pass 1: provisional verdicts, so rule 6 can see whether a STATED sentence
+    # Pass 1: provisional verdicts, so rule 7 can see whether a STATED sentence
     # exists to lean on.
     verdicts: list[Verdict] = []
     for sentence in _split_sentences(answer):
-        cites = _citations(sentence)
+        cites = citation_tags(sentence)
         known = [c for c in cites if c in by_tag]
         unknown = [c for c in cites if c not in by_tag]
         figures = extract_figures(sentence)
-        cited_text = " ".join(by_tag[c].text for c in known)
-        cited_ground = _figure_keys(cited_text) | grounded if known else set()
+        # Grounding is the figures of the evidence *this sentence cites*, and
+        # of nothing else. The whole block used to be unioned in, which made
+        # any tag a laundering device: cite any one line and every figure
+        # anywhere in the evidence became groundable, so a sentence could carry
+        # a number off a filing it never cited. The message
+        # :meth:`GradedAnswer.violations` reports -- "not present in any cited
+        # source" -- is only true if the check is scoped to the cited sources.
+        cited_ground: set[float] = set()
+        cited_issuers: set[str] = set()
+        for c in known:
+            ev = by_tag[c]
+            cited_ground |= _figure_keys(ev.text)
+            cited_ground |= _figure_keys(ev.source.cite())
+            issuer = _issuer_of(ev)
+            if issuer:
+                cited_issuers.add(issuer)
         ungrounded = [
             f for f in figures
             if (normalise_number(f) is not None
                 and normalise_number(f) not in cited_ground
                 and not _restates(f, cited_ground))
         ]
+        # A figure check cannot see the worst error there is. Apple's net sales
+        # restated as Microsoft's is not an ungrounded number -- it is a real
+        # one, read off a real line -- so a sentence that names an issuer the
+        # cited sources were not filed by is refused on its own account, even
+        # though the number checks out. Only assessed when the cited evidence
+        # actually names a filer: an untraced line says nothing about who
+        # filed it, and a claim about a company the block never mentions is
+        # already refused for having no figure or no citation.
+        misattributed: list[str] = []
+        if cited_issuers:
+            misattributed = sorted(_issuers_named(sentence, issuers) - cited_issuers)
         verdicts.append(
             Verdict(
                 text=sentence,
@@ -767,6 +949,7 @@ def grade_answer(
                 figures=figures,
                 ungrounded=ungrounded,
                 unknown_cites=unknown,
+                misattributed=misattributed,
             )
         )
 
@@ -797,6 +980,21 @@ def grade_answer(
             v.provenance = GAP
             v.reason = "arithmetic asserted over no cited fact"
             continue
+        if v.misattributed:
+            # Checked after the figure rules and before the ones that would
+            # launder it: a correct figure on the wrong issuer is still the
+            # wrong issuer, and neither shown arithmetic nor a real tag makes
+            # it STATED or DERIVED.
+            cited_by = sorted({_issuer_of(by_tag[c]) for c in v.cites if c in by_tag} - {""})
+            v.provenance = GAP
+            v.reason = (
+                "attributed to "
+                + ", ".join(v.misattributed)
+                + ", which no cited source was filed by (cited: "
+                + ", ".join(cited_by)
+                + ")"
+            )
+            continue
         if shows_arith and v.cites:
             v.provenance = DERIVED
             v.reason = "arithmetic over cited facts"
@@ -826,9 +1024,9 @@ def grade_answer(
         verdicts=verdicts,
         text=answer,
         gap=all(v.provenance == GAP for v in verdicts) if verdicts else True,
-        cited_tags=sorted({c for v in verdicts for c in v.cites}),
         invented_tags=sorted({c for v in verdicts for c in v.unknown_cites}),
         ungrounded_figures=sorted({f for v in verdicts for f in v.ungrounded}),
+        misattributed=sorted({i for v in verdicts for i in v.misattributed}),
     )
     return graded
 

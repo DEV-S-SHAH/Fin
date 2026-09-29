@@ -25,7 +25,8 @@ OUT = Path(__file__).resolve().parent / "_run" / "qa_eval"
 
 _NEGATION = re.compile(
     r"not (?:available|provided|found|included|described|stated|specified|covered|part of the context)"
-    r"|cannot (?:be determined|answer)|can't (?:be determined|answer)|no information|out of (?:the )?context"
+    r"|can(?:not|'t) (?:be )?(?:determin|answer|establish|derived|told|said|reported)"
+    r"|is not possible to|no information|out of (?:the )?context"
     r"|does not (?:mention|include|provide|contain|describe)|is not (?:present|included|described)"
     r"|not enough (?:information|context)|not in (?:the )?(?:context|corpus|database|graph)|unavailable"
     r"|no data|not part of|no record|nothing in the context|based on the context.*?(?:not|no )",
@@ -83,8 +84,34 @@ QUESTIONS = [
     ("causal", "Does the causal extraction attribute revenue growth to competitive or customer factors?", "customer", False),
     ("causal", "Does Apple's narrative describe foreign currency exchange rate exposure?", "exchange rate", False),
     ("causal", "Which entity type is used for a named rival company in the causal layer?", "Competitor", False),
+    # -- cross-issuer --------------------------------------------------------
+    # Every other positive row above is Apple, which makes the harness a test of
+    # one issuer's retrieval. That is a real gap rather than a stylistic one:
+    # an answer that reads a figure off one filer's line and attributes it to
+    # another is fully grounded -- the number is in a cited source -- and no
+    # same-issuer question can see it. The figures below are off the corpus as
+    # built: MSFT and NVDA each hold 1x10-K, 3x10-Q and 6x8-K, exactly as AAPL
+    # does, because D1 split them out of the CIK collision.
+    ("fact", "What were Microsoft's net sales for fiscal year 2026?", "331839", False),
+    ("fact", "What was NVIDIA's net sales for the six months ended July 26, 2026?", "177837", False),
+    ("fact", "What was NVIDIA's research and development expense for the three months ended July 26, 2026?", "7054", False),
+    ("fact", "What were Microsoft's net sales for the three months ended March 31, 2026?", "82886", False),
+    ("multihop", "How many 8-K filings are in the corpus for each company?", "6", False),
+    ("multihop", "Which companies are covered by this corpus?", "MSFT", False),
+    ("structural", "Which 10-K item contains NVIDIA's business overview?", "Item 1", False),
     # -- negative / out-of-context ---------------------------------------------
-    ("negative", "What was NVIDIA's research and development expense for fiscal year 2025?", None, True),
+    # A negative control must be a fact the corpus does not hold, and that is
+    # checkable: it was correct to keep "NVIDIA's R&D for fiscal year 2025" out
+    # of scope while NVDA's own filings cover FY2026 and FY2027 only. It is no
+    # longer *why* the row belonged here -- it sat in the negative block because
+    # NVIDIA resolved to an UNKNOWN Company node, and D1 ended that -- so it was
+    # correct by coincidence, which is the kind nothing detects. Its replacement
+    # below is a positive on a period NVDA does file, so the row tests the fact
+    # rather than a premise about the corpus. The remaining controls were never
+    # premised on a filer being unresolvable: the out-of-corpus issuers are
+    # absent, and the Apple ones are scoped to a period or a fact the filings do
+    # not carry.
+    ("negative", "What was NVIDIA's net sales for fiscal year 2024?", None, True),
     ("negative", "What was Tesla's revenue in 2025?", None, True),
     ("negative", "What were Apple's net sales for fiscal year 2018?", None, True),
     ("negative", "What was JPMorgan's net interest income?", None, True),
@@ -105,7 +132,6 @@ def is_unanswerable(text: str) -> bool:
     low = text.lower()
     return bool(_NEGATION.search(low))
 
-
 def grade(expect: str | None, negative: bool, text: str, grounded: bool) -> tuple[str, str]:
     """Return ``(verdict, note)``.
 
@@ -115,7 +141,7 @@ def grade(expect: str | None, negative: bool, text: str, grounded: bool) -> tupl
     """
     low = text.lower()
     if negative:
-        if grounded and not is_unanswerable(text):
+        if grounded and not is_unanswerable(low):
             return "FAIL", "model answered an out-of-context fact"
         return "PASS", ("ungrounded refuse" if not grounded else "explicit absent")
     if not grounded:
