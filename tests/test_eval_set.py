@@ -161,6 +161,59 @@ class MatchRateTests(unittest.TestCase):
         self.assertEqual(result.total, 30)
 
 
+class VerdictPassthroughTests(unittest.TestCase):
+    """The grader's verdict reaches the eval run, and stays its own axis.
+
+    The tag mix and the verdict answer different questions: "did the model
+    produce the tags the document expected" and "was this answer allowed to say
+    that". An answer can be all-STATED and still be refused, and one can carry
+    the expected tags and still be a fabrication. Folding either into the other
+    would hide that, so both are reported and neither moves the other.
+    """
+
+    def setUp(self):
+        self.questions = load_eval_set()
+
+    def _response(self, tags, verdict=None, **extra):
+        body = {
+            "answer": "text",
+            "provenance": [
+                {"text": "a sentence", "provenance": t, "cites": ["E1"]}
+                for t in tags
+            ],
+        }
+        if verdict is not None:
+            body["verdict"] = verdict
+        body.update(extra)
+        return body
+
+    def test_a_refused_answer_is_counted_and_the_rate_is_untouched(self):
+        # E1 accepts STATED, so this row matches the expected mix. The answer is
+        # still refused, and the rate must not move.
+        before = run(lambda _q: self._response([STATED], "SUPPORTED"), self.questions)
+        after = run(lambda _q: self._response([STATED], "REFUSED"), self.questions)
+        self.assertEqual(before.refused, 0)
+        self.assertEqual(after.refused, 30)
+        self.assertEqual(
+            after.matched, before.matched,
+            "a refused answer still matched the expected tag mix, which is the point",
+        )
+        self.assertEqual(after.provenance_match_rate, before.provenance_match_rate)
+
+    def test_a_missing_verdict_is_unknown_and_never_a_pass(self):
+        result = run(lambda _q: self._response([STATED]), self.questions)
+        self.assertEqual(result.refused, 0)
+        self.assertEqual(
+            result.unreported_verdict, 30,
+            "an absent verdict must be reported as unknown, not counted as supported",
+        )
+        self.assertIn("verdict not reported", result.summary())
+
+    def test_the_summary_names_the_refusal_count(self):
+        result = run(lambda _q: self._response([STATED], "REFUSED"), self.questions)
+        self.assertIn("refused by the grader  30", result.summary())
+
+
 class SecondaryMetricTests(unittest.TestCase):
     """The targets of zero.
 

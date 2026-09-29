@@ -46,7 +46,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
-from .provenance import DERIVED, EXTERNAL, GAP, INFERRED, STATED
+from .provenance import DERIVED, EXTERNAL, GAP, INFERRED, REFUSED, STATED
 
 __all__ = [
     "EVAL_SET_PATH",
@@ -114,6 +114,11 @@ class EvalAnswer:
     question_id: str
     tags: frozenset[str] = frozenset()
     answer: str = ""
+    #: The grader's one-word verdict for the answer as a whole. Empty means the
+    #: server did not report one -- not "supported". Defaulting a missing
+    #: judgement to the best outcome is the bug this field exists to expose, so
+    #: an absent verdict is counted as unknown and never as a pass.
+    verdict: str = ""
     ungrounded_figures: tuple[str, ...] = ()
     uncited_sentences: tuple[str, ...] = ()
     misattributed: tuple[str, ...] = ()
@@ -142,6 +147,14 @@ class EvalScore:
     uncited_sentences: list[tuple[str, tuple[str, ...]]] = field(default_factory=list)
     #: every figure attributed to an issuer the cited sources were not filed by
     misattributed: list[tuple[str, tuple[str, ...]]] = field(default_factory=list)
+    #: how many answers the grader refused, counted apart from the tag mix.
+    #: Deliberately *not* folded into ``provenance_match_rate``: the rate asks
+    #: whether the tags were what the document expected, and an answer can carry
+    #: exactly those tags and still be a fabrication. A run has to be able to
+    #: report both without either contaminating the other.
+    refused: int = 0
+    #: answers whose verdict the server did not report at all
+    unreported_verdict: int = 0
     #: rows the runner could not ask at all, so were never scored
     errors: list[tuple[str, str]] = field(default_factory=list)
 
@@ -149,10 +162,16 @@ class EvalScore:
         lines = [
             f"provenance_match_rate  {self.matched}/{self.total} "
             f"= {self.provenance_match_rate:.3f}",
+            f"refused by the grader  {self.refused}  (of {self.total - len(self.errors)})",
             f"ungrounded figures     {len(self.ungrounded_figures)}  (target 0)",
             f"uncited sentences      {len(self.uncited_sentences)}  (target 0)",
             f"misattributed issuers  {len(self.misattributed)}  (target 0)",
         ]
+        if self.unreported_verdict:
+            lines.append(
+                f"verdict not reported   {self.unreported_verdict}  "
+                "(the server did not send one; these are not passes)"
+            )
         if self.errors:
             lines.append(f"not answered           {len(self.errors)}")
         for qid, emitted, acceptable in self.mismatches:
@@ -278,6 +297,10 @@ def score(
             result.uncited_sentences.append((question.id, answer.uncited_sentences))
         if answer.misattributed:
             result.misattributed.append((question.id, answer.misattributed))
+        if answer.verdict == REFUSED:
+            result.refused += 1
+        elif not answer.verdict:
+            result.unreported_verdict += 1
     return result
 
 
@@ -330,7 +353,11 @@ def _to_answer(question: EvalQuestion, response: Mapping[str, Any]) -> EvalAnswe
     return EvalAnswer(
         question_id=question.id,
         tags=tags,
-        answer=str(response.get("answer", "")),
+        answer=str(response.get("answer", "") or response.get("text", "")),
+        # Defaulted to "" rather than to a verdict: a server that predates the
+        # field, or a stub that omits it, must be reported as *unknown* and
+        # never as a pass.
+        verdict=str(response.get("verdict", "") or ""),
         ungrounded_figures=tuple(response.get("ungrounded_figures") or ()),
         uncited_sentences=uncited,
         misattributed=tuple(response.get("misattributed") or ()),
@@ -361,7 +388,25 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - live r
     result = run(ask_rag, questions, verbose=not args.quiet)
     print()
     print(result.summary())
-    return 0 if not result.errors else 1
+    # The headline is a ratio, so it can be good while the contract is broken:
+    # an answer can carry the right tag mix and still carry a number no source
+    # supports. The secondary metrics are targets of zero, not ratios, and a run
+    # that misses any of them is a failure whatever the rate came out at. A run
+    # with errors is worse than a failure -- nothing was measured -- so both
+    # exit non-zero.
+    breaches = (
+        len(result.errors)
+        + len(result.ungrounded_figures)
+        + len(result.uncited_sentences)
+        + len(result.misattributed)
+    )
+    if breaches:
+        print(
+            f"\n{breaches} contract breach(es) outside the headline rate. "
+            f"The rate alone does not decide the run."
+        )
+        return 1
+    return 0
 
 
 if __name__ == "__main__":  # pragma: no cover
