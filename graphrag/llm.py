@@ -27,6 +27,8 @@ import os
 import random
 import re
 import time
+import urllib.error
+import urllib.request
 from abc import ABC, abstractmethod
 from typing import Any
 
@@ -39,9 +41,11 @@ class LLMError(RuntimeError):
     """Raised when a provider cannot return usable JSON."""
 
 
-# Gemini exposes an OpenAI-compatible surface, so the OpenAI client is reused
-# against this base URL rather than adding a second HTTP implementation.
+# Gemini and NVIDIA both expose an OpenAI-compatible surface, so the OpenAI
+# client is reused against these base URLs rather than adding a second HTTP
+# implementation.
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
+NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
 
 
 class LLMClient(ABC):
@@ -242,6 +246,16 @@ class OpenAIChatClient(_RetryingClient):
         self.temperature = temperature
         self._client = OpenAI(**kwargs)
 
+    def extra_request_args(self) -> dict[str, Any]:
+        """Provider-specific request fields, empty for OpenAI-compatible APIs.
+
+        The hook exists for endpoints that accept parameters outside the
+        OpenAI schema; see :class:`NvidiaClient`, which needs one. Subclasses
+        override it rather than :meth:`_chat`, so the retry, JSON-mode and
+        schema logic stays in one place.
+        """
+        return {}
+
     def _messages(self, system: str, user: str) -> list[dict[str, str]]:
         """Build the message list. Overridden by providers without a system role."""
         return [
@@ -262,6 +276,15 @@ class OpenAIChatClient(_RetryingClient):
         *json_mode* is separate from *schema* on purpose: a JSON call with no
         schema still needs ``json_object``, while a prose call must send no
         ``response_format`` at all.
+
+        The schema is honoured only when :attr:`supports_schema` is set. A
+        provider that advertises an OpenAI-compatible surface can still get
+        ``json_schema`` constrained decoding wrong, and the symptom is subtle:
+        the model nests the response under the schema's own top-level key and
+        truncates it (``{"entities":{"entities": ["Apple"]}``), which then fails
+        in :func:`parse_json_object` as unparseable rather than as a provider
+        defect. Degrading to plain ``json_object`` keeps the call working, and
+        the caller still validates the shape.
         """
 
         def call() -> str:
@@ -271,7 +294,7 @@ class OpenAIChatClient(_RetryingClient):
                 "temperature": self.temperature,
             }
             if json_mode:
-                if schema:
+                if schema and self.supports_schema:
                     kwargs["response_format"] = {
                         "type": "json_schema",
                         "json_schema": {
@@ -282,6 +305,7 @@ class OpenAIChatClient(_RetryingClient):
                     }
                 else:
                     kwargs["response_format"] = {"type": "json_object"}
+            kwargs.update(self.extra_request_args())
             response = self._client.chat.completions.create(**kwargs)
             return response.choices[0].message.content or ""
 
@@ -342,6 +366,83 @@ class GeminiClient(OpenAIChatClient):
         # The OpenAI-compatible surface has no system role, so the instruction
         # is prepended to the single user turn.
         return [{"role": "user", "content": f"{system}\n\n{user}"}]
+
+
+class NvidiaClient(OpenAIChatClient):
+    """NVIDIA NIM through its OpenAI-compatible chat completions endpoint.
+
+    Added because this repository's only configured credential is
+    ``NVIDIA_API_KEY`` -- the one ``sandbox_engine/query_ui.py`` already uses at
+    port 9000. Without a provider here, ``resolve_client`` found no recognised
+    key, fell through to an unreachable local Ollama, and silently answered
+    every question with :class:`HeuristicClient`: a restatement of the retrieved
+    graph, with no reasoning and no prose. Reusing the OpenAI transport keeps one
+    tested code path, so this only overrides credential resolution.
+
+    The key is read from ``NVIDIA_API_KEY`` and not from ``OPENAI_API_KEY``: NIM
+    rejects an OpenAI key with a confusing 401, so sharing the variable would
+    make the wrong credential look like a bad one.
+    """
+
+    name = "nvidia"
+    # NIM advertises an OpenAI-compatible surface but does not implement
+    # `json_schema` constrained decoding correctly. Measured against
+    # nvidia/nemotron-3-ultra-550b-a55b with the pipeline's own identify prompt:
+    # `json_schema` returned the truncated `{"entities":{"entities": ["Apple"]}`
+    # on 6 of 6 attempts, while `json_object` returned valid JSON every time.
+    # Declining the schema costs shape enforcement and nothing else, since
+    # parse_json_object validates the result either way.
+    supports_schema = False
+    # A hosted endpoint, not a free tier, so there is no per-minute ceiling to
+    # respect. NIM returns 503 while a model is loading or overloaded, which
+    # _RetryingClient already treats as retryable.
+    default_min_interval = 0.0
+
+    def __init__(
+        self,
+        model: str = "nvidia/nemotron-3-ultra-550b-a55b",
+        temperature: float = 0.0,
+        api_key: str | None = None,
+        max_retries: int = 3,
+        min_interval: float | None = None,
+    ) -> None:
+        api_key = api_key or os.environ.get("NVIDIA_API_KEY")
+        if not api_key:
+            raise LLMError(
+                "NVIDIA_API_KEY is not set; export it or use "
+                "--provider openai / --provider heuristic"
+            )
+        super().__init__(
+            model=model,
+            temperature=temperature,
+            api_key=api_key,
+            base_url=os.environ.get("NVIDIA_BASE_URL") or NVIDIA_BASE_URL,
+            max_retries=max_retries,
+            min_interval=min_interval,
+        )
+
+    def _messages(self, system: str, user: str) -> list[dict[str, str]]:
+        # NIM's OpenAI-compatible surface accepts a system role, so the base
+        # implementation's message layout is correct here and is not overridden.
+        return super()._messages(system, user)
+
+    def extra_request_args(self) -> dict[str, Any]:
+        """Turn off the reasoning trace for this request.
+
+        Nemotron Ultra is a reasoning model: it emits a ``reasoning_content``
+        field alongside ``content``. In JSON mode that budget is mis-spent --
+        measured here, the model emitted 83 completion tokens of which the
+        answer was a truncated 35 characters, so every response failed to
+        parse. With thinking disabled the same prompt returned valid JSON 5
+        times out of 5, and prose answers still carry their ``[E1]`` citations.
+
+        ``extra_body`` is the SDK's escape hatch for parameters outside the
+        OpenAI schema: it merges the keys into the top level of the request,
+        which is what this endpoint expects. Passing them as named arguments is
+        rejected, since ``chat_template_kwargs`` is not part of the typed
+        surface.
+        """
+        return {"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}}
 
 
 class AnthropicClient(_RetryingClient):
@@ -743,11 +844,28 @@ class HeuristicClient(LLMClient):
             out.append("")
         out.append(
             "Note: produced by the offline heuristic provider, which restates "
-            "graph context rather than reasoning over it. Configure "
-            "GEMINI_API_KEY, OPENAI_API_KEY, or ANTHROPIC_API_KEY for "
-            "model-written answers."
+            "graph context rather than reasoning over it. Set one of "
+            "NVIDIA_API_KEY, GEMINI_API_KEY, OPENAI_API_KEY, or ANTHROPIC_API_KEY "
+            "in .env for model-written answers, or start a local Ollama."
         )
         return "\n".join(out)
+
+
+def _ollama_reachable(timeout: float = 2.0) -> bool:
+    """Whether a local Ollama is answering, using only the stdlib.
+
+    The probe deliberately avoids ``httpx``: that package is an optional
+    dependency of the Ollama *provider*, so importing it here made an absent
+    package look identical to an absent server, and both cases silently
+    degraded to the heuristic provider. ``urllib`` is always present, so this
+    answers the question actually being asked.
+    """
+    base = os.environ.get("OLLAMA_BASE_URL") or "http://localhost:11434"
+    try:
+        with urllib.request.urlopen(f"{base.rstrip('/')}/api/tags", timeout=timeout):
+            return True
+    except (urllib.error.URLError, OSError, ValueError):
+        return False
 
 
 def resolve_client(
@@ -771,19 +889,35 @@ def resolve_client(
             provider = "openai"
         elif os.environ.get("ANTHROPIC_API_KEY"):
             provider = "anthropic"
+        elif os.environ.get("NVIDIA_API_KEY"):
+            # Last among the hosted keys, and after them deliberately: the
+            # preference order is about which credentials the repository
+            # documents first, not about model quality. NVIDIA is checked here
+            # rather than promoted because it is the only one present in a
+            # default checkout, and being the sole key should not outrank a
+            # key the reader supplied on purpose.
+            provider = "nvidia"
         else:
-            # Try Ollama as a local fallback
-            try:
-                import httpx
-                with httpx.Client(timeout=2.0) as c:
-                    c.get("http://localhost:11434/api/tags")
-                provider = "ollama"
-            except Exception:
+            # Try Ollama as a local fallback. Probed with the stdlib rather than
+            # httpx: the SDK is an optional dependency, and importing it inside
+            # the probe made a *missing package* indistinguishable from *no local
+            # server* -- both were swallowed below and reported as "heuristic",
+            # which is how a working local Ollama went unnoticed.
+            if not _ollama_reachable():
                 return HeuristicClient()
+            provider = "ollama"
 
     if provider == "gemini":
         return GeminiClient(
             model=model or os.environ.get("GRAPHRAG_MODEL") or "gemini-3.8-flash",
+            temperature=temperature,
+        )
+    if provider == "nvidia":
+        return NvidiaClient(
+            model=model
+            or os.environ.get("GRAPHRAG_MODEL")
+            or os.environ.get("NVIDIA_MODEL")
+            or "nvidia/nemotron-3-ultra-550b-a55b",
             temperature=temperature,
         )
     if provider == "openai":
@@ -803,7 +937,7 @@ def resolve_client(
         )
     raise LLMError(
         f"Unknown provider {provider!r}; "
-        "use gemini, openai, anthropic, ollama, or heuristic"
+        "use gemini, nvidia, openai, anthropic, ollama, or heuristic"
     )
 
 

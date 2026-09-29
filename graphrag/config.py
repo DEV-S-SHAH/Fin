@@ -7,6 +7,37 @@ from dataclasses import dataclass
 
 BYTES_PER_MB = 1024 * 1024
 
+#: Environment variable that overrides the UI port, and the port used when it
+#: is unset. Held here rather than in the argparse default so ``make_server``,
+#: ``serve`` and the CLI all resolve the same value from one place.
+UI_PORT_ENV = "PORT_GRAPHRAG_UI"
+DEFAULT_UI_PORT = 8765
+
+
+def default_ui_port() -> int:
+    """The port the UI binds, from ``PORT_GRAPHRAG_UI`` or the default.
+
+    An explicit ``--port`` always wins; this is only consulted when the caller
+    expressed no preference. A value that is not a usable port is an error
+    rather than a silent fall back: a typo'd ``PORT_GRAPHRAG_UI=876O`` would
+    otherwise look applied while the server quietly listened somewhere else, and
+    an out-of-range integer such as ``70000`` would instead fail much later,
+    inside ``bind``, as a bare ``OverflowError``.
+    """
+    raw = os.environ.get(UI_PORT_ENV, "").strip()
+    if not raw:
+        return DEFAULT_UI_PORT
+    try:
+        port = int(raw)
+    except ValueError:
+        port = 0
+    if not 1 <= port <= 65535:
+        raise ValueError(
+            f"{UI_PORT_ENV}={raw!r} is not a usable port; expected an integer "
+            f"between 1 and 65535"
+        ) from None
+    return port
+
 
 @dataclass(frozen=True)
 class GraphRAGConfig:

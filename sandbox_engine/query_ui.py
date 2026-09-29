@@ -10,11 +10,17 @@ Run::
     source .venv/bin/activate
     python -m sandbox_engine.query_ui            # opens http://127.0.0.1:9000/
     python -m sandbox_engine.query_ui --port 9001
+
+The port defaults to ``$PORT_QUERY_UI``, then to 9000. It is a separate service
+from the graphrag UI on ``$PORT_GRAPHRAG_UI`` (8765); the two defaults live in
+this module and ``graphrag/config.py`` so they cannot be made to collide by
+editing a literal.
 """
 
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import logging
 import os
@@ -110,25 +116,75 @@ def merge_edges(edges: list[dict[str, Any]]) -> list[dict[str, Any]]:
         seen.add(key)
         out.append(edge)
     return out
-from openai import OpenAI
+
 
 log = logging.getLogger("graphrag_ui")
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s  %(levelname)-7s  %(message)s",
-    datefmt="%H:%M:%S",
-)
+
+
+def _configure_logging() -> None:
+    """Install the UI's log format.
+
+    Called from the entry points, never at import: ``basicConfig`` mutates the
+    process-wide root logger, and a library that reconfigures logging merely
+    because something imported it changes the output of every other module in
+    the process. A server needs it; ``import`` does not.
+    """
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s  %(levelname)-7s  %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
 
 _HERE = Path(__file__).resolve().parent
-# The blueprint database. This UI's Cypher is written against that schema --
-# FinancialMetric.metric_id, Segment.segment_id, DISAGGREGATED_BY and so on.
-# The _run/sandbox.lbug graph built by ``python -m sandbox_engine`` uses a
-# different schema (Metric.id, Segment.name, HAS_SEGMENT, Event), and pointing
-# this at it silently yields 17 visible nodes out of 1392, so it stays on _run2.
-_DB_CANDIDATES = (
-    _HERE / "_run2" / "blueprint.lbug",   # blueprint schema, what the Cypher expects
-    _HERE / "_run" / "sandbox.lbug",       # engine schema, only if nothing else exists
-)
+# The graph this UI serves, built by ``python -m sandbox_engine --reset``.
+#
+# The Cypher below is written against the blueprint schema (FinancialMetric.
+# metric_id, Segment.segment_id, DISAGGREGATED_BY and so on). That schema is
+# translated on the way out by ``detect_schema``/``translate_for_engine`` when
+# the database turns out to be the engine schema, so the two differ in
+# vocabulary but not in meaning.
+#
+# A single explicit path, not a list of hopeful candidates. An earlier version
+# listed a ``_run2/blueprint.lbug`` first; nothing in this repository builds
+# that file, so the entry only ever missed and the search fell through to the
+# line below -- which meant the server started on a different schema than the
+# one it was written against without saying so.
+_DB_CANDIDATES = (_HERE / "_run" / "sandbox.lbug",)
+
+#: Environment variable that overrides the UI port, and the port used when it
+#: is unset. The 8765 graphrag UI is a separate service; keeping the two
+#: defaults here makes the collision impossible to introduce by editing source.
+UI_PORT_ENV = "PORT_QUERY_UI"
+DEFAULT_UI_PORT = 9000
+
+
+def default_ui_port() -> int:
+    """The port to bind, from ``PORT_QUERY_UI`` or the built-in default.
+
+    An explicit ``--port`` always wins. Read through ``_setting`` rather than
+    ``os.environ`` so a ``PORT_QUERY_UI`` in ``.env`` is honoured: the file is
+    what ``.env.example`` tells a reader to copy, and a variable set there that
+    is silently ignored is the same failure as no configuration at all.
+
+    A value that is not a usable port is an error rather than a silent fall
+    back. ``PORT_QUERY_UI=90OO`` would otherwise look applied while the server
+    quietly listened somewhere else, and an out-of-range integer such as
+    ``70000`` fails much later, inside ``bind``, as a bare ``OverflowError``.
+    """
+    raw = _setting(UI_PORT_ENV)
+    if not raw:
+        return DEFAULT_UI_PORT
+    try:
+        port = int(raw)
+    except ValueError:
+        port = 0
+    if not 1 <= port <= 65535:
+        raise ValueError(
+            f"{UI_PORT_ENV}={raw!r} is not a usable port; expected an integer "
+            f"between 1 and 65535"
+        ) from None
+    return port
 
 
 # ── Schema translation ────────────────────────────────────────────────────────
@@ -614,8 +670,40 @@ class RagBackends:
         return session_key or _load_api_key(), NVIDIA_BASE_URL
 
 
-BACKENDS = RagBackends()
+def get_backends() -> RagBackends:
+    """The backend registry, built on first use and cached thereafter.
 
+    ``RagBackends`` owns mutable process state -- a lock, the key typed into the
+    browser, a forced-backend pin -- so there is exactly one of them and it has
+    to be shared. What it must not do is exist before anything asks for it:
+    constructing it reads credential files and probes for a local Ollama, and
+    doing that merely because a module was imported makes ``import
+    sandbox_engine.query_ui`` cost something and reach the filesystem.
+
+    Every reference goes through here rather than naming the global. A module
+    ``__getattr__`` fires for attribute access (``query_ui.BACKENDS``) but *not*
+    for a bare global lookup inside a function, so a plain ``get_backends().resolve()``
+    raises ``NameError`` in a fresh process -- it only appeared to work in the
+    test suite because a test had already touched the module attribute first.
+    Reading ``globals()`` here keeps one code path for both spellings and stays
+    correct whether the name is absent, lazily built, or patched.
+    """
+    backends = globals().get("BACKENDS")
+    if backends is None:
+        backends = RagBackends()
+        globals()["BACKENDS"] = backends
+    return backends
+
+
+def __getattr__(name: str) -> Any:
+    """Expose the backend registry as a module attribute (PEP 562).
+
+    Keeps ``query_ui.BACKENDS`` readable -- and patchable, which the test suite
+    relies on -- without constructing it during import.
+    """
+    if name == "BACKENDS":
+        return get_backends()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def _load_api_key() -> str:
@@ -631,10 +719,17 @@ def _load_api_key() -> str:
     historically looked only for ``NVIDIA_API_KEY`` in its own directory. A
     setup step that silently does nothing is worse than one spelled out.
 
-    A parser rather than ``python-dotenv``, which is not a dependency here: the
+    A parser rather than ``python-dotenv``, which is not an dependency here: the
     file is a flat ``KEY=value`` list and a regex is enough for it. The key used
     to be a literal in this source file, which put a live credential in a file
     people copy around; everything except the question box works without one.
+
+    Called on demand, never at import. A module-level ``NVIDIA_API_KEY =
+    _load_api_key()`` read a live credential into module state the moment
+    anything imported this file, and nothing ever read it back --
+    ``RagBackends`` already calls this per resolution, so a key typed into the
+    browser or added to the environment took effect immediately while the
+    cached copy went stale and only lingered.
     """
     for name in ("NVIDIA_API_KEY", "OPENAI_API_KEY"):
         found = _setting(name)
@@ -642,8 +737,6 @@ def _load_api_key() -> str:
             return found
     return ""
 
-
-NVIDIA_API_KEY = _load_api_key()
 
 MAX_BODY = 128 * 1024
 
@@ -700,7 +793,7 @@ class KnowledgeGraph:
         return self._raw_execute(cypher, params)
 
     def stats(self) -> dict[str, Any]:
-        state = BACKENDS.resolve()
+        state = get_backends().resolve()
         node_tables = ["Company", "Filing", "FinancialMetric", "Segment", "DisclosureEvent", "DocumentChunk"]
         rel_tables = ["SUBMITTED", "REPORTS_METRIC", "DISAGGREGATED_BY", "DISCLOSES_EVENT", "CONTAINS_CHUNK"]
         counts = {}
@@ -1215,8 +1308,8 @@ def _explain_api_error(exc: Exception, state: dict[str, Any]) -> str:
             )
         return f"Error talking to the local model {OLLAMA_MODEL}: {exc}"
     if status in (401, 403):
-        where = BACKENDS.reject_key()
-        recovered = BACKENDS.resolve()
+        where = get_backends().reject_key()
+        recovered = get_backends().resolve()
         if recovered["backend"] == "ollama":
             tail = (f" Answers are no longer routed to a refused key; the next "
                     f"question will use the local model {OLLAMA_MODEL} instead.")
@@ -1296,7 +1389,7 @@ def _where_to_look(question: str) -> list[str]:
 
 
 def ask_rag(kg: KnowledgeGraph, question: str) -> dict[str, Any]:
-    state = BACKENDS.resolve()
+    state = get_backends().resolve()
     if state["backend"] == "none":
         return _unavailable_answer(state)
     backend = state["backend"]
@@ -1319,7 +1412,14 @@ def ask_rag(kg: KnowledgeGraph, question: str) -> dict[str, Any]:
     # differ. The timeout is explicit because the default (10 minutes for a
     # hosted call, but far less in practice for a stalled local socket) is what
     # turns a slow model into a browser-side "Failed to fetch".
-    api_key, base_url = BACKENDS.credentials(backend)
+    #
+    # Imported here, not at module scope: the graph explorer, the canned
+    # reports and the stats panel never construct a client, and a top-level
+    # import made the whole SDK -- pydantic, httpx, numpy -- a precondition for
+    # serving a page that needs none of it.
+    from openai import OpenAI
+
+    api_key, base_url = get_backends().credentials(backend)
     client = OpenAI(
         base_url=base_url,
         api_key=api_key,
@@ -3042,7 +3142,7 @@ class _Handler(BaseHTTPRequestHandler):
             limit = _int_param(qs, "limit", 250, maximum=500)
             return self._json(self.kg.neighborhood(seeds, hops=hops, limit=limit))
         if p == "/api/rag":
-            return self._json(BACKENDS.resolve())
+            return self._json(get_backends().resolve())
         if p == "/api/reports":
             # List all canned reports
             return self._json({
@@ -3093,16 +3193,16 @@ class _Handler(BaseHTTPRequestHandler):
             requested = str(payload.get("backend") or "auto").strip().lower()
             if requested not in ("auto", "nvidia", "ollama"):
                 return self._err(400, f"unknown backend: {requested}")
-            BACKENDS.set_backend(requested)
+            get_backends().set_backend(requested)
 
         if "key" in payload:
             key = str(payload.get("key") or "").strip()
             if key and not key.lower().startswith("nvapi-"):
                 return self._err(400, "that does not look like an NVIDIA API key "
                                        "(expected it to start with nvapi-)")
-            BACKENDS.set_session_key(key)
+            get_backends().set_session_key(key)
 
-        return self._json(BACKENDS.resolve())
+        return self._json(get_backends().resolve())
 
     def _api_ask(self) -> None:
         try:
@@ -3140,31 +3240,72 @@ def _int_param(qs: dict, name: str, default: int, minimum: int | None = None, ma
 
 # ── Server Runner ─────────────────────────────────────────────────────────────
 
-def serve(host: str = "127.0.0.1", port: int = 9000, open_browser: bool = True,
+def bind_server(
+    handler: type[BaseHTTPRequestHandler], host: str, port: int
+) -> ThreadingHTTPServer:
+    """Bind *host*:*port*, turning a busy port into an explanation.
+
+    ``ThreadingHTTPServer`` binds and listens inside its constructor, so a port
+    already in use surfaces as ``OSError(EADDRINUSE)`` from this call. The bare
+    traceback names the exception and nothing a reader can act on, so the two
+    causes -- another copy of this server, and the graphrag UI on its own port
+    -- are named here instead.
+    """
+    try:
+        return ThreadingHTTPServer((host, port), handler)
+    except OSError as exc:
+        if exc.errno != errno.EADDRINUSE:
+            raise
+        raise OSError(
+            errno.EADDRINUSE,
+            f"port {port} on {host} is already in use.\n"
+            f"  Another copy of this server is probably still running: "
+            f"lsof -nP -iTCP:{port} -sTCP:LISTEN\n"
+            f"  Or pick another port: --port <n>, or {UI_PORT_ENV}=<n>\n"
+            f"  (The other service here, the graphrag UI, defaults to 8765; "
+            f"set PORT_GRAPHRAG_UI to move it.)",
+        ) from None
+
+
+def serve(host: str = "127.0.0.1", port: int | None = None, open_browser: bool = True,
           read_only: bool = True, db_path: Path | None = None) -> None:
+    _configure_logging()
+    port = default_ui_port() if port is None else port
+
+    if db_path is not None and not db_path.is_file():
+        log.error("No graph database at %s", db_path)
+        raise SystemExit(1)
+
     db_path = db_path or resolve_db_path()
     if db_path is None:
         log.error(
             "No graph database found. Looked for:\n  %s\n"
             "Build one from the committed filings first:\n"
             "  python -m sandbox_engine --reset\n"
-            "then start this server again.",
+            "then start this server again. To serve a graph from somewhere "
+            "else, pass --db <path>.",
             "\n  ".join(str(p) for p in _DB_CANDIDATES),
         )
         raise SystemExit(1)
 
+    # Build the backend registry here, where the cost is visible at start-up,
+    # rather than on the first question where it looks like a hang. This reads
+    # the credential files and probes for a local Ollama.
+    get_backends()
+
     kg = KnowledgeGraph(db_path, read_only=read_only)
     handler = type("_BoundHandler", (_Handler,), {"kg": kg})
-    server = ThreadingHTTPServer((host, port), handler)
+    server = bind_server(handler, host, port)
     server.daemon_threads = True
 
-    url = f"http://{host}:{port}/"
+    url = f"http://{host}:{server.server_address[1]}/"
     stats = kg.stats()
     print(f"\n{'='*70}")
     print(f"  GraphRAG Viewer & Question Answering Engine")
     print(f"{'='*70}")
     print(f"  Web UI       : {url}")
     print(f"  Database     : {db_path}")
+    print(f"  Schema       : {stats['schema']}")
     print(f"  Graph Stats  : {stats['nodes']} entities, {stats['edges']} relationships")
     where = {"nvidia": "NVIDIA NIM", "ollama": "local Ollama"}.get(stats["rag_backend"], "unavailable")
     print(f"  RAG Model    : {stats['rag_model'] or 'none'} via {where}")
@@ -3190,21 +3331,37 @@ def serve(host: str = "127.0.0.1", port: int = 9000, open_browser: bool = True,
 
 
 def _main() -> None:
+    _configure_logging()
     p = argparse.ArgumentParser(prog="python -m sandbox_engine.query_ui",
                                 description="GraphRAG Question Answering UI for the Blueprint LadybugDB")
-    p.add_argument("--port", type=int, default=9000)
+    p.add_argument("--port", type=int, default=None,
+                   help="port to listen on (default: $%s, else %d)"
+                        % (UI_PORT_ENV, DEFAULT_UI_PORT))
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--no-browser", action="store_true")
     p.add_argument("--db", type=Path, default=None,
-                   help="Database file to serve. Use a separate copy of the "
-                        "graph to run a second UI on another port; LadybugDB "
-                        "locks the file, so two servers cannot share one path.")
+                   help="Database file to serve (default: %s). Use a separate "
+                        "copy of the graph to run a second UI on another port; "
+                        "LadybugDB locks the file, so two servers cannot share "
+                        "one path." % _DB_CANDIDATES[0])
     p.add_argument("--read-write", action="store_true",
                    help="Open the database read-write (takes an exclusive lock, "
                         "so no other server can share the file)")
     args = p.parse_args()
-    serve(args.host, args.port, open_browser=not args.no_browser,
-          read_only=not args.read_write, db_path=args.db)
+    try:
+        serve(args.host, args.port, open_browser=not args.no_browser,
+              read_only=not args.read_write, db_path=args.db)
+    except OSError as exc:
+        # A busy port is an operator decision, not a crash: report it and exit
+        # non-zero rather than printing a traceback from inside http.server.
+        log.error("%s", exc)
+        raise SystemExit(1)
+    except ValueError as exc:
+        # Same reasoning for a mistyped PORT_QUERY_UI: a one-character slip is
+        # not worth a traceback, and a different exit code keeps it
+        # distinguishable from the port-already-in-use case above.
+        log.error("%s", exc)
+        raise SystemExit(2)
 
 
 if __name__ == "__main__":

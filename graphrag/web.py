@@ -21,6 +21,7 @@ so correctness beats concurrency here.
 
 from __future__ import annotations
 
+import errno
 import json
 import logging
 import threading
@@ -29,7 +30,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from .config import GraphRAGConfig
+from .config import DEFAULT_UI_PORT, UI_PORT_ENV, GraphRAGConfig, default_ui_port
 from .llm import LLMClient, resolve_client
 from .qa import ask
 from .store import GraphStore, Subgraph
@@ -38,6 +39,31 @@ log = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).parent / "static"
 MAX_BODY_BYTES = 64 * 1024
+
+
+def bind_server(
+    handler: type[BaseHTTPRequestHandler], host: str, port: int
+) -> ThreadingHTTPServer:
+    """Bind *host*:*port*, turning a busy port into an explanation.
+
+    ``ThreadingHTTPServer`` binds and listens inside its constructor, so a
+    port already in use surfaces as ``OSError(EADDRINUSE)`` from this call. The
+    bare traceback names the exception and nothing a reader can act on, so the
+    two common causes -- another copy of this server, or the other service in
+    this repository -- are named here instead.
+    """
+    try:
+        return ThreadingHTTPServer((host, port), handler)
+    except OSError as exc:
+        if exc.errno != errno.EADDRINUSE:
+            raise
+        raise OSError(
+            errno.EADDRINUSE,
+            f"port {port} on {host} is already in use.\n"
+            f"  Another copy of this server is probably still running: "
+            f"lsof -nP -iTCP:{port} -sTCP:LISTEN\n"
+            f"  Or pick another port: --port <n>, or {UI_PORT_ENV}=<n>",
+        ) from None
 
 
 def _graph_payload(graph: Subgraph) -> dict[str, Any]:
@@ -261,16 +287,18 @@ def make_server(
     store: GraphStore,
     config: GraphRAGConfig | None = None,
     host: str = "127.0.0.1",
-    port: int = 8765,
+    port: int | None = None,
     provider: str | None = None,
     model: str | None = None,
 ) -> ThreadingHTTPServer:
     """Build (but do not start) the UI server.
 
     *host* defaults to loopback. Passing anything else is an explicit choice by
-    the caller and is logged as a warning by :func:`serve`.
+    the caller and is logged as a warning by :func:`serve`. *port* defaults to
+    ``PORT_GRAPHRAG_UI``, then to :data:`~graphrag.config.DEFAULT_UI_PORT`.
     """
     config = config or store.config
+    port = default_ui_port() if port is None else port
 
     def llm_factory() -> LLMClient:
         return resolve_client(provider, model)
@@ -285,7 +313,7 @@ def make_server(
             "llm_factory": staticmethod(llm_factory),
         },
     )
-    server = ThreadingHTTPServer((host, port), handler)
+    server = bind_server(handler, host, port)
     server.daemon_threads = True
     return server
 
@@ -294,7 +322,7 @@ def serve(
     store: GraphStore,
     config: GraphRAGConfig | None = None,
     host: str = "127.0.0.1",
-    port: int = 8765,
+    port: int | None = None,
     provider: str | None = None,
     model: str | None = None,
     open_browser: bool = True,

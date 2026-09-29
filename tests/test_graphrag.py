@@ -888,7 +888,16 @@ class _StubOpenAI:
             sys.modules["openai"] = self._openai_module
 
     def _no_key_env(self) -> None:
-        for key in ("GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY"):
+        # NVIDIA_API_KEY is cleared too: a developer machine will have it set,
+        # and auto-detection would otherwise pick a real provider in tests
+        # that intend to exercise the no-credentials path.
+        for key in (
+            "GEMINI_API_KEY",
+            "GOOGLE_API_KEY",
+            "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "NVIDIA_API_KEY",
+        ):
             os.environ.pop(key, None)
 
 
@@ -1027,6 +1036,102 @@ class GeminiProviderTests(_StubOpenAI, unittest.TestCase):
         os.environ["GEMINI_API_KEY"] = "test-gemini-key"
         os.environ["OPENAI_API_KEY"] = "test-openai-key"
         self.assertEqual(resolve_client().name, "gemini")
+
+
+class NvidiaProviderTests(_StubOpenAI, unittest.TestCase):
+    """NVIDIA NIM, added because it is the key this repository actually ships.
+
+    Three behaviours are locked in here, each of which was a live failure:
+    auto-detection ignoring the key, the reasoning trace truncating ``content``
+    in JSON mode, and the schema flag being advisory but never consulted.
+    """
+
+    def setUp(self):
+        self._no_key_env()
+        self.addCleanup(self._restore_openai)
+        self.addCleanup(self._no_key_env)
+
+    def _client(self, recorder: dict, **kwargs):
+        from graphrag.llm import NvidiaClient
+
+        self._stub_openai(recorder)
+        os.environ["NVIDIA_API_KEY"] = "test-nvidia-key"
+        return NvidiaClient(**kwargs)
+
+    def test_auto_selects_nvidia_when_only_its_key_is_present(self):
+        from graphrag.llm import resolve_client
+
+        # A default checkout has NVIDIA_API_KEY and nothing else. Without this
+        # the service silently answered every question with the heuristic
+        # provider, which restates the graph instead of answering it.
+        os.environ["NVIDIA_API_KEY"] = "test-nvidia-key"
+        self.assertEqual(resolve_client().name, "nvidia")
+
+    def test_nvidia_keeps_the_openai_key_out_of_the_credential(self):
+        from graphrag.llm import NvidiaClient
+
+        recorder: dict = {}
+        self._stub_openai(recorder)
+        os.environ["OPENAI_API_KEY"] = "an-openai-key"
+        with self.assertRaises(LLMError) as ctx:
+            NvidiaClient()
+        # NIM rejects an OpenAI key with a confusing 401, so borrowing the
+        # variable would make a missing NVIDIA key look like a bad one.
+        self.assertIn("NVIDIA_API_KEY", str(ctx.exception))
+
+    def test_nvidia_targets_its_own_base_url(self):
+        from graphrag.llm import NVIDIA_BASE_URL, NvidiaClient
+
+        recorder: dict = {}
+        self._client(recorder, model="nvidia-test")
+        self.assertEqual(str(recorder["base_url"]), NVIDIA_BASE_URL)
+
+    def test_nvidia_disables_the_reasoning_trace(self):
+        recorder: dict = {}
+        client = self._client(recorder, model="nvidia-test")
+        client.complete_text("system", "user")
+        # Nemotron Ultra is a reasoning model. In JSON mode it spent 83
+        # completion tokens to emit 35 characters of answer, which never
+        # parsed. The flag must reach the request, via extra_body because
+        # chat_template_kwargs is outside the SDK's typed surface.
+        kwargs = recorder["kwargs"]
+        self.assertEqual(
+            kwargs["extra_body"]["chat_template_kwargs"]["enable_thinking"], False
+        )
+
+    def test_nvidia_declines_schema_constrained_decoding(self):
+        from graphrag.llm import NvidiaClient
+
+        self.assertFalse(NvidiaClient.supports_schema)
+
+    def test_nvidia_uses_json_object_when_given_a_schema(self):
+        recorder: dict = {}
+        client = self._client(recorder, model="nvidia-test")
+        client.complete_json("system", "user", schema={"type": "object"})
+        # This endpoint accepts json_schema but returns the answer nested under
+        # the schema's own top-level key and truncated, which surfaces as an
+        # unparseable-JSON error rather than as a provider fault. json_object
+        # plus the caller's own validation is the working combination.
+        self.assertEqual(recorder["kwargs"]["response_format"], {"type": "json_object"})
+
+    def test_openai_still_sends_the_schema_it_advertises(self):
+        from graphrag.llm import OpenAIChatClient
+
+        recorder: dict = {}
+        self._stub_openai(recorder)
+        os.environ["OPENAI_API_KEY"] = "test-openai-key"
+        OpenAIChatClient().complete_json("system", "user", schema={"type": "object"})
+        self.assertEqual(
+            recorder["kwargs"]["response_format"]["type"], "json_schema"
+        )
+
+    def test_ollama_probe_does_not_require_the_httpx_sdk(self):
+        from graphrag.llm import _ollama_reachable
+
+        # The probe used to `import httpx`, so an absent optional package was
+        # indistinguishable from an absent local server: both fell through to
+        # the heuristic provider with no message. urllib is always available.
+        self.assertIsInstance(_ollama_reachable(timeout=0.05), bool)
 
 
 class PaddingLLM(LLMClient):

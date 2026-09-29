@@ -8,7 +8,7 @@ import logging
 import sys
 from pathlib import Path
 
-from .config import GraphRAGConfig
+from .config import DEFAULT_UI_PORT, UI_PORT_ENV, GraphRAGConfig
 from .envfile import load_env_file
 from .ingest import ingest_pdf
 from .llm import LLMError, resolve_client
@@ -31,7 +31,7 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--provider",
-        choices=("auto", "gemini", "openai", "anthropic", "ollama", "heuristic"),
+        choices=("auto", "gemini", "nvidia", "openai", "anthropic", "ollama", "heuristic"),
         default="auto",
         help="LLM provider; 'auto' uses whichever API key is present",
     )
@@ -237,7 +237,11 @@ def build_parser() -> argparse.ArgumentParser:
         "unauthenticated endpoint that spends provider quota (default: %(default)s)",
     )
     serve_cmd.add_argument(
-        "--port", type=int, default=8765, help="port to listen on (default: %(default)s)"
+        "--port",
+        type=int,
+        default=None,
+        help="port to listen on (default: $%s, else %d)"
+        % (UI_PORT_ENV, DEFAULT_UI_PORT),
     )
     serve_cmd.add_argument(
         "--no-browser", action="store_true", help="do not open a browser window"
@@ -260,6 +264,16 @@ def main(argv: list[str] | None = None) -> int:
     except LLMError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    except OSError as exc:
+        # A busy port is an operator decision, not a crash: report it and exit
+        # non-zero rather than printing a traceback from inside http.server.
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except ValueError as exc:
+        # Same reasoning for a mistyped PORT_GRAPHRAG_UI. Surfacing it as a
+        # traceback would make a one-character slip look like a code fault.
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     except KeyboardInterrupt:
         print("\ninterrupted", file=sys.stderr)
         return 130
