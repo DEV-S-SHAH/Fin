@@ -753,16 +753,18 @@ def retrieve_financial_context(kg: KnowledgeGraph, question: str) -> tuple[str, 
     segments = kg.execute("MATCH (s:Segment) RETURN s.segment_id, s.dimension_name, s.dimension_type")
     for s in segments:
         sid, name, dtype = s[0], s[1], s[2]
-        if name.lower() in q_low or dtype.lower() in q_low or "segment" in q_low or "breakdown" in q_low or "geograph" in q_low or "product" in q_low:
+        name_l = (name or "").lower()
+        dtype_l = (dtype or "").lower()
+        if name_l in q_low or dtype_l in q_low or "segment" in q_low or "breakdown" in q_low or "geograph" in q_low or "product" in q_low:
             add_node(sid, name, "Segment", f"Dimension type: {dtype}")
 
     # Check disclosure events
     events = kg.execute("MATCH (e:DisclosureEvent) RETURN e.event_id, e.item_code, e.item_title, e.summary")
     for e in events:
         eid, code, title, summary = e[0], e[1], e[2], e[3]
-        if code in q_low or "8-k" in q_low or "event" in q_low or "item" in q_low or "press release" in q_low or "operation" in q_low:
-            clean_title = re.sub(r"&[a-z0-9#]+;", " ", title).strip()
-            add_node(eid, f"Item {code}: {clean_title}", "DisclosureEvent", f"Summary: {summary[:160]}")
+        if (code or "") in q_low or "8-k" in q_low or "event" in q_low or "item" in q_low or "press release" in q_low or "operation" in q_low:
+            clean_title = re.sub(r"&[a-z0-9#]+;", " ", (title or "")).strip()
+            add_node(eid, f"Item {code}: {clean_title}", "DisclosureEvent", f"Summary: {(summary or '')[:160]}")
 
     # If too few nodes matched (e.g. broad general question), populate with top metrics
     if len(seen_ids) <= 3:
@@ -806,11 +808,11 @@ def retrieve_financial_context(kg: KnowledgeGraph, question: str) -> tuple[str, 
         ):
             if chunk_acc != acc:
                 continue
-            text_low = ctext.lower()
+            text_low = (ctext or "").lower()
             q_score = sum(1 for kw in keywords if kw in text_low)
             biz_score = sum(1 for term in _BIZ_TERMS if term in text_low)
             chunk_hits.append(
-                {"filing": acc, "id": cid, "text": ctext, "section": csection,
+                {"filing": acc, "id": cid, "text": ctext or "", "section": csection or "",
                  "score": q_score + _BIZ_WEIGHT * biz_score, "form": form}
             )
     # Best score first, then 10-K before 10-Q, then a stable tie-break. Never
@@ -1695,11 +1697,46 @@ const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g,
   (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
 async function api(path, opts) {
-  const res = await fetch(path, opts);
+  let res;
+  try {
+    res = await fetch(path, opts);
+  } catch (e) {
+    // A rejected fetch is the browser refusing to tell us anything: it means
+    // the request never completed, so there is no status, no body, and no
+    // usable error message. Surfacing e.message verbatim just prints
+    // "Failed to fetch", which is true and useless -- it does not say whether
+    // the server is gone or the server failed, and those need different fixes.
+    // One cheap probe on a cheap endpoint tells them apart.
+    throw new Error(await describeTransportFailure(path));
+  }
   let body = null;
   try { body = await res.json(); } catch (_) {}
   if (!res.ok) throw new Error((body && body.error) || `HTTP ${res.status}`);
   return body;
+}
+
+async function describeTransportFailure(path) {
+  const where = location.origin;
+  let alive = false;
+  try {
+    const ctl = new AbortController();
+    setTimeout(() => ctl.abort(), 3000);
+    const probe = await fetch("/api/stats", { signal: ctl.signal, cache: "no-store" });
+    alive = probe.ok;
+  } catch (_) { alive = false; }
+  if (!alive) {
+    return (
+      `could not reach the server at ${where} -- ${path} never got a response. ` +
+      `It is not running, or it stopped partway through. If you started it in ` +
+      `a terminal, check that terminal for a traceback and restart it with ` +
+      `python -m sandbox_engine.query_ui.`
+    );
+  }
+  return (
+    `${where} is running, but it dropped the connection during ${path} ` +
+    `without sending a response, which means the request hit an error inside ` +
+    `the server. The details were printed to the terminal running it.`
+  );
 }
 
 class Sim {
@@ -2599,6 +2636,39 @@ class _Handler(BaseHTTPRequestHandler):
         self._json({"error": msg}, status)
 
     def do_GET(self) -> None:  # noqa: N802
+        self._guarded(self._get)
+
+    def do_POST(self) -> None:  # noqa: N802
+        self._guarded(self._post)
+
+    def _guarded(self, fn: Any) -> None:
+        """Run a handler body, turning an unexpected raise into a 500.
+
+        socketserver handles an exception escaping do_POST by printing a
+        traceback to stderr and closing the socket *without writing a
+        response*. The browser reports that as ``Failed to fetch`` -- with no
+        status, no body, and no clue which of the two very different causes it
+        was: the server is gone, or the server just failed. The traceback is
+        the only real diagnosis, and it is on the terminal that is running the
+        server, which is not where the reader is looking.
+
+        So the answer goes in the response, where the failure is being
+        reported, and the same message goes to the log.
+        """
+        try:
+            fn()
+        except (BrokenPipeError, ConnectionResetError):
+            # The client hung up. Nothing to report and nothing to fix.
+            raise
+        except Exception as exc:
+            log.exception("unhandled error serving %s %s", self.command, self.path)
+            try:
+                self._err(500, f"{type(exc).__name__}: {exc}")
+            except Exception:
+                # The socket is already gone; the log line above is all we get.
+                pass
+
+    def _get(self) -> None:
         parsed = urlparse(self.path)
         p, qs = parsed.path, parse_qs(parsed.query)
         if p in ("/", "/index.html"):
@@ -2634,7 +2704,7 @@ class _Handler(BaseHTTPRequestHandler):
     def do_HEAD(self) -> None:  # noqa: N802
         self.do_GET()
 
-    def do_POST(self) -> None:  # noqa: N802
+    def _post(self) -> None:
         parsed = urlparse(self.path)
         if parsed.path == "/api/ask":
             return self._api_ask()
