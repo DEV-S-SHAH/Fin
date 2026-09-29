@@ -52,8 +52,12 @@ from .provenance import (
     serialise_evidence,
 )
 from .router import EntityRoute, route_query
-
-#: Frontend libraries served under ``/vendor/``. Vendored locally so the page
+from .tier1_fetch import SECRuntimeFetcher
+from .tier1_clean import clean_and_truncate_section
+from .coldstart_extract import ColdStartExtractor
+from .stitch import InMemoryOverlayGraph, stitch_coldstart_payload
+from .traversal import HybridGraphTraverser
+from .coldstart_synthesis import ColdStartSynthesizer
 #: works in a browser with no internet access; d3 drives the force layout below.
 _VENDOR_DIR = Path(__file__).resolve().parent / "static"
 VENDOR: dict[str, bytes] = {}
@@ -1115,14 +1119,23 @@ def retrieve_financial_context(kg: KnowledgeGraph, question: str, ticker: str | 
     # every issuer's annual report looks like, so without it a multi-company
     # graph renders one indistinguishable box per filing.
     filer: dict[str, str] = {}
-    try:
-        for acc, tick in kg.execute(
-            "MATCH (c:Company)-[:SUBMITTED]->(f:Filing) RETURN f.accession_number, c.ticker"
-        ):
-            filer[acc] = tick
-    except Exception:
-        pass
-    filings = kg.execute("MATCH (f:Filing) RETURN f.accession_number, f.form_type, f.fiscal_year, f.fiscal_period, f.period_end_date")
+    if ticker:
+        filings = kg.execute(
+            "MATCH (c:Company {ticker: $ticker})-[:SUBMITTED]->(f:Filing) "
+            "RETURN f.accession_number, f.form_type, f.fiscal_year, f.fiscal_period, f.period_end_date",
+            {"ticker": ticker},
+        )
+        for f in filings:
+            filer[f[0]] = ticker
+    else:
+        try:
+            for acc, tick in kg.execute(
+                "MATCH (c:Company)-[:SUBMITTED]->(f:Filing) RETURN f.accession_number, c.ticker"
+            ):
+                filer[acc] = tick
+        except Exception:
+            pass
+        filings = kg.execute("MATCH (f:Filing) RETURN f.accession_number, f.form_type, f.fiscal_year, f.fiscal_period, f.period_end_date")
     #: Issuers the question names. "Compare Apple and Microsoft" must not answer
     #: with NVIDIA's revenue: the words match every issuer equally well, so
     #: without this the prompt carries a third company's figures and the model
@@ -1166,17 +1179,33 @@ def retrieve_financial_context(kg: KnowledgeGraph, question: str, ticker: str | 
     # for, and it can only narrow: a metric reachable from a selected filing is
     # exactly the evidence that filing offers.
     metric_filers: dict[str, set[str]] = {}
-    for acc, mid in kg.execute(
-        "MATCH (f:Filing)-[:REPORTS_METRIC]->(m:FinancialMetric) "
-        "RETURN f.accession_number, m.metric_id"
-    ):
-        metric_filers.setdefault(mid, set()).add(acc)
+    if filing_ids:
+        for acc, mid in kg.execute(
+            "MATCH (f:Filing)-[:REPORTS_METRIC]->(m:FinancialMetric) "
+            "WHERE f.accession_number IN $accs "
+            "RETURN f.accession_number, m.metric_id",
+            {"accs": sorted(filing_ids)},
+        ):
+            metric_filers.setdefault(mid, set()).add(acc)
+    else:
+        for acc, mid in kg.execute(
+            "MATCH (f:Filing)-[:REPORTS_METRIC]->(m:FinancialMetric) "
+            "RETURN f.accession_number, m.metric_id"
+        ):
+            metric_filers.setdefault(mid, set()).add(acc)
 
-    # Check metrics
-    metrics = kg.execute(
-        "MATCH (m:FinancialMetric) RETURN m.metric_id, m.canonical_name, "
-        "m.statement_type, m.account_class, m.period_end"
-    )
+    # Check metrics - bound to candidate metric IDs when available
+    if metric_filers:
+        metrics = kg.execute(
+            "MATCH (m:FinancialMetric) WHERE m.metric_id IN $mids "
+            "RETURN m.metric_id, m.canonical_name, m.statement_type, m.account_class, m.period_end",
+            {"mids": sorted(metric_filers.keys())},
+        )
+    else:
+        metrics = kg.execute(
+            "MATCH (m:FinancialMetric) RETURN m.metric_id, m.canonical_name, "
+            "m.statement_type, m.account_class, m.period_end"
+        )
     # Question text with punctuation collapsed so "shareholders' equity" (straight
     # or curly apostrophe) always matches a stored "shareholders' equity" label.
     q_norm = re.sub(r"[^a-z0-9\s]", " ", q_low)
@@ -3857,6 +3886,75 @@ class _Handler(BaseHTTPRequestHandler):
 
         return self._json(get_backends().resolve())
 
+    def _send_sse(self, event: str, data: dict[str, Any]) -> None:
+        payload = f"event: {event}\ndata: {json.dumps(data)}\n\n"
+        self.wfile.write(payload.encode("utf-8"))
+        self.wfile.flush()
+
+    def _handle_sse_ask(self, question: str) -> None:
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "close")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.close_connection = True
+
+        start_time = time.monotonic()
+        try:
+            # 1. Routing
+            self._send_sse("status", {"step": "routing", "message": "Analyzing entity..."})
+            routing = route_query(question, self.kg)
+
+            if routing.route == EntityRoute.AMBIGUOUS:
+                self._send_sse("status", {"step": "ambiguous", "message": "Ambiguous entity"})
+                self._send_sse("token", {"token": "Please clarify which stock ticker or company you are inquiring about."})
+                self._send_sse("done", {"status": "complete", "route": "AMBIGUOUS", "latency_ms": round((time.monotonic() - start_time) * 1000, 2)})
+                return
+
+            if routing.route == EntityRoute.KNOWN:
+                self._send_sse("status", {"step": "retrieval", "message": f"Retrieving knowledge graph for {routing.ticker}..."})
+                result = ask_rag(self.kg, question)
+                ans = str(result.get("answer") or "")
+                words = ans.split(" ")
+                for i, w in enumerate(words):
+                    self._send_sse("token", {"token": w + (" " if i < len(words) - 1 else "")})
+                self._send_sse("done", {"status": "complete", "route": "KNOWN", "latency_ms": round((time.monotonic() - start_time) * 1000, 2)})
+                return
+
+            # COLD_START
+            ticker = routing.ticker or "UNKNOWN"
+            # 2. Fetching
+            self._send_sse("status", {"step": "fetching", "message": f"Fetching SEC filings for {ticker}..."})
+            fetcher = SECRuntimeFetcher()
+            raw_html, meta = fetcher.fetch_latest_filing_html(ticker, form_type="10-K", timeout=2.0)
+            cleaned_text = clean_and_truncate_section(raw_html, form_type="10-K", max_tokens=6000)
+
+            # 3. Stitching
+            self._send_sse("status", {"step": "stitching", "message": "Constructing knowledge graph..."})
+            extractor = ColdStartExtractor()
+            payload = extractor.extract_triples(cleaned_text, target_ticker=ticker)
+            overlay = InMemoryOverlayGraph(kg_connection=self.kg)
+            stitch_coldstart_payload(overlay, payload, target_ticker=ticker)
+
+            # 4. Traversal & Synthesis
+            traverser = HybridGraphTraverser(overlay)
+            subgraph = traverser.traverse_neighborhood(ticker, max_hops=2)
+            synthesizer = ColdStartSynthesizer()
+            context = {
+                "target_ticker": ticker,
+                "query": question,
+                "paths": subgraph.get("paths", []),
+                "filing_text": cleaned_text,
+            }
+            for token in synthesizer.stream_synthesis(context):
+                self._send_sse("token", {"token": token})
+
+            self._send_sse("done", {"status": "complete", "route": "COLD_START", "latency_ms": round((time.monotonic() - start_time) * 1000, 2)})
+        except Exception as exc:
+            self._send_sse("error", {"error": str(exc), "step": "failed"})
+            self._send_sse("done", {"status": "error", "error": str(exc), "latency_ms": round((time.monotonic() - start_time) * 1000, 2)})
+
     def _api_ask(self) -> None:
         try:
             length = int(self.headers.get("Content-Length") or 0)
@@ -3876,8 +3974,19 @@ class _Handler(BaseHTTPRequestHandler):
         if not question:
             return self._err(400, "question is required")
 
-        result = ask_rag(self.kg, question)
-        self._json(result)
+        accept_header = self.headers.get("Accept", "")
+        qs = parse_qs(urlparse(self.path).query)
+        is_stream = (
+            "text/event-stream" in accept_header
+            or qs.get("stream", ["false"])[0].lower() in ("true", "1")
+            or bool(payload.get("stream"))
+        )
+
+        if not is_stream:
+            result = ask_rag(self.kg, question)
+            return self._json(result)
+
+        self._handle_sse_ask(question)
 
 
 def _int_param(qs: dict, name: str, default: int, minimum: int | None = None, maximum: int | None = None) -> int:

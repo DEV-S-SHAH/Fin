@@ -27,6 +27,12 @@ class _StubGraph:
     def stats(self):
         return {"nodes": 0, "edges": 0}
 
+    def has_company(self, ticker: str) -> bool:
+        return ticker.upper() in ("AAPL", "MSFT")
+
+    def execute(self, cypher: str, params: dict | None = None) -> list:
+        return []
+
 
 class AskTransportTests(unittest.TestCase):
     """POST /api/ask must answer, whatever happens inside."""
@@ -117,6 +123,25 @@ class AskTransportTests(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as ctx:
             urllib.request.urlopen(req, timeout=20)
         self.assertEqual(ctx.exception.code, 400)
+
+    def test_sse_streaming_response(self):
+        """POST /api/ask with Accept: text/event-stream must return valid SSE events."""
+        query_ui.ask_rag = lambda kg, q: {"answer": "Streaming test answer", "evidence": []}
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/api/ask",
+            data=json.dumps({"question": "What is Apple revenue?"}).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "text/event-stream",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            content_type = resp.headers.get("Content-Type", "")
+            self.assertIn("text/event-stream", content_type)
+            body = resp.read().decode("utf-8")
+            self.assertIn("event: status", body)
+            self.assertIn("event: token", body)
+            self.assertIn("event: done", body)
 
 
 class ClientMessageTests(unittest.TestCase):
