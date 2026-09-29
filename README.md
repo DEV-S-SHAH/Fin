@@ -224,10 +224,18 @@ a restatement of the retrieved graph, not reasoning. `ingest` prints a note when
 that happens; `serve` does not, so check `python -m graphrag.cli stats` before
 trusting an answer.
 
+### Query Routing (Cold-Start JIT Graph RAG)
+
+Natural-language questions in `sandbox_engine.query_ui` are evaluated by `sandbox_engine/router.py` before retrieval or calling an LLM:
+
+- **`KNOWN`**: The requested entity is indexed in the knowledge graph. Retrieval executes filtered specifically to that entity rather than scanning all companies.
+- **`COLD_START`**: The entity was extracted (via cashtag `$TICKER`, uppercase token, or alias dictionary) but is not yet indexed. Returns an explicit staging response (`{"status": "cold_start_required", "entity": "...", ...}`) to trigger the JIT pipeline.
+- **`AMBIGUOUS`**: No clear entity was identified. Prompts for ticker clarification without calling the LLM and without silent fallback to AAPL/MSFT.
+
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -p "test_*.py"          # 553 tests
+python -m unittest discover -s tests -p "test_*.py"          # 568 tests
 python -m unittest discover -s sandbox_engine -p "test_*.py" # 93 tests
 ```
 
@@ -241,6 +249,7 @@ Both suites are offline: no network, no key, no database build.
 | `tests/test_graph_extractor.py` | 69 | Entity and relation extraction |
 | `tests/test_provenance.py` | 43 | Citation provenance |
 | `tests/test_document_loader.py` | 44 | PDF chunking |
+| `tests/test_router.py` | 15 | Query routing (KNOWN, COLD_START, AMBIGUOUS), entity filtering |
 | `tests/test_query_ui_transport.py` | 7 | `query_ui` request transport |
 | `tests/test_setup.py` | 11 | `setup.py` key handling |
 | `tests/test_ingestion.py` | 4 | Corpus presence — run this first on a new machine |

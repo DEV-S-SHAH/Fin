@@ -520,8 +520,6 @@ def parse_question(
         for ticker in (alias.ticker for alias in COMPANY_ALIASES)
         if ticker in occurrences
     )
-    if not tickers:
-        tickers = tuple(dict.fromkeys(t.upper() for t in default_tickers))
 
     year = default_year
     match = _YEAR_PATTERN.search(text)

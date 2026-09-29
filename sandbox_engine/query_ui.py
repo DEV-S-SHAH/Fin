@@ -45,6 +45,7 @@ from .provenance import (
     render_gap,
     serialise_evidence,
 )
+from .router import EntityRoute, route_query
 
 #: Frontend libraries served under ``/vendor/``. Vendored locally so the page
 #: works in a browser with no internet access; d3 drives the force layout below.
@@ -234,7 +235,7 @@ _PROP_RENAME = {
 
 
 _REL_BIND_RE = re.compile(r"\[\s*(?:(\w+)\s*)?:\s*(\w+)")
-_NODE_BIND_RE = re.compile(r"\(\s*(?:(\w+)\s*)?:\s*(\w+)\s*\)")
+_NODE_BIND_RE = re.compile(r"\(\s*(?:(\w+)\s*)?:\s*(\w+)(?:\s*\{[^}]*\})?\s*\)")
 _ACCESSOR_RE = re.compile(r"\b(\w+)\.(\w+)\b")
 _TABLE_RENAME_RE = re.compile(
     r"\b(" + "|".join(sorted(_BLUEPRINT_TO_ENGINE, key=len, reverse=True)) + r")\b"
@@ -792,6 +793,16 @@ class KnowledgeGraph:
             cypher = translate_for_engine(cypher)
         return self._raw_execute(cypher, params)
 
+    def has_company(self, ticker: str) -> bool:
+        """Check if a company with the given ticker exists in the graph."""
+        if not ticker:
+            return False
+        rows = self.execute(
+            "MATCH (c:Company {ticker: $ticker}) RETURN c.ticker LIMIT 1",
+            {"ticker": ticker.strip().upper()},
+        )
+        return len(rows) > 0
+
     def stats(self) -> dict[str, Any]:
         state = get_backends().resolve()
         node_tables = ["Company", "Filing", "FinancialMetric", "Segment", "DisclosureEvent", "DocumentChunk"]
@@ -931,7 +942,7 @@ class KnowledgeGraph:
 
 # ── RAG Retrieval & QA Engine ─────────────────────────────────────────────────
 
-def retrieve_financial_context(kg: KnowledgeGraph, question: str) -> tuple[str, list[dict], list[dict], dict[str, str], list[str]]:
+def retrieve_financial_context(kg: KnowledgeGraph, question: str, ticker: str | None = None) -> tuple[str, list[dict], list[dict], dict[str, str], list[str]]:
     """Retrieves relevant entities and relations matching the question and formats context with tags [E1], [E2]..."""
     q_low = question.lower()
 
@@ -944,8 +955,11 @@ def retrieve_financial_context(kg: KnowledgeGraph, question: str) -> tuple[str, 
             seen_ids.add(nid)
             seed_nodes.append({"id": nid, "name": name, "label_hint": hint, "type": etype, "description": desc})
 
-    # Always include the core company
-    companies = kg.execute("MATCH (c:Company) RETURN c.ticker, c.legal_name, c.cik")
+    # Include the core company - specifically filtered to resolved entity if given
+    if ticker:
+        companies = kg.execute("MATCH (c:Company {ticker: $ticker}) RETURN c.ticker, c.legal_name, c.cik", {"ticker": ticker})
+    else:
+        companies = kg.execute("MATCH (c:Company) RETURN c.ticker, c.legal_name, c.cik")
     for c in companies:
         add_node(c[0], c[1], "Company", f"Ticker: {c[0]}, CIK: {c[2]}", hint=c[0])
 
@@ -963,6 +977,9 @@ def retrieve_financial_context(kg: KnowledgeGraph, question: str) -> tuple[str, 
     filings = kg.execute("MATCH (f:Filing) RETURN f.accession_number, f.form_type, f.fiscal_year, f.fiscal_period, f.period_end_date")
     for f in filings:
         acc, form, fy, fp, ped = f[0], f[1], f[2], f[3], f[4]
+        # Filter filings to resolved company if ticker is known
+        if ticker and filer.get(acc) and filer[acc] != ticker:
+            continue
         hint = filer.get(acc, acc)
         # match 10-k, 10-q, 8-k, annual, quarterly, 2025
         if ("10-k" in q_low or "annual" in q_low or "year" in q_low) and form == "10-K":
@@ -1389,13 +1406,39 @@ def _where_to_look(question: str) -> list[str]:
 
 
 def ask_rag(kg: KnowledgeGraph, question: str) -> dict[str, Any]:
+    routing = route_query(question, kg)
+    if routing.route == EntityRoute.COLD_START:
+        msg = "Entity not indexed. Triggering JIT pipeline..."
+        return {
+            "status": "cold_start_required",
+            "entity": routing.ticker,
+            "message": msg,
+            "text": msg,
+            "question": question,
+            "grounded": False,
+            "used_tags": [],
+            "tag_map": {},
+        }
+    if routing.route == EntityRoute.AMBIGUOUS:
+        msg = "Please specify a company ticker or name (e.g. $AAPL, $MSFT) to answer your question."
+        return {
+            "status": "ambiguous",
+            "message": msg,
+            "text": msg,
+            "prompt": msg,
+            "question": question,
+            "grounded": False,
+            "used_tags": [],
+            "tag_map": {},
+        }
+
     state = get_backends().resolve()
     if state["backend"] == "none":
         return _unavailable_answer(state)
     backend = state["backend"]
 
     t0 = time.perf_counter()
-    context_str, nodes, edges, tag_map, seed_ids = retrieve_financial_context(kg, question)
+    context_str, nodes, edges, tag_map, seed_ids = retrieve_financial_context(kg, question, ticker=routing.ticker)
 
     # Provenance is resolved here, by code, before the model is called: every
     # retrieved node gets a tag and a Source, and the tags that will be legal to
