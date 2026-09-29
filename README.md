@@ -224,7 +224,7 @@ a restatement of the retrieved graph, not reasoning. `ingest` prints a note when
 that happens; `serve` does not, so check `python -m graphrag.cli stats` before
 trusting an answer.
 
-### Query Routing (Cold-Start JIT Graph RAG)
+### Query Routing & Tier 1 Ingestion (Cold-Start JIT Graph RAG)
 
 Natural-language questions in `sandbox_engine.query_ui` are evaluated by `sandbox_engine/router.py` before retrieval or calling an LLM:
 
@@ -232,10 +232,14 @@ Natural-language questions in `sandbox_engine.query_ui` are evaluated by `sandbo
 - **`COLD_START`**: The entity was extracted (via cashtag `$TICKER`, uppercase token, or alias dictionary) but is not yet indexed. Returns an explicit staging response (`{"status": "cold_start_required", "entity": "...", ...}`) to trigger the JIT pipeline.
 - **`AMBIGUOUS`**: No clear entity was identified. Prompts for ticker clarification without calling the LLM and without silent fallback to AAPL/MSFT.
 
+When cold start triggers:
+- **`sandbox_engine/tier1_fetch.py`**: Fetches the latest filing directly from SEC EDGAR under a strict 2.5s SLA budget (2.0s socket timeout) with zero silent drops, retrying transient HTTP 429s once using `Retry-After` with jitter.
+- **`sandbox_engine/tier1_clean.py`**: Extracts high-signal narrative sections (Item 1 Business for 10-K, Item 2 MD&A for 10-Q) using universal section extractors, strips HTML markup/tables/scripts, and caps output at 6,000 tokens (preserving sentence boundaries).
+
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -p "test_*.py"          # 670 tests
+python -m unittest discover -s tests -p "test_*.py"          # 677 tests
 python -m unittest discover -s sandbox_engine -p "test_*.py" # 112 tests
 ```
 
@@ -250,6 +254,7 @@ Both suites are offline: no network, no key, no database build.
 | `tests/test_provenance.py` | 43 | Citation provenance |
 | `tests/test_document_loader.py` | 44 | PDF chunking |
 | `tests/test_router.py` | 15 | Query routing (KNOWN, COLD_START, AMBIGUOUS), entity filtering |
+| `tests/test_tier1_fetch.py` | 7 | SEC runtime fetching SLA, rate limit backoff, section cleaning & token cap |
 | `tests/test_query_ui_transport.py` | 7 | `query_ui` request transport |
 | `tests/test_setup.py` | 11 | `setup.py` key handling |
 | `tests/test_ingestion.py` | 4 | Corpus presence — run this first on a new machine |
@@ -293,6 +298,8 @@ To add a company, create its folder and drop filings in. Nothing else to edit.
 | `sandbox_engine/benchmarks.py` | The five graph integrity benchmarks (B1–B5) |
 | `sandbox_engine/query_ui.py` | HTTP server, `/api/ask`, graph payload for the UI |
 | `sandbox_engine/router.py` | Discriminated query router (KNOWN, COLD_START, AMBIGUOUS) |
+| `sandbox_engine/tier1_fetch.py` | Runtime SEC EDGAR filing fetcher (< 2.5s SLA budget) |
+| `sandbox_engine/tier1_clean.py` | High-signal section slicing (Item 1/2) and token capping |
 | `sandbox_engine/cli.py` | Typer entry point |
 | `sandbox_engine/EVAL_SET.md` | 30-question eval set and the live defect register |
 | `sandbox_engine/eval_set.py` | EVAL_SET.md as runnable questions; `provenance_match_rate` |
