@@ -41,6 +41,19 @@ def read_env(path: Path) -> dict[str, str]:
     return found
 
 
+def restrict(path: Path) -> None:
+    """Owner-only, because the file holds a live credential.
+
+    Applied on the check path too: a ``.env`` that already exists may have been
+    created by ``cp``, which keeps the source's 644 and leaves the key readable
+    by every account on the machine.
+    """
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+
+
 def write_env(path: Path, key: str, backend: str) -> None:
     body = (
         "# Written by setup.py. This file is gitignored -- never commit it.\n"
@@ -49,14 +62,24 @@ def write_env(path: Path, key: str, backend: str) -> None:
         f"RAG_BACKEND={backend}\n"
     )
     path.write_text(body, encoding="utf-8")
-    try:
-        path.chmod(0o600)
-    except OSError:
-        pass
+    restrict(path)
 
 
 def looks_like_a_key(value: str) -> bool:
     return value.startswith("nvapi-") and len(value) > 20
+
+
+def display_path(path: Path) -> str:
+    """``.env`` when it is in the repo, the full path when it is not.
+
+    ``relative_to`` raises on anything outside the root, and this script can be
+    pointed at a path elsewhere -- the crash would land on the reader instead of
+    the setup advice they asked for.
+    """
+    try:
+        return str(path.relative_to(ROOT))
+    except ValueError:
+        return str(path)
 
 
 def check_key(key: str, model: str, base: str) -> tuple[bool, str]:
@@ -97,13 +120,19 @@ def main(argv: list[str] | None = None) -> int:
 
     env = read_env(ENV_PATH)
     key = os.environ.get("NVIDIA_API_KEY", "").strip() or env.get("NVIDIA_API_KEY", "").strip()
+    pinned = env.get("RAG_BACKEND", "").strip()
 
     if args.check or args.backend == "ollama":
         if not key:
-            print("No key in .env. Run `python setup.py` to add one, or")
+            print(f"No key in {display_path(ENV_PATH)}. Run `python setup.py` to add one, or")
             print("`python -m sandbox_engine.query_ui` to use a local model instead.")
             return 1
-    elif not key:
+    elif key:
+        print(f"A key is already in {display_path(ENV_PATH)} "
+              f"(not shown). Pass --check to verify it, or --backend ollama to switch to a")
+        print("local model. Run setup.py again to replace it with a different key.")
+        return 1
+    else:
         print("Get an API key at https://build.nvidia.com\n")
         try:
             key = getpass.getpass("NVIDIA API key (input hidden): ").strip()
@@ -116,13 +145,22 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
     if not looks_like_a_key(key):
-        print(f"That does not look like an NVIDIA key -- expected it to start with 'nvapi-'.")
+        print("That does not look like an NVIDIA key -- expected it to start with 'nvapi-'.")
         print("Nothing was written. Paste the key from https://build.nvidia.com")
         return 1
 
-    backend = args.backend or "nvidia"
-    write_env(ENV_PATH, key, backend)
-    print(f"\nWrote {ENV_PATH.relative_to(ROOT)}  (gitignored, mode 600)")
+    if args.check:
+        # --check only reports. Rewriting here would pin RAG_BACKEND, and a pin
+        # stops the UI falling back to a local model when the key is later gone.
+        restrict(ENV_PATH)
+        print(f"Found a key in {display_path(ENV_PATH)} (not shown)."
+              + (f" It is pinned to RAG_BACKEND={pinned}." if pinned else ""))
+        print(f"Verifying against {args.model} ...")
+    else:
+        backend = args.backend or "auto"
+        write_env(ENV_PATH, key, backend)
+        print(f"\nWrote {display_path(ENV_PATH)}  (gitignored, mode 600)")
+        print(f"  RAG_BACKEND={backend} -- the UI picks a backend from this and your key.")
 
     if args.backend == "ollama":
         print("Pinned to the local model. Start it with:  ollama serve")
@@ -133,7 +171,6 @@ def main(argv: list[str] | None = None) -> int:
         print("    python -m sandbox_engine.query_ui")
         return 0
 
-    print(f"Verifying against {args.model} ...")
     ok, detail = check_key(key, args.model, args.base_url)
     if ok:
         print(f"  key works -- the model replied: {detail!r}\n")
