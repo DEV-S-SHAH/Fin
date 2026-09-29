@@ -7,6 +7,26 @@
 .env.*
 !.env.example
 
+# Ad-hoc launcher and smoke-test scripts, written to get a server up by hand.
+# Two of them carry a real NVIDIA key as a literal in `os.environ[...]` rather
+# than reading `.env`, which is the one thing the rule above cannot catch: a
+# file that is not named like a secret is still a file holding one. Ignored by
+# name so a `git add -A` cannot sweep them in, and left in the working tree
+# because they are still useful locally. Rotate any key that was pasted into
+# one of these.
+start_server*.py
+test_qa.py
+test_*_questions.py
+
+# ── Agent Manager ─────────────────────────────────────────────────────────────
+# `.kilo/worktrees/` holds full git worktree checkouts -- a second copy of every
+# source file, data corpus and UI asset. Nothing in it is unique: it is generated
+# by `agent_manager` and recreated on demand, and a commit that swept it in would
+# duplicate the whole repository inside the repository. `.kilo/.gitignore` already
+# excludes `worktrees/`, but that only protects someone who has Kilo installed,
+# so the rule is repeated here for a plain `git clone`.
+.kilo/
+
 # ── Build artefacts & ephemeral runs ──────────────────────────────────────────
 # Transient staging parquet and scratch databases:
 sandbox_engine/_run/
