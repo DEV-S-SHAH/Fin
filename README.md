@@ -240,12 +240,14 @@ When cold start triggers:
 - **`sandbox_engine/stitch.py`**: Maintains an ephemeral `networkx.DiGraph` overlay, normalizes entities via `ConceptRegistry` and `stable_id`, stitches into the read-only LadybugDB backbone, and deduplicates arcs in memory in < 1.0s.
 - **`sandbox_engine/traversal.py`**: Executes hybrid 2-hop graph traversals navigating both ephemeral overlay and persistent LadybugDB nodes, preventing cycles and outputting deterministic provenance ledgers.
 - **`sandbox_engine/coldstart_synthesis.py`**: Formulates structured 5-section financial investment reports and streams incremental tokens.
-- **`sandbox_engine/query_ui.py` (SSE Streaming & Retrieval Push-down)**: Emits real-time SSE progress events (`routing`, `fetching`, `stitching`, `token`, `done`) and eliminates O(filings × chunks) scans by pushing down Cypher WHERE filters.
+- **`sandbox_engine/background.py`**: Non-blocking `BackgroundIngestQueue` using a bounded ThreadPoolExecutor and thread-safe deduplication to stage full historical ingestion atomically without locking LadybugDB.
+- **`sandbox_engine/community.py`**: NetworkX Louvain modularity clustering generating community partitions, hub node centrality rankings, and analytical briefs.
+- **`sandbox_engine/query_ui.py` (SSE Streaming & Retrieval Push-down)**: Emits real-time SSE progress events (`routing`, `fetching`, `stitching`, `token`, `done`), schedules background ingestion, and eliminates O(filings × chunks) scans by pushing down Cypher WHERE filters.
 
 ## Tests
 
 ```bash
-python -m unittest discover -s tests -p "test_*.py"          # 693 tests
+python -m unittest discover -s tests -p "test_*.py"          # 698 tests
 python -m unittest discover -s sandbox_engine -p "test_*.py" # 112 tests
 ```
 
@@ -264,6 +266,7 @@ Both suites are offline: no network, no key, no database build.
 | `tests/test_tier1_fetch.py` | 7 | SEC runtime fetching SLA, rate limit backoff, section cleaning & token cap |
 | `tests/test_multi_hop_traversal.py` | 4 | Hybrid 2-hop traversal, cycle prevention, provenance ledger formatting |
 | `tests/test_coldstart_latency.py` | 2 | Traversal budget and interactive pipeline streaming SLA |
+| `tests/test_background_community.py` | 5 | Background queue deduplication, atomic staging writes, Louvain community detection |
 | `tests/test_query_ui_transport.py` | 11 | `query_ui` request transport & SSE streaming events |
 | `tests/test_setup.py` | 11 | `setup.py` key handling |
 | `tests/test_ingestion.py` | 4 | Corpus presence — run this first on a new machine |
@@ -314,6 +317,8 @@ To add a company, create its folder and drop filings in. Nothing else to edit.
 | `sandbox_engine/stitch.py` | In-memory overlay graph & backbone stitching (< 1.0s) |
 | `sandbox_engine/traversal.py` | Hybrid 2-hop graph traverser & provenance ledger |
 | `sandbox_engine/coldstart_synthesis.py` | 5-section investment analysis & token streaming |
+| `sandbox_engine/background.py` | Non-blocking background ingestion queue manager |
+| `sandbox_engine/community.py` | Graph Louvain community clustering & brief generator |
 | `sandbox_engine/cli.py` | Typer entry point |
 | `sandbox_engine/EVAL_SET.md` | 30-question eval set and the live defect register |
 | `sandbox_engine/eval_set.py` | EVAL_SET.md as runnable questions; `provenance_match_rate` |

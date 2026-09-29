@@ -58,7 +58,11 @@ from .coldstart_extract import ColdStartExtractor
 from .stitch import InMemoryOverlayGraph, stitch_coldstart_payload
 from .traversal import HybridGraphTraverser
 from .coldstart_synthesis import ColdStartSynthesizer
-#: works in a browser with no internet access; d3 drives the force layout below.
+from .background import BackgroundIngestQueue
+
+background_queue = BackgroundIngestQueue()
+
+#: Frontend libraries served under ``/vendor/``. Vendored locally so the page
 _VENDOR_DIR = Path(__file__).resolve().parent / "static"
 VENDOR: dict[str, bytes] = {}
 for _vendor_name in ("d3.v7.min.js",):
@@ -1735,7 +1739,11 @@ def _ambiguous_response(question: str) -> dict[str, Any]:
 def ask_rag(kg: KnowledgeGraph, question: str) -> dict[str, Any]:
     routing = route_query(question, kg)
     if routing.route == EntityRoute.COLD_START:
-        return _cold_start_response(routing.ticker, question)
+        if routing.ticker:
+            background_queue.enqueue_coldstart_sync(routing.ticker)
+        resp = _cold_start_response(routing.ticker, question)
+        resp["background_task_scheduled"] = True
+        return resp
     if routing.route == EntityRoute.AMBIGUOUS:
         return _ambiguous_response(question)
 
@@ -3924,6 +3932,7 @@ class _Handler(BaseHTTPRequestHandler):
 
             # COLD_START
             ticker = routing.ticker or "UNKNOWN"
+            background_queue.enqueue_coldstart_sync(ticker)
             # 2. Fetching
             self._send_sse("status", {"step": "fetching", "message": f"Fetching SEC filings for {ticker}..."})
             fetcher = SECRuntimeFetcher()
@@ -3950,7 +3959,12 @@ class _Handler(BaseHTTPRequestHandler):
             for token in synthesizer.stream_synthesis(context):
                 self._send_sse("token", {"token": token})
 
-            self._send_sse("done", {"status": "complete", "route": "COLD_START", "latency_ms": round((time.monotonic() - start_time) * 1000, 2)})
+            self._send_sse("done", {
+                "status": "complete",
+                "route": "COLD_START",
+                "latency_ms": round((time.monotonic() - start_time) * 1000, 2),
+                "background_task_scheduled": True,
+            })
         except Exception as exc:
             self._send_sse("error", {"error": str(exc), "step": "failed"})
             self._send_sse("done", {"status": "error", "error": str(exc), "latency_ms": round((time.monotonic() - start_time) * 1000, 2)})

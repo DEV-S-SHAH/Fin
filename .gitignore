@@ -33,6 +33,7 @@ sandbox_engine/_run/
 sandbox_engine/staging_parquet/
 graph.db/
 *.parquet
+data/staging/
 
 # Graph databases are build output, not source: `python -m sandbox_engine
 # --reset` regenerates them from the committed filings in ~10s, and a binary
