@@ -33,6 +33,12 @@ from urllib.parse import parse_qs, urlparse
 import ladybug as lb
 
 from .buffer import NODE_TABLES, REL_TABLES
+from .provenance import (
+    build_evidence,
+    grade_answer,
+    render_gap,
+    serialise_evidence,
+)
 
 #: Frontend libraries served under ``/vendor/``. Vendored locally so the page
 #: works in a browser with no internet access; d3 drives the force layout below.
@@ -644,14 +650,19 @@ MAX_BODY = 128 * 1024
 _CITATION_RE = re.compile(r"\[(E\d+)\]")
 
 ANSWER_SYSTEM = """\
-You answer questions using only a retrieved subgraph from a financial knowledge graph.
+You answer questions using only a tagged evidence block retrieved from financial filings.
 
-You are given entities and relationships, each carrying a bracketed tag like [E1] or [E12].
+Every line of evidence carries a bracketed tag like [E1] or [E12], and a Source showing
+the form and period it came from.
 
 Rules:
-- Use only the supplied context. If it does not contain the answer, say so plainly and state what is missing.
-- Cite every factual claim using bracketed tags like [E1] or [E2] corresponding to the entities or relationships.
-- Financial values in relationships include scale properties: scale=6 means in millions (e.g. 416161.0 scale=6 is $416,161 million USD). State the units clearly.
+- Use only the supplied evidence. If it does not contain the answer, say so plainly and state what is missing.
+- You may ONLY cite tags that already appear in the evidence. Do not invent a tag, and do not cite a tag you were not given.
+- Cite every factual claim using bracketed tags like [E1] or [E2].
+- If you compute a value from cited facts, show the arithmetic so the derivation is visible.
+- Never state a number that is not in the evidence and not derived from it.
+- Do not use outside knowledge. If a fact is not in the evidence, treat it as unknown rather than supplying it.
+- Financial values include scale properties: scale=6 means in millions (e.g. 416161.0 scale=6 is $416,161 million USD). State the units clearly.
 - Answer directly and factually in clean prose or concise bullet points. No preamble.
 """
 
@@ -1249,6 +1260,41 @@ def _unavailable_answer(state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _where_to_look(question: str) -> list[str]:
+    """Pointers for a GAP: where the missing fact would live if it were filed.
+
+    These describe the *shape* of SEC filings, not any one company, so they hold
+    across the corpus. They exist so a GAP names the document a reader should
+    open next, rather than being a bare refusal they have to interpret.
+    """
+    q = (question or "").lower()
+    out: list[str] = []
+    if "product" in q and any(
+        w in q for w in ("region", "geograph", "country", "europe", "china", "japan")
+    ):
+        out.append(
+            "The segment note reports products and geographies as two separate "
+            "tables; there is no product-by-region cross-tab in the corpus, so the "
+            "join this question needs was never filed."
+        )
+    if any(
+        w in q
+        for w in ("will ", "expect", "forecast", "guidance", "next year", "fy2027", "outlook")
+    ):
+        out.append(
+            "Forward-looking statements are not filed historical facts. They would "
+            "appear in an Item 2.02 results exhibit or an Item 7.01 Reg FD exhibit, "
+            "not in the financial statements."
+        )
+    if any(w in q for w in ("market share", "headcount", "employees", "competitor")):
+        out.append(
+            "This is not an SEC-filed fact for this corpus. It would come from a "
+            "non-filing source (an earnings-call transcript, a press report or an "
+            "analyst dataset), which is outside these forms."
+        )
+    return out
+
+
 def ask_rag(kg: KnowledgeGraph, question: str) -> dict[str, Any]:
     state = BACKENDS.resolve()
     if state["backend"] == "none":
@@ -1257,6 +1303,14 @@ def ask_rag(kg: KnowledgeGraph, question: str) -> dict[str, Any]:
 
     t0 = time.perf_counter()
     context_str, nodes, edges, tag_map, seed_ids = retrieve_financial_context(kg, question)
+
+    # Provenance is resolved here, by code, before the model is called: every
+    # retrieved node gets a tag and a Source, and the tags that will be legal to
+    # cite are fixed at this moment. The model can reference a tag; it can never
+    # create one, which is the whole point -- a fabricated figure must not be
+    # able to label itself STATED.
+    evidence = build_evidence(nodes, kg, tag_map, edges)
+    evidence_block = serialise_evidence(evidence)
 
     log.info("Retrieved %d entities and %d relationships for: %s", len(nodes), len(edges), question)
 
@@ -1279,7 +1333,7 @@ def ask_rag(kg: KnowledgeGraph, question: str) -> dict[str, Any]:
             {"role": "system", "content": ANSWER_SYSTEM},
             {
                 "role": "user",
-                "content": f"CONTEXT (retrieved knowledge graph):\n{context_str}\n\nQUESTION: {question}\n\nAnswer using only the context above, citing tags like [E1].",
+                "content": f"CONTEXT (retrieved knowledge graph):\n{evidence_block}\n\nQUESTION: {question}\n\nAnswer using only the evidence above, citing tags like [E1] that appear in it.",
             },
         ],
         "temperature": 0.2,
@@ -1325,6 +1379,12 @@ def ask_rag(kg: KnowledgeGraph, question: str) -> dict[str, Any]:
             "context_edges": len(edges),
             "flow": "",
             "graph": None,
+            "gap": False,
+            "provenance_mix": {},
+            "provenance": [],
+            "invented_tags": [],
+            "ungrounded_figures": [],
+            "violations": [],
         }
 
     # Extract cited tags. The model sometimes writes arrow-style citations
@@ -1335,6 +1395,16 @@ def ask_rag(kg: KnowledgeGraph, question: str) -> dict[str, Any]:
     )
     cited_raw = _CITATION_RE.findall(content_cites)
     used_tags = sorted(set(t for t in cited_raw if t in tag_map), key=lambda x: int(x[1:]))
+
+    # Grade the answer by rule. The model wrote the prose; this decides what it
+    # was actually allowed to say, and it never asks the model. If every
+    # sentence fails, the corpus does not support the answer, so a GAP is
+    # rendered instead of the unsupported prose -- with a pointer to where the
+    # fact would live rather than a bare refusal.
+    graded = grade_answer(content, evidence, question)
+    if content and graded.gap:
+        content = render_gap(question, evidence, _where_to_look(question))
+        used_tags = []
 
     # Flow trace
     flow_lines = [
@@ -1395,6 +1465,22 @@ def ask_rag(kg: KnowledgeGraph, question: str) -> dict[str, Any]:
         "elapsed_sec": round(elapsed, 2),
         "rag_backend": backend,
         "rag_model": state["model"],
+        "gap": graded.gap,
+        "provenance_mix": graded.mix,
+        "provenance": [
+            {
+                "text": v.text,
+                "provenance": v.provenance,
+                "cites": v.cites,
+                "figures": v.figures,
+                "ungrounded": v.ungrounded,
+                "reason": v.reason,
+            }
+            for v in graded.verdicts
+        ],
+        "invented_tags": graded.invented_tags,
+        "ungrounded_figures": graded.ungrounded_figures,
+        "violations": graded.violations(),
     }
 
 
