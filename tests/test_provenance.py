@@ -488,3 +488,56 @@ class EvidenceTagAndGroundingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UnitRestatementTests(unittest.TestCase):
+    """A figure restated in another unit is the cited figure, not a new one.
+
+    Regression: the grader compared numerically with no unit or rounding
+    awareness, so a model that answered correctly, cited the right item and then
+    wrote "($416,161 million), i.e. approximately $416.2 billion" was judged to
+    have fabricated 416.2 and the whole answer was replaced with a GAP. The
+    corpus could not be blamed -- the model was right and the check was wrong.
+    """
+
+    def _evidence(self) -> list[Evidence]:
+        return [
+            ev(
+                "E158",
+                "Net sales FY2025; scale=6; value=416161",
+                source=src(form_type="10-K", section="", item_code=""),
+            )
+        ]
+
+    def test_a_rounded_billion_restatement_is_stated(self):
+        answer = (
+            "Apple's net sales in FY2025 were **$416,161 million** "
+            "(i.e., approximately $416.2 billion) [E158]."
+        )
+        g = grade_answer(answer, self._evidence())
+        self.assertEqual(g.verdicts[0].provenance, STATED, g.verdicts[0].reason)
+        self.assertFalse(g.gap)
+
+    def test_a_trillion_restatement_is_stated(self):
+        g = grade_answer("Net sales were 416,161 million, about 0.4 trillion [E158].",
+                         self._evidence())
+        self.assertFalse(g.gap, [v.reason for v in g.verdicts])
+
+    def test_the_bare_rounded_form_is_stated(self):
+        g = grade_answer("Net sales were $416.2 billion [E158].", self._evidence())
+        self.assertEqual(g.verdicts[0].provenance, STATED, g.verdicts[0].reason)
+
+    def test_a_different_number_in_another_unit_is_still_refused(self):
+        # The rounding allowance must not become a general escape hatch: this
+        # is not 416,161 million in any unit and any precision.
+        g = grade_answer("Net sales were $999.9 billion [E158].", self._evidence())
+        self.assertTrue(g.gap)
+        self.assertEqual(g.verdicts[0].provenance, GAP)
+
+    def test_precision_the_source_cannot_support_is_still_refused(self):
+        g = grade_answer("Net sales were 416.16123 billion [E158].", self._evidence())
+        self.assertTrue(g.gap, [v.reason for v in g.verdicts])
+
+    def test_an_uncited_figure_is_still_refused(self):
+        g = grade_answer("Net sales were 416,161 million.", self._evidence())
+        self.assertTrue(g.gap)

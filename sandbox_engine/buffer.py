@@ -110,7 +110,15 @@ NODE_TABLES: dict[str, tuple[str, ...]] = {
     "Filing": ("id", "form_type", "fiscal_year", "fiscal_period",
                "filing_date", "accession_number", "period_end_date",
                "reporting_lag_in_days", "audit_status"),
-    "Metric": ("id", "canonical_name", "statement_category"),
+    # ``period_code``/``period_start``/``period_end``/``period_days`` describe the
+    # period the value was measured over; ``period_cumulative`` is 1 for a
+    # year-to-date figure and 0 for a discrete quarter or an instant;
+    # ``reported_label`` is the column header as printed. ``period_code`` rather
+    # than ``period_type`` so the blueprint->engine translation in query_ui does
+    # not rewrite it onto the segment edge's ``period`` property.
+    "Metric": ("id", "canonical_name", "statement_category",
+               "period_code", "period_start", "period_end", "period_days",
+               "period_cumulative", "reported_label", "form_type"),
     "Segment": ("name", "segment_type"),
     "Event": ("id", "item_code", "item_title", "summary"),
     "Chunk": ("id", "section", "text"),
@@ -243,6 +251,7 @@ _INT_COLUMNS = frozenset({
     "fiscal_year", "fiscal_year_end_month", "year_disclosed",
     "year_removed", "calendar_year_overlap", "reporting_lag_in_days",
     "char_start", "char_end", "char_count", "scale", "decimals",
+    "period_days", "period_cumulative",
 })
 _DATE_COLUMNS = frozenset({
     "filing_date", "period_start", "period_end", "period_end_date",

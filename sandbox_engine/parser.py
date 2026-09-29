@@ -536,6 +536,109 @@ def duration_code(text: str) -> str:
     return f"{months}M" if months else ""
 
 
+#: Weeks a duration code spans. Filers report *weeks*, not calendar months --
+#: Apple's Q1 is "13 weeks ended", its year "52 weeks ended" -- so 3M is 13
+#: weeks and not "one month x 3". That is what makes the derived start date fall
+#: on the day after the prior period's end: 2025-12-27 back 13 weeks is
+#: 2025-09-28, exactly Apple's FY2026 opening day.
+_DURATION_WEEKS = {"3M": 13, "6M": 26, "9M": 39, "FY": 52}
+
+
+def period_span(duration: str, end: str) -> tuple[str, int]:
+    """``(start_iso, days_covered)`` for a ``<duration>`` ending at *end*.
+
+    The end date is the one the table printed; the start is *derived* from the
+    duration's week count, not invented. An instant -- a balance-sheet date with
+    no duration banner -- has no span, so it returns ``(end, 0)`` and is never
+    treated as cumulative. A period whose header printed no date returns
+    ``("", 0)``: the span is genuinely unknown and the verifier reports it rather
+    than the parser guessing.
+    """
+    match = re.match(r"(\d{4}-\d{2}-\d{2})", str(end or "").strip())
+    if not match:
+        return "", 0
+    days = _DURATION_WEEKS.get(duration, 0) * 7
+    if not days:
+        return match.group(1), 0
+    end_date = dt.date.fromisoformat(match.group(1))
+    return (end_date - dt.timedelta(days=days - 1)).isoformat(), days
+
+
+def fiscal_year_start(start_iso: str, year_end: tuple[int, int] | None) -> str:
+    """First day of the fiscal year that *start_iso* falls in, or ``""``.
+
+    The prior year's close plus one day. ``year_end`` is the filer's own
+    ``dei:CurrentFiscalYearEndDate``; without it the boundary cannot be located
+    and the answer is empty rather than a guess.
+    """
+    if not start_iso or year_end is None:
+        return ""
+    fiscal_year = fiscal_year_for(start_iso, year_end)
+    if fiscal_year is None:
+        return ""
+    month, day = year_end
+    try:
+        prior_close = dt.date(fiscal_year - 1, month, day)
+    except ValueError:
+        return ""
+    return (prior_close + dt.timedelta(days=1)).isoformat()
+
+
+def is_cumulative_period(
+    duration: str, start_iso: str, year_end: tuple[int, int] | None
+) -> bool:
+    """Whether *duration* is a year-to-date figure rather than a single quarter.
+
+    A 6M, 9M or FY column is cumulative by definition. A 3M column is discrete --
+    except in the first quarter, where the quarter *is* the year-to-date and its
+    ``Q1 + Q2 = H1`` pairing is the only reason the chain closes. A first quarter
+    begins within a week of the fiscal-year start; every later quarter begins
+    about 13 weeks in, so a one-week tolerance separates them without depending
+    on the exact weekday the filer closed on.
+    """
+    if duration in ("6M", "9M", "FY"):
+        return True
+    if duration != "3M" or not start_iso:
+        return False
+    fiscal_start = fiscal_year_start(start_iso, year_end)
+    if not fiscal_start:
+        return False
+    delta = abs(
+        (dt.date.fromisoformat(start_iso) - dt.date.fromisoformat(fiscal_start)).days
+    )
+    return delta <= 6
+
+
+def period_metadata(
+    period_key: str, year_end: tuple[int, int] | None, form_type: str = ""
+) -> dict[str, Any]:
+    """The period columns for a metric node, from its canonical period key.
+
+    A synthesised segment host has only ``<duration>-<date>`` to go on, so this
+    recovers the same fields a statement line carries. An annual key whose
+    header printed only a year (``FY2025``) has no date to recover and yields
+    empty span fields, which the verifier reports rather than the parser
+    inventing a date.
+    """
+    code, end = "", ""
+    match = re.match(
+        r"^(?:(3M|6M|9M|FY)-)?(\d{4}-\d{2}-\d{2})$", str(period_key or "")
+    )
+    if match:
+        code = match.group(1) or ""
+        end = match.group(2)
+    start, days = period_span(code, end)
+    return {
+        "period_code": code,
+        "period_start": start,
+        "period_end": end,
+        "period_days": days,
+        "period_cumulative": 1 if is_cumulative_period(code, start, year_end) else 0,
+        "reported_label": "",
+        "form_type": form_type,
+    }
+
+
 @dataclass
 class PeriodGroup:
     """A period and the columns that hold its values.
@@ -543,12 +646,19 @@ class PeriodGroup:
     ``duration`` comes from the banner row *above* the dates, and it is not
     decoration. See hazard 1 in the module docstring: without it a 10-Q's 3M and
     6M columns collapse into one metric.
+
+    ``start``/``days``/``cumulative`` are derived from the duration and end date
+    (see :func:`period_span` and :func:`is_cumulative_period`) so a consumer does
+    not have to re-infer the span from the period string.
     """
 
     label: str
     columns: list[int]
     duration: str = ""
     year_end: tuple[int, int] | None = None
+    start: str = ""
+    days: int = 0
+    cumulative: bool = False
 
     @property
     def key(self) -> str:
@@ -638,6 +748,10 @@ def detect_period_groups(
     for group in best:
         group.duration = _duration_above(frame, group, best_row)
         group.year_end = year_end
+        group.start, group.days = period_span(group.duration, group.key)
+        group.cumulative = is_cumulative_period(
+            group.duration, group.start, group.year_end
+        )
     return best_row, best
 
 
@@ -707,13 +821,28 @@ def _label_of(row: Sequence[Any]) -> str:
 
 @dataclass(frozen=True)
 class TableCell:
-    """One measured value: a row label, a period, and a number."""
+    """One measured value: a row label, a period, and a number.
+
+    The first five fields are the measurement. The rest describe the *period* it
+    was measured over, copied from the :class:`PeriodGroup` so the period's
+    identity travels with the value instead of being re-parsed from a string
+    later: ``reported_label`` is the column header as printed, ``period_code``
+    the duration (``"3M"``/``"FY"``/``""``), ``period_start``/``period_end`` the
+    derived span, ``days_covered`` its length in days, and ``cumulative`` whether
+    it is a year-to-date figure.
+    """
 
     label: str
     period: str
     number: Number
     canonical_name: str
     category: str | None
+    reported_label: str = ""
+    period_code: str = ""
+    period_start: str = ""
+    period_end: str = ""
+    days_covered: int = 0
+    cumulative: bool = False
 
 
 def _number_in_group(values: Sequence[Any], columns: Sequence[int]) -> Number | None:
@@ -782,6 +911,12 @@ def extract_cells(
                         number=number,
                         canonical_name=canonical,
                         category=category,
+                        reported_label=group.label,
+                        period_code=group.duration,
+                        period_start=group.start,
+                        period_end=group.key if _ISO_DATE.fullmatch(group.key) else "",
+                        days_covered=group.days,
+                        cumulative=group.cumulative,
                     )
                 )
 
@@ -1768,6 +1903,13 @@ class FilingParser:
                     "id": node_id,
                     "canonical_name": name,
                     "statement_category": cell.category or category or "other",
+                    "period_code": cell.period_code,
+                    "period_start": cell.period_start,
+                    "period_end": cell.period_end,
+                    "period_days": cell.days_covered,
+                    "period_cumulative": 1 if cell.cumulative else 0,
+                    "reported_label": cell.reported_label,
+                    "form_type": metadata.get("form_type", ""),
                 }
                 candidates.append(
                     {
@@ -2063,6 +2205,8 @@ class FilingParser:
         # reported the measure, ``extract_metrics`` has attached the real edge
         # and a second one would double the figure.
         synthesised: set[str] = set()
+        year_end = self._year_end(raw)
+        form_type = metadata.get("form_type", "")
         for edge in segment_edges:
             host = edge["metric"]
             if host not in metrics:
@@ -2076,6 +2220,7 @@ class FilingParser:
                         if PERIOD_SCOPED_METRICS else measure
                     ),
                     "statement_category": category,
+                    **period_metadata(edge["period"], year_end, form_type),
                 }
 
         # A synthesised host is a Metric nothing can reach until something owns
@@ -2092,6 +2237,7 @@ class FilingParser:
                     if PERIOD_SCOPED_METRICS else total["measure"]
                 ),
                 "statement_category": total["category"],
+                **period_metadata(total["period"], year_end, form_type),
             })
             metric_edges.append({
                 "metric": total["metric"],

@@ -196,6 +196,45 @@ def _figure_keys(text: str) -> set[float]:
     return keys
 
 
+_SCALE_STEPS = (1.0, 1e3, 1e6, 1e9)
+
+
+def _restates(figure: str, grounded: set[float]) -> bool:
+    """Is ``figure`` a rounded restatement of a grounded figure?
+
+    A filed figure is reported in the unit the filing used, and a model
+    restating it in a friendlier unit -- 416,161 million as "$416.2 billion" --
+    is repeating the cited fact, not inventing one. Compared numerically with no
+    unit or rounding awareness, that reads as a fabrication and the whole
+    answer is thrown away, which is worse than saying nothing: the model was
+    right and cited the right item.
+
+    Matched on purpose only when the grounded value rounds to the figure *at
+    the precision the figure itself shows*, so "$416.2 billion" is supported by
+    416161 while "$999.9 billion" is not, and a claimed precision the source
+    cannot support ("416.16123 billion") is still refused.
+    """
+    value = normalise_number(figure)
+    if value is None or not grounded:
+        return False
+    core = figure.strip().rstrip("%").replace(",", "")
+    if "." in core:
+        decimals = len(core.split(".", 1)[1])
+    else:
+        decimals = 0
+    if decimals > 4:
+        # More precision than a filing-scale restatement can justify.
+        return False
+    for base in grounded:
+        for step in _SCALE_STEPS:
+            try:
+                if round(base / step, decimals) == value:
+                    return True
+            except (OverflowError, ValueError):
+                continue
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Source
 # ---------------------------------------------------------------------------
@@ -716,7 +755,9 @@ def grade_answer(
         cited_ground = _figure_keys(cited_text) | grounded if known else set()
         ungrounded = [
             f for f in figures
-            if (normalise_number(f) is not None and normalise_number(f) not in cited_ground)
+            if (normalise_number(f) is not None
+                and normalise_number(f) not in cited_ground
+                and not _restates(f, cited_ground))
         ]
         verdicts.append(
             Verdict(
