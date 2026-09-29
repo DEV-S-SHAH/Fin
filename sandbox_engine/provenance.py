@@ -50,6 +50,12 @@ __all__ = [
     "extract_figures",
     "citation_tags",
     "LEGAL_NAME_NOISE",
+    "issuer_forms",
+    "issuer_in_text",
+    "SUPPORTED",
+    "QUALIFIED",
+    "REFUSED",
+    "provenance_verdict",
 ]
 
 STATED = "STATED"
@@ -59,6 +65,14 @@ EXTERNAL = "EXTERNAL"
 GAP = "GAP"
 
 _ALL_TAGS = (STATED, DERIVED, INFERRED, EXTERNAL, GAP)
+
+#: The three states an *answer* can be in, as distinct from the five states a
+#: *sentence* can be in. An answer is a collection of sentences, and the
+#: collection has to be reduced to one thing a reader can be told, because a
+#: reader cannot act on a histogram.
+SUPPORTED = "SUPPORTED"
+QUALIFIED = "QUALIFIED"
+REFUSED = "REFUSED"
 
 # ---------------------------------------------------------------------------
 # Citations
@@ -354,12 +368,29 @@ class Evidence:
 #: is written -- so an issuer is matched on the distinctive remainder, with the
 #: same suffixes ``query_ui`` drops when it reads a question. Shared rather than
 #: repeated, for the same reason the citation grammar is: two copies of one
-#: grammar is how the two readers of a citation stopped agreeing. A remainder
-#: under four characters is never an issuer: a two- or three-letter fragment is
-#: far more likely to be an ordinary word than a company name.
+#: grammar is how the two readers of a citation stopped agreeing.
+#:
+#: A remainder of four characters or more is matched case-insensitively, because
+#: at that length an ordinary word collision is not a practical worry. Below
+#: four it is matched **case-sensitively** instead, which is what keeps short
+#: issuer names honest without exempting them: "3M", "IBM" and "GE" are written
+#: that way and are written nowhere else, whereas dropping the length floor
+#: entirely would let the remainder of any three-letter name -- "GE" reduced from
+#: "General Electric", or a sentence containing the word "net" -- match every
+#: time it appeared. An issuer whose only distinct name is a lowercase word is
+#: not detectable by name at all, and that is a limit worth stating rather than
+#: papering over.
 LEGAL_NAME_NOISE = re.compile(
-    r"[,\.]|\s+(?:inc|corporation|corp|ltd|plc|co|company|holdings)\b"
+    r"[,\.]|\s+(?:inc|corporation|corp|ltd|plc|co|company|holdings)\b",
+    # Case-insensitive because the input is no longer lowercased before the
+    # split: a candidate has to keep the casing it was filed with, or a short
+    # alias has nothing left to be matched case-sensitively on. The pattern has
+    # to see through "Apple Inc" as well as "apple inc" for the same reason.
+    re.IGNORECASE,
 )
+
+#: Below this length an alias is matched against the text's original casing.
+_ALIAS_CASE_SENSITIVE_BELOW = 4
 
 
 def _issuer_of(ev: Evidence) -> str:
@@ -376,17 +407,76 @@ def _issuer_of(ev: Evidence) -> str:
     return src.ticker
 
 
-def _issuer_forms(name: str) -> list[str]:
-    """The spellings a sentence may use to refer to *name*."""
+def _alias_case_sensitive(form: str) -> bool:
+    return len(form) < _ALIAS_CASE_SENSITIVE_BELOW
+
+
+@dataclass(frozen=True)
+class _Alias:
+    """One spelling the corpus knows an issuer by."""
+
+    form: str          # lowercased, for a case-insensitive match
+    originals: frozenset[str]   # as written, for a short case-sensitive match
+    issuers: frozenset[str]
+
+    @property
+    def case_sensitive(self) -> bool:
+        return _alias_case_sensitive(self.form)
+
+
+def issuer_in_text(haystack: str, alias: _Alias, short_names: bool = True) -> bool:
+    """Whether *haystack* refers to *alias*, on word boundaries.
+
+    A long alias is matched case-insensitively, because at four characters and
+    up an ordinary-word collision is not a practical worry and a reader who
+    writes "ibm" means IBM. A short one is matched against the casing it was
+    written with, which is the only thing that distinguishes "3M" from a word.
+
+    ``short_names=False`` restores the length floor -- a short alias is skipped
+    entirely rather than matched case-sensitively, which is the old behaviour and
+    the reason "3M miles" does not scope a question to 3M. The two readers of an
+    issuer name want opposite policies, and the difference is not a detail:
+
+    * The **grader** reads an answer, which is prose about companies, and a
+      short alias matching is a net win -- it catches a real misattribution to
+      a filer whose only distinct name is short.
+    * **Retrieval scoping** reads a question, and "traveled 3M miles" is a
+      question. Scoping that to 3M would pull the wrong filer into the prompt,
+      so a reader of a question does not take short names.
+
+    So the grader passes ``True`` and ``query_ui`` passes ``False``, and both
+    keep their own reason for it rather than one of them being wrong.
+    """
+    if short_names and alias.case_sensitive:
+        needle = alias.originals
+        subject = haystack
+    else:
+        if alias.case_sensitive:
+            # Below the floor and the reader does not take short names.
+            return False
+        needle = (alias.form,)
+        subject = haystack.lower()
+    return any(
+        re.search(rf"(?<![A-Za-z0-9]){re.escape(n)}(?![A-Za-z0-9])", subject)
+        for n in needle
+    )
+
+
+def issuer_forms(name: str) -> list[str]:
+    """The spellings a sentence may use to refer to *name*, as written.
+
+    The case is kept: a short alias is matched case-sensitively, so lowercasing
+    here would throw away the only thing that tells "3M" from an ordinary word.
+    """
     out: list[str] = []
-    for candidate in LEGAL_NAME_NOISE.split(str(name or "").lower()):
+    for candidate in LEGAL_NAME_NOISE.split(str(name or "").strip()):
         candidate = candidate.strip()
-        if len(candidate) >= 4 and candidate not in out:
+        if candidate and candidate.lower() not in {c.lower() for c in out}:
             out.append(candidate)
     return out
 
 
-def _issuer_index(evidence: Iterable[Evidence]) -> dict[str, set[str]]:
+def _issuer_index(evidence: Iterable[Evidence]) -> dict[str, _Alias]:
     """Every spelling the corpus knows an issuer by -> the issuers claiming it.
 
     Read off the Sources rather than off a hard-coded list of companies, so it
@@ -394,8 +484,17 @@ def _issuer_index(evidence: Iterable[Evidence]) -> dict[str, set[str]]:
     the two spellings of one issuer meet: its key is the ticker and its label
     is the legal name, so "apple" and "AAPL" resolve to the same issuer without
     anything having to parse the evidence text.
+
+    **The index is only as complete as the evidence.** The legal-name spellings
+    come from ``Company`` lines, and nothing else in the graph carries one: a
+    metric line knows the filer's ticker, not the company. So a block with no
+    Company evidence cannot name an issuer, cannot detect a misattribution, and
+    gives no sign of it. Retrieval always includes the Company nodes, which is
+    what makes that safe today; the dependency is real and is worth a test of
+    its own rather than an assumption.
     """
-    index: dict[str, set[str]] = {}
+    originals: dict[str, set[str]] = {}
+    owners: dict[str, set[str]] = {}
     for ev in evidence:
         src = ev.source
         issuer = _issuer_of(ev)
@@ -408,23 +507,79 @@ def _issuer_index(evidence: Iterable[Evidence]) -> dict[str, set[str]]:
             # same issuer by construction.
             names = (src.ticker, src.cik)
         for name in names:
-            for form in _issuer_forms(name):
-                index.setdefault(form, set()).add(issuer)
-    return index
+            for spelling in issuer_forms(name):
+                key = spelling.lower()
+                originals.setdefault(key, set()).add(spelling)
+                owners.setdefault(key, set()).add(issuer)
+    return {
+        key: _Alias(
+            form=key,
+            originals=frozenset(originals[key]),
+            issuers=frozenset(owners[key]),
+        )
+        for key in originals
+    }
 
 
-def _issuers_named(sentence: str, index: dict[str, set[str]]) -> set[str]:
+def _issuers_named(sentence: str, index: dict[str, _Alias]) -> set[str]:
     """The known issuers *sentence* refers to, by name or by ticker.
 
-    Matched on word boundaries, so "us" never fires inside "because" and a
+    On word boundaries, so "us" never fires inside "because" and a
     ticker-shaped fragment of a longer word is not an issuer.
     """
-    low = sentence.lower()
     named: set[str] = set()
-    for form, issuers in index.items():
-        if re.search(rf"(?<![a-z0-9]){re.escape(form)}(?![a-z0-9])", low):
-            named |= issuers
+    for alias in index.values():
+        if issuer_in_text(sentence, alias):
+            named |= alias.issuers
     return named
+
+
+def _misattribution(
+    sentence: str,
+    cited: list[str],
+    by_tag: dict[str, Evidence],
+    index: dict[str, set[str]],
+    question_issuers: set[str],
+) -> list[str]:
+    """Issuers a sentence credits a cited figure to that the cited sources are
+    not filed by.
+
+    Two ways to get this wrong, and the first one is the easier to commit.
+
+    **Naming the wrong issuer** is obvious: "Microsoft's net sales were
+    416,161 [E1]" where E1 is Apple's line. That is caught by comparing what the
+    sentence names against what the cited evidence carries.
+
+    **Naming no issuer at all** reads as harmless and is the actual hole. "Net
+    sales were 416,161 million [E1]" states a figure off Apple's line and
+    attributes it to nobody, so the comparison finds nothing to compare. A
+    reader takes it to be about whatever the question was about -- so the
+    question's own issuers are the comparison. If the question names an issuer
+    the cited evidence is not filed by, a figure-carrying sentence that names
+    no issuer is being handed to that reader as an answer about them. This is
+    the D-a5 shape: the corpus cannot support the comparison, and the sentence
+    that appears to supply it is the failure.
+
+    Returns ``[]`` when there is nothing to compare against, which is the case
+    whenever the cited evidence names no filer at all -- an untraced line says
+    nothing about who filed it, and a claim about a company the block never
+    mentions is already refused for having no figure.
+    """
+    cited_issuers = {
+        issuer for issuer in (_issuer_of(by_tag[c]) for c in cited) if issuer
+    }
+    if not cited_issuers:
+        return []
+    named = _issuers_named(sentence, index)
+    if named:
+        return sorted(named - cited_issuers)
+    if not question_issuers:
+        return []
+    # A sentence that asserts a figure, names no issuer, and sits under a
+    # question about an issuer the evidence is not filed by.
+    if not extract_figures(sentence):
+        return []
+    return sorted(question_issuers - cited_issuers)
 
 
 @dataclass
@@ -479,6 +634,57 @@ class GradedAnswer:
                 + ", ".join(uniq)
             )
         return out
+
+    @property
+    def verdict(self) -> str:
+        """The answer as one of :data:`SUPPORTED`, :data:`QUALIFIED`, :data:`REFUSED`."""
+        return provenance_verdict(self)
+
+
+def provenance_verdict(graded: GradedAnswer) -> str:
+    """Reduce a graded answer to the one thing a reader can be told.
+
+    The grader produces a verdict per sentence. A reader cannot act on a
+    histogram, and something has to reduce them -- and it has to be this
+    module, because every consumer needs the same reduction and a caller that
+    derives its own gets a different answer.
+
+    **Refusal dominates.** An answer with one ``GAP`` sentence among nine
+    ``STATED`` ones is :data:`REFUSED`, not :data:`QUALIFIED`. A partial pass is
+    the failure mode this whole module exists to prevent: the reader takes the
+    nine good sentences and misses the one that was invented. So the refusal
+    conditions are checked first and nothing weakens them:
+
+    * any violation -- an ungrounded figure, a misattributed issuer, a tag
+      that was never issued;
+    * any single sentence graded :data:`GAP`. Note that this is not the same as
+      ``graded.gap``, which is true only when *every* sentence failed. Reading
+      the two as one is the hole this had on its first implementation: an
+      answer of nine ``STATED`` sentences and one ``GAP`` sentence reports
+      ``gap=False``, and the mixed case -- the case this rule exists for --
+      sails through as supported.
+    * no verdicts at all, which is what an empty answer is. An empty answer is
+      not a pass by default; defaulting a missing judgement to the best
+      outcome is the bug this function exists to stop.
+
+    :data:`QUALIFIED` is what is left when the answer holds up but part of it
+    is hedged (:data:`INFERRED`) or reaches past the filings
+    (:data:`EXTERNAL`). Nothing failed, and the reader should still know which
+    part did not come straight from a cited fact.
+
+    :data:`SUPPORTED` means every sentence is :data:`STATED` or
+    :data:`DERIVED` -- asserted, and shown arithmetic over cited facts.
+    """
+    if not graded.verdicts:
+        # An answer the grader never judged cannot be reported as supported.
+        return REFUSED
+    if graded.violations():
+        return REFUSED
+    if any(v.provenance == GAP for v in graded.verdicts):
+        return REFUSED
+    if any(v.provenance in (INFERRED, EXTERNAL) for v in graded.verdicts):
+        return QUALIFIED
+    return SUPPORTED
 
 
 # ---------------------------------------------------------------------------
@@ -886,19 +1092,26 @@ def grade_answer(
     applied to each sentence:
 
     1. cites a tag that was never issued      -> GAP (it is citing fiction)
-    2. outside-corpus markers                  -> EXTERNAL
-    3. a figure in it that is in no cited fact, and no arithmetic shown
-                                                -> GAP (fabrication)
-    4. names an issuer no cited source was filed by
+    2. names an issuer no cited source was filed by, whether it names the wrong
+       one or names none under a question about another
                                                 -> GAP (misattribution)
+    3. outside-corpus markers                  -> EXTERNAL
+    4. a figure in it that is in no cited fact, and no arithmetic shown
+                                                -> GAP (fabrication)
     5. arithmetic shown over cited facts       -> DERIVED
     6. cites real evidence and asserts a fact  -> STATED
     7. hedged, cites nothing                   -> INFERRED, but only if a STATED
                                                   sentence precedes it; else GAP
     8. nothing supports it                     -> GAP
+
+    Misattribution is checked before the outside-corpus markers rather than
+    after: "Currently, Microsoft's net sales were 416,161 [E1]" carries a claim
+    about a filer the cited line is not filed by, and reading that as merely
+    EXTERNAL lets it through.
     """
     by_tag = {ev.tag: ev for ev in evidence}
     issuers = _issuer_index(evidence)
+    question_issuers = _issuers_named(question or "", issuers)
 
     # Pass 1: provisional verdicts, so rule 7 can see whether a STATED sentence
     # exists to lean on.
@@ -935,12 +1148,14 @@ def grade_answer(
         # one, read off a real line -- so a sentence that names an issuer the
         # cited sources were not filed by is refused on its own account, even
         # though the number checks out. Only assessed when the cited evidence
-        # actually names a filer: an untraced line says nothing about who
-        # filed it, and a claim about a company the block never mentions is
-        # already refused for having no figure or no citation.
-        misattributed: list[str] = []
-        if cited_issuers:
-            misattributed = sorted(_issuers_named(sentence, issuers) - cited_issuers)
+        # A figure check cannot see the worst error there is. Apple's net sales
+        # restated as Microsoft's is not an ungrounded number -- it is a real
+        # one, read off a real line -- so attribution is its own rule, and it
+        # catches both naming the wrong issuer and naming none at all under a
+        # question about a different one.
+        misattributed = _misattribution(
+            sentence, known, by_tag, issuers, question_issuers
+        )
         verdicts.append(
             Verdict(
                 text=sentence,
@@ -961,6 +1176,21 @@ def grade_answer(
             v.provenance = GAP
             v.reason = "cites a tag that was never issued"
             continue
+        if v.misattributed:
+            # Before the outside-corpus markers and before anything that would
+            # launder it. A correct figure on the wrong filer is still the wrong
+            # filer: neither shown arithmetic nor a real tag nor a passing
+            # "currently" makes it STATED, DERIVED, or EXTERNAL.
+            cited_by = sorted({_issuer_of(by_tag[c]) for c in v.cites if c in by_tag} - {""})
+            v.provenance = GAP
+            v.reason = (
+                "attributed to "
+                + ", ".join(v.misattributed)
+                + ", which no cited source was filed by (cited: "
+                + ", ".join(cited_by)
+                + ")"
+            )
+            continue
         if _EXTERNAL_MARKERS.search(s):
             v.provenance = EXTERNAL
             v.reason = "asserts something outside the filed corpus"
@@ -979,21 +1209,6 @@ def grade_answer(
         if v.ungrounded and shows_arith and not v.cites:
             v.provenance = GAP
             v.reason = "arithmetic asserted over no cited fact"
-            continue
-        if v.misattributed:
-            # Checked after the figure rules and before the ones that would
-            # launder it: a correct figure on the wrong issuer is still the
-            # wrong issuer, and neither shown arithmetic nor a real tag makes
-            # it STATED or DERIVED.
-            cited_by = sorted({_issuer_of(by_tag[c]) for c in v.cites if c in by_tag} - {""})
-            v.provenance = GAP
-            v.reason = (
-                "attributed to "
-                + ", ".join(v.misattributed)
-                + ", which no cited source was filed by (cited: "
-                + ", ".join(cited_by)
-                + ")"
-            )
             continue
         if shows_arith and v.cites:
             v.provenance = DERIVED
