@@ -544,19 +544,14 @@ def _read_csv(path: Any, columns: Sequence[str], header: bool = True) -> pa.Tabl
         rows = list(csv.reader(handle))
     if header and rows:
         rows = rows[1:]
-    try:
-        data = {
-            name: [row[i] if i < len(row) else "" for row in rows]
-            for i, name in enumerate(columns)
-        }
-    except IndexError:  # pragma: no cover - rows are padded above
-        raise ValueError(f"{path} has no column {i + 1} of {len(columns)}") from None
+    data = {
+        name: [row[i] if i < len(row) else "" for row in rows]
+        for i, name in enumerate(columns)
+    }
     return pa.table({name: pa.array(values, type=pa.string()) for name, values in data.items()})
 
 
 def _rows_of(conn: Any, query: str, params: Mapping[str, Any] | None = None) -> Iterator[dict[str, Any]]:
-    """Yield rows as dicts without buffering the whole result."""
-
     """Yield rows as dicts without buffering the whole result."""
     result = conn.execute(query, dict(params) if params else None)
     if isinstance(result, list):

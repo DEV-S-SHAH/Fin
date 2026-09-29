@@ -227,6 +227,72 @@ class NegativeControlTests(unittest.TestCase):
             )
 
 
+class NegativeControlGradingTests(unittest.TestCase):
+    """A negative control has to be able to fail.
+
+    The control exists to catch a system that answers a question the corpus does
+    not cover. If the harness cannot tell a refusal from a server that never
+    answered, the control cannot fail, and the run reports a clean sweep having
+    measured nothing -- which is the failure D5 was written about, reproduced
+    in the harness meant to replace it.
+    """
+
+    def test_a_dead_backend_is_an_error_not_a_refusal(self):
+        # An HTTP 500, a timeout, a refused connection: `ask` reports it in the
+        # body and the empty answer it leaves behind has no citations, which
+        # without the error flag is the exact shape of a correct refusal.
+        for error in ("HTTP 500: Internal Server Error", "timed out", ""):
+            with self.subTest(error=error):
+                verdict, note = grade(None, True, "", False, error)
+                self.assertEqual(verdict, "ERROR", note)
+
+    def test_an_empty_answer_with_no_error_is_still_an_error(self):
+        # Belt and braces for the same hole: whatever produced no text, an empty
+        # answer is not evidence of a refusal.
+        verdict, _ = grade(None, True, "", False, "empty answer")
+        self.assertEqual(verdict, "ERROR")
+
+    def test_a_real_refusal_still_passes(self):
+        for text in (
+            "That is not in the corpus.",
+            "I cannot determine that from the filings.",
+            "The corpus does not include it.",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(grade(None, True, text, True)[0], "PASS", text)
+        # And an ungrounded answer needs no phrasing at all.
+        self.assertEqual(grade(None, True, "Tesla was $80B.", False)[0], "PASS")
+
+    def test_a_hedge_does_not_launder_a_fabricated_figure(self):
+        # The refusal phrase is real, but it is in a trailing clause and the
+        # answer leads with a number. A phrase search alone waves this through,
+        # which is the whole reason the figure is checked: a refusal carries no
+        # number.
+        verdict, note = grade(
+            None, True,
+            "Tesla's 2025 revenue was $97,690M, though I cannot determine that.",
+            True,
+        )
+        self.assertEqual(verdict, "FAIL", note)
+        self.assertIn("figure", note)
+
+    def test_a_figure_free_refusal_naming_a_company_still_passes(self):
+        # A refusal that mentions the company and a fiscal year must not be
+        # failed for it, or the check would be unusable: "no" is the answer.
+        self.assertEqual(
+            grade(None, True, "Tesla's 2025 revenue is not in the corpus.", True)[0],
+            "PASS",
+        )
+
+    def test_the_figure_test_ignores_structural_numbers(self):
+        # "fiscal 2025" and "the 10-K" are not assertions, and failing a refusal
+        # for containing one would make every negative control unpassable.
+        from sandbox_engine.qa_eval import asserts_a_figure
+
+        self.assertFalse(asserts_a_figure("Not disclosed in the FY2025 10-K."))
+        self.assertTrue(asserts_a_figure("It was $97,690M."))
+
+
 class GradeTests(unittest.TestCase):
     """The two verdicts, and the asymmetry that made the bad control dangerous."""
 
