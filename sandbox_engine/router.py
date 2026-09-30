@@ -188,9 +188,16 @@ def _normalise_for_match(text: str) -> str:
 
     The padding is what makes substring matching safe: without it, "jp morgan"
     would match inside "notjp morganx", and "mac" inside "machine".
+
+    The whitespace collapse is a named local rather than a second substitution
+    inside the f-string: a backslash in an f-string expression is PEP 701 and
+    needs Python 3.12, and this file is imported by the test suite, so on 3.11
+    it was a SyntaxError that stopped thirteen test modules collecting at all.
+    Same result either way.
     """
     norm = re.sub(r"[^a-z0-9\s]", " ", text.lower())
-    return f" {re.sub(r'\s+', ' ', norm).strip()} "
+    collapsed = re.sub(r"\s+", " ", norm).strip()
+    return f" {collapsed} "
 
 
 def resolve_company_name(query: str) -> tuple[Optional[str], Optional[str]]:
