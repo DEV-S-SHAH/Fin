@@ -31,11 +31,6 @@
 
   <!-- ── topbar ────────────────────────────────────────────────────────── -->
   <header class="topbar">
-    <button id="explorer-toggle" class="btn btn--ghost btn--icon explorer-toggle" aria-expanded="false" aria-controls="explorer" title="Toggle entity explorer">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 6h16M4 12h10M4 18h13" stroke-linecap="round"/></svg>
-      <span class="sr-only">Toggle entity explorer</span>
-    </button>
-
     <div class="brand">
       <span class="brand__mark" aria-hidden="true">
         <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.9" stroke-linecap="round">
@@ -66,11 +61,6 @@
         <span class="sr-only">Open the command palette</span>
       </button>
 
-      <div class="search" style="width: min(30vw, 260px)">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5" stroke-linecap="round"/></svg>
-        <input id="topbar-search" class="input" type="search" placeholder="Filter entities" autocomplete="off" aria-label="Filter entities">
-      </div>
-
       <label class="sr-only" for="hops">Traversal depth</label>
       <select id="hops" class="select" style="width: auto" title="Traversal depth in hops">
         <option value="1">1 hop</option>
@@ -93,57 +83,9 @@
   <!-- ── workspace ─────────────────────────────────────────────────────── -->
   <main class="workspace" id="workspace">
 
-    <!-- left: entity explorer -->
-    <aside class="panel panel--explorer" id="explorer" aria-label="Entity explorer">
-      <div class="panel__head">
-        <h2 class="panel__title">Entities</h2>
-        <span class="panel__sub" id="entity-count">—</span>
-        <div class="topbar__spacer"></div>
-        <button id="explorer-close" class="btn btn--ghost btn--icon btn--sm explorer-toggle" title="Close">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke-linecap="round"/></svg>
-          <span class="sr-only">Close the explorer</span>
-        </button>
-      </div>
-
-      <div style="padding: var(--sp-3) var(--sp-4) 0">
-        <div class="search">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5" stroke-linecap="round"/></svg>
-          <input id="entity-search" class="input" type="search" placeholder="Name, type or text" autocomplete="off" aria-label="Filter entities by name or type">
-          <button id="entity-clear" class="search__clear" hidden title="Clear">
-            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke-linecap="round"/></svg>
-            <span class="sr-only">Clear the filter</span>
-          </button>
-        </div>
-      </div>
-
-      <div class="facets" id="facets" role="group" aria-label="Filter by entity type"></div>
-
-      <div class="panel__body">
-        <ul class="entity-list" id="entity-list" tabindex="0" aria-label="Entity list"></ul>
-      </div>
-
-      <div class="panel__foot">
-        <div style="display: flex; gap: var(--sp-2)">
-          <button id="show-all" class="btn btn--primary" style="flex: 1">Show whole graph</button>
-          <button id="clear-focus" class="btn" title="Clear the citation focus">Clear</button>
-        </div>
-        <div style="display: flex; align-items: center; gap: var(--sp-2); margin-top: var(--sp-2)">
-          <label class="field__label" for="graph-limit" style="margin: 0">Nodes</label>
-          <select id="graph-limit" class="select" style="width: auto">
-            <option value="60">60</option>
-            <option value="150" selected>150</option>
-            <option value="300">300</option>
-            <option value="500">500</option>
-          </select>
-          <div class="topbar__spacer"></div>
-          <span class="chip" id="model-chip" title="Answering model and backend">
-            <span class="status-dot" id="model-dot"></span><span id="model-label">model</span>
-          </span>
-        </div>
-      </div>
-    </aside>
-
-    <div class="splitter splitter--left" id="split-left" role="separator" aria-orientation="vertical" aria-label="Resize the entity explorer" tabindex="0"></div>
+    <!-- The graph takes the left of the window and the question and answer the
+         right. There is no entity list panel: searching is done from the box
+         floating over the graph it searches. -->
 
     <!-- centre: graph -->
     <section class="panel panel--graph graph-panel" id="graph-panel" aria-label="Knowledge graph">
@@ -173,8 +115,46 @@
         </button>
       </div>
 
+      <!-- Entity search, sitting inside the graph it searches.
+           Collapsed it is a single text box over the canvas. Focus or typing
+           opens the matches beneath it, and choosing one centres that entity in
+           the graph and collapses the box again, so nothing stays between the
+           reader and the thing they just asked for. -->
+      <div class="graph-search" id="graph-search">
+        <div class="search">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5" stroke-linecap="round"/></svg>
+          <input id="entity-search" class="input" type="search" placeholder="Find an entity" autocomplete="off"
+            aria-label="Find an entity in the graph" role="combobox" aria-expanded="false"
+            aria-controls="entity-list" aria-autocomplete="list">
+          <button id="entity-clear" class="search__clear" hidden title="Clear">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke-linecap="round"/></svg>
+            <span class="sr-only">Clear the search</span>
+          </button>
+        </div>
+
+        <div class="graph-search__panel" id="entity-results" hidden>
+          <p class="graph-search__count" id="entity-count" aria-live="polite"></p>
+          <ul class="entity-list" id="entity-list" role="listbox" aria-label="Matching entities"></ul>
+
+          <div class="graph-search__foot">
+            <button id="show-all" class="btn btn--ghost btn--sm" title="Show the whole graph again">Whole graph</button>
+            <label class="field__label graph-search__label" for="graph-limit">Nodes</label>
+            <select id="graph-limit" class="select" style="width: auto">
+              <option value="60">60</option>
+              <option value="150" selected>150</option>
+              <option value="300">300</option>
+              <option value="500">500</option>
+            </select>
+            <button id="clear-focus" class="btn btn--ghost btn--sm" hidden
+              title="Stop glowing the cited entities and show the whole neighbourhood">Clear focus</button>
+          </div>
+        </div>
+      </div>
+
       <div class="graph-legend" id="legend" aria-label="Entity types"></div>
       <p class="graph-hint" id="graph-hint">Drag a node to move it · click to focus · scroll to zoom · drag the background to pan</p>
+      <span class="chip chip--ok chip--dot graph-cited" id="graph-cited" hidden
+        title="Only these entities glow, and only these relationships are drawn solid — everything else has receded to context.">cited by this answer</span>
       <span class="chip graph-count" id="graph-count">0 nodes</span>
       <div class="graph-tooltip" id="graph-tooltip" role="presentation"></div>
     </section>
@@ -217,6 +197,14 @@
         </div>
       </form>
 
+      <!-- The reader's most common adjustment: a long answer wants more room than
+           the question box is holding. Dragging up shrinks the box and hands the
+           height to the answer; Home or a double-click gives it back. -->
+      <div class="splitter splitter--composer" id="split-composer" role="separator"
+        aria-orientation="horizontal" aria-label="Resize the question box to give the answer more room"
+        aria-valuemin="124" aria-valuemax="640" aria-valuenow="0"
+        title="Drag to resize · double-click to reset" tabindex="0"></div>
+
       <div class="tabs" role="tablist" aria-label="Answer detail">
         <button class="tab" role="tab" id="tab-btn-answer" aria-selected="true" aria-controls="tab-answer" data-tab="answer">Answer</button>
         <button class="tab" role="tab" id="tab-btn-sources" aria-selected="false" aria-controls="tab-sources" data-tab="sources">Sources<span class="tab__n" id="tab-n-sources"></span></button>
@@ -238,10 +226,6 @@
 
   <!-- ── mobile nav ────────────────────────────────────────────────────── -->
   <nav class="mobile-nav" id="mobile-nav" role="tablist" aria-label="Views">
-    <button role="tab" data-view="explore" aria-selected="false">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
-      Explore
-    </button>
     <button role="tab" data-view="graph" aria-selected="true">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="6" r="2.5"/><circle cx="6" cy="17" r="2.5"/><circle cx="18" cy="17" r="2.5"/><path d="M12 8.5 6 14.5M12 8.5l6 6M8.5 17h7"/></svg>
       Graph
@@ -290,8 +274,12 @@
 <p class="sr-only" id="announcer" role="status" aria-live="polite"></p>
 
 <!-- D3 comes from the copy already vendored for the old page. It is a classic
-     script, not a module, because graph.js reads the global `d3` it installs. -->
+     script, not a module, because graph.js reads the global `d3` it installs.
+     GSAP drives the process strip for the same reason: it installs globals, and
+     process.js falls back to a shim if it is ever absent, so a missing vendor
+     file costs the animation and nothing else. -->
 <script src="/vendor/d3.v7.min.js"></script>
+<script src="/vendor/gsap.min.js"></script>
 <script type="module" src="/static/app.js"></script>
 </body>
 </html>

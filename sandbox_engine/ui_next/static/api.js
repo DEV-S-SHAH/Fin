@@ -9,8 +9,8 @@
  * in silence and watching an answer arrive.
  */
 
-export async function get(path) {
-  return unwrap(path, { method: "GET" });
+export async function get(path, opts = {}) {
+  return unwrap(path, { method: "GET", ...opts });
 }
 
 export async function post(path, body) {
@@ -26,6 +26,13 @@ async function unwrap(path, init) {
   try {
     response = await fetch(path, { cache: "no-store", ...init });
   } catch (cause) {
+    /* An abort is a decision rather than a failure -- the reader cancelled, or
+     * a caller set a deadline on purpose -- and there is nothing to diagnose.
+     * Letting it fall through to the branch below would report a deliberate
+     * cancellation as a dropped connection, spend three seconds probing the
+     * server to find out which, and then hand back an `Error` whose name is no
+     * longer `AbortError`, so the caller's cancel handling would miss it. */
+    if (cause?.name === "AbortError") throw cause;
     /* A rejected fetch is the browser refusing to say anything: the request
      * never completed, so there is no status, no body and no usable message.
      * "Failed to fetch" is true and useless — it does not distinguish a server
@@ -77,9 +84,10 @@ export const fetchReport = (id) => get(`/api/reports/${encodeURIComponent(id)}`)
 
 /** Which retrieval route a question would take. Cheap: one graph query, no model
  *  call. The UI asks this before it commits, so it can stream only where the
- *  server really streams. */
-export const fetchRoute = (question) =>
-  get(`/api/route?q=${encodeURIComponent(question)}`);
+ *  server really streams. `opts` carries a `signal` so a caller that is already
+ *  showing "working" cannot be left waiting on this forever. */
+export const fetchRoute = (question, opts = {}) =>
+  get(`/api/route?q=${encodeURIComponent(question)}`, opts);
 
 export function fetchEntities(query = "", limit = 500) {
   const params = new URLSearchParams({ limit: String(limit) });

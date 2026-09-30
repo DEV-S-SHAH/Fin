@@ -75,6 +75,7 @@ _ASSETS: dict[str, str] = {
     "store.js": "text/javascript; charset=utf-8",
     "graph.js": "text/javascript; charset=utf-8",
     "answer.js": "text/javascript; charset=utf-8",
+    "process.js": "text/javascript; charset=utf-8",
     "reports.js": "text/javascript; charset=utf-8",
     "util.js": "text/javascript; charset=utf-8",
 }

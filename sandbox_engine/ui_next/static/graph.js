@@ -16,6 +16,26 @@ import { svgEl, typeColor, prettyType } from "./util.js";
 
 const EDGE_KEY = (l) => `${l.source.id}|${l.target.id}|${l.relation}`;
 
+/* How far a curved edge bows away from the straight line between its two
+ * nodes, as a fraction of that line's length. Small on purpose: a graph reads as
+ * a web of relationships, and a strong bow turns it into a bowl. */
+const BEND = 0.11;
+
+    /* How long the one-shot bloom on a freshly cited node lasts. It has to outlast
+     * its own animation, or the node is still mid-bloom when the class is dropped
+     * and the animation snaps to its start. */
+const FLASH_MS = 1300;
+
+
+/* The marching dots that run along an edge when an answer's subgraph appears, and
+ * how long they last. It has to outlast the longest staggered animation plus one
+ * of its own passes -- 450ms of stagger and a 1400ms travel -- so the layer is
+ * torn down only after the dots have faded out on their own. Removing them early
+ * would cut a stream off mid-stride, which reads as a glitch rather than an end.
+ * It is an event, not a state: a graph where everything moves forever is a graph
+ * nobody can read a label on. */
+const FLOW_MS = 2100;
+
 export class GraphView {
   /**
    * @param {SVGSVGElement} canvas
@@ -28,6 +48,8 @@ export class GraphView {
     this.links = [];
     this.seeds = new Set();
     this.cited = new Set();
+    this.fresh = new Set();
+    this.hovered = null;
     this.hiddenTypes = new Set();
     this.showLabels = true;
     this.view = { x: 0, y: 0, k: 1 };
@@ -36,6 +58,7 @@ export class GraphView {
     this.suppressClick = false;
     this.dragTravel = 0;
     this.dragOrigin = null;
+    this.flashTimer = 0;
     this.disposed = false;
 
     this.#buildSkeleton();
@@ -50,12 +73,30 @@ export class GraphView {
   #buildSkeleton() {
     /* The skeleton is assembled with plain DOM calls — append, insertBefore,
      * setAttribute — so the layers are kept as elements and wrapped with
-     * d3.select() where a selection is actually needed. */
+     * d3.select() where a selection is actually needed.
+     *
+     * Edges occupy two layers rather than one. The lower one carries a wide,
+     * faint copy of every curve; the upper one carries the crisp line. A single
+     * path cannot be both hairline-thin and glowing, and a stroke-width gradient
+     * would be the only way to fake it, which costs a paint per edge per frame.
+     * */
     this.root = svgEl("g", { class: "g-root" });
+    this.layerEdgeGlow = d3.select(svgEl("g", { class: "g-edge-glows" }));
     this.layerEdges = d3.select(svgEl("g", { class: "g-edges" }));
+    /* The marching dots sit above the crisp line, not below it. A 3px dot on a
+     * 1.1px hairline is wider than the line whichever side it is on, and above
+     * is the one that reads as a dot travelling *along* something rather than
+     * as a break in it. */
+    this.layerEdgeFlow = d3.select(svgEl("g", { class: "g-edge-flows" }));
     this.layerEdgeLabels = d3.select(svgEl("g", { class: "g-edge-labels" }));
     this.layerNodes = d3.select(svgEl("g", { class: "g-nodes" }));
-    this.root.append(this.layerEdges.node(), this.layerEdgeLabels.node(), this.layerNodes.node());
+    this.root.append(
+      this.layerEdgeGlow.node(),
+      this.layerEdges.node(),
+      this.layerEdgeFlow.node(),
+      this.layerEdgeLabels.node(),
+      this.layerNodes.node(),
+    );
     this.canvas.append(this.root);
 
     const defs = svgEl("defs");
@@ -74,6 +115,20 @@ export class GraphView {
       }));
       defs.append(marker);
     }
+
+    /* The bloom behind a cited node. The region is given in percentages well
+     * past the 10%/20% a browser assumes, because a 5px blur on a 20px circle
+     * spills further than that and the glow would be clipped into a disc. */
+    const bloom = svgEl("filter", {
+      id: "g-bloom", x: "-150%", y: "-150%", width: "400%", height: "400%",
+      filterUnits: "objectBoundingBox",
+    });
+    bloom.append(svgEl("feGaussianBlur", { stdDeviation: "5", result: "blur" }));
+    const merge = svgEl("feMerge");
+    merge.append(svgEl("feMergeNode", { in: "blur" }));
+    bloom.append(merge);
+    defs.append(bloom);
+
     this.canvas.insertBefore(defs, this.root);
     this.markers = defs;
   }
@@ -102,6 +157,7 @@ export class GraphView {
         if (!event.active && this.simulation) this.simulation.alpha(Math.max(this.simulation.alpha(), 0.7));
         this.canvas.classList.add("is-panning");
         this.#hideTooltip();
+        if (this.hovered !== null) { this.hovered = null; this.#draw(); }
       })
       .on("drag", (event, d) => {
         // d3.pointer is in graph space here — the nodes sit under the zoomed
@@ -171,6 +227,23 @@ export class GraphView {
       link.source.degree += 1;
       link.target.degree += 1;
     }
+
+    /* Two relationships between the same pair of nodes would otherwise trace the
+     * same curve twice, and the reader sees one line where the data says two.
+     * The bow is signed, so a group splays around the straight line instead of
+     * stacking on it, and a lone edge keeps the neutral bow. */
+    const pairs = new Map();
+    for (const link of this.links) {
+      const key = link.source.id < link.target.id
+        ? `${link.source.id}\u0000${link.target.id}`
+        : `${link.target.id}\u0000${link.source.id}`;
+      if (!pairs.has(key)) pairs.set(key, []);
+      pairs.get(key).push(link);
+    }
+    for (const group of pairs.values()) {
+      group.forEach((link, i) => { link.curve = (i - (group.length - 1) / 2) * 1.6; });
+    }
+
     // Degree is a better size signal than name length: a metric named by nine
     // filings is more important than a segment named by one.
     const maxDegree = this.nodes.reduce((max, n) => Math.max(max, n.degree), 0);
@@ -179,7 +252,10 @@ export class GraphView {
     }
 
     this.seeds = new Set((payload?.seeds || []).filter((id) => byId.has(id)));
-    this.cited = new Set(cited.filter((id) => byId.has(id)));
+    const nextCited = new Set(cited.filter((id) => byId.has(id)));
+    this.#flash(nextCited);
+    this.cited = nextCited;
+    this.hovered = null;
     this.byId = byId;
     this.#buildSimulation(fresh);
     /* Painted once here, before the layout starts moving anything, rather than
@@ -189,6 +265,14 @@ export class GraphView {
     this.#draw();
     this.#run();
     if (fresh) setTimeout(() => this.fit(), 620);
+    /* Started after the first paint, so the dots are laid along edges that are
+     * already on screen. Before it they would be stamped against a `d` the
+     * simulation is about to change, and the first frames would show them
+     * sliding out from under their own line. */
+    this.#startFlow(this.links.filter((l) => {
+      const f = this.#edgeFlags(l);
+      return f.cited || f.incident;
+    }));
     return { nodes: this.nodes.length, links: this.links.length };
   }
 
@@ -244,10 +328,27 @@ export class GraphView {
 
   #draw() {
     this.#applyView();
-    const focused = this.seeds.size > 0 || this.cited.size > 0;
-    const zoomedIn = this.view.k > 0.6;
+    this.#drawFlow();
 
-    /* edges */
+    /* `cited` / `incident` are a ranking, not two independent flags, so the
+     * class strings below all go through the same helper — otherwise a layer
+     * added later can quietly disagree with the layers above it. */
+    const rank = (f) => (f.cited ? "is-cited" : f.incident ? "is-incident" : "");
+
+    /* edges: the wide underlay first, then the crisp line on top of it. */
+    this.layerEdgeGlow.selectAll("path.g-edge-glow")
+      .data(this.links, EDGE_KEY)
+      .join(
+        (enter) => enter.append("path").attr("class", "g-edge-glow"),
+        (update) => update,
+        (exit) => exit.remove(),
+      )
+      .attr("d", (l) => this.#edgePath(l))
+      .attr("class", (l) => {
+        const f = this.#edgeFlags(l);
+        return ["g-edge-glow", rank(f), f.hot ? "is-hot" : ""].filter(Boolean).join(" ");
+      });
+
     const edges = this.layerEdges.selectAll("path.g-edge")
       .data(this.links, EDGE_KEY)
       .join(
@@ -263,18 +364,13 @@ export class GraphView {
     edges
       .attr("d", (l) => this.#edgePath(l))
       .attr("class", (l) => {
-        const cited = this.cited.has(l.source.id) && this.cited.has(l.target.id);
-        const incident = this.seeds.has(l.source.id) || this.seeds.has(l.target.id);
-        return [
-          "g-edge",
-          cited ? "is-cited" : incident ? "is-incident" : "",
-          this.#dimmed(l.source) && this.#dimmed(l.target) ? "is-dim" : "",
-        ].filter(Boolean).join(" ");
+        const f = this.#edgeFlags(l);
+        return ["g-edge", rank(f), f.dim ? "is-dim" : "", f.hot ? "is-hot" : ""]
+          .filter(Boolean).join(" ");
       })
       .attr("marker-end", (l) => {
-        const cited = this.cited.has(l.source.id) && this.cited.has(l.target.id);
-        const incident = this.seeds.has(l.source.id) || this.seeds.has(l.target.id);
-        return cited ? "url(#arrow-cited)" : incident ? "url(#arrow-incident)" : "url(#arrow)";
+        const f = this.#edgeFlags(l);
+        return f.cited ? "url(#arrow-cited)" : f.incident ? "url(#arrow-incident)" : "url(#arrow)";
       });
 
     /* The hover text is a child of each edge, created on enter and rewritten in
@@ -284,18 +380,29 @@ export class GraphView {
       `${l.source.name} —${String(l.relation || "").replace(/_/g, " ")}→ ${l.target.name}` +
       (l.description ? `\n${l.description}` : ""));
 
-    /* edge labels, only when there is room for them */
+    /* edge labels. The answer's own relationships are always named — those are
+     * the ones a reader came for — as are the ones that reach out of them. The
+     * rest of the graph waits for room. */
+    const labelled = this.links.filter((l) => {
+      const f = this.#edgeFlags(l);
+      if (f.dim) return false;
+      if (f.cited || f.incident || f.hot) return true;
+      return this.view.k > 0.6;
+    });
     this.layerEdgeLabels.selectAll("text.g-edge-label")
-      .data(zoomedIn || focused ? this.links : [], EDGE_KEY)
+      .data(labelled, EDGE_KEY)
       .join(
         (enter) => enter.append("text").attr("class", "g-edge-label"),
         (update) => update,
         (exit) => exit.remove(),
       )
       .attr("text-anchor", "middle")
-      .attr("x", (l) => (l.source.x + l.target.x) / 2)
-      .attr("y", (l) => (l.source.y + l.target.y) / 2 - 4)
-      .attr("opacity", (l) => (this.#dimmed(l.source) && this.#dimmed(l.target)) ? 0 : 1)
+      .attr("x", (l) => this.#edgePoint(l, 0.5).x)
+      .attr("y", (l) => this.#edgePoint(l, 0.5).y - 4)
+      .attr("class", (l) => {
+        const f = this.#edgeFlags(l);
+        return ["g-edge-label", rank(f), f.hot ? "is-hot" : ""].filter(Boolean).join(" ");
+      })
       .text((l) => String(l.relation || "").replace(/_/g, " ").toLowerCase());
 
     /* nodes */
@@ -304,13 +411,24 @@ export class GraphView {
       .join(
         (enter) => {
           const g = enter.append("g").attr("class", "g-node");
+          // bloom → halo → core, back to front: the soft glow sits behind a crisp
+          // ring, which sits behind the dot the reader is actually looking at.
+          g.append("circle").attr("class", "bloom");
           g.append("circle").attr("class", "halo");
           g.append("circle").attr("class", "core");
           g.append("title");
           g.append("text").attr("text-anchor", "middle");
           g.call(this.drag);
-          g.on("pointerenter", (event, d) => this.#showTooltip(event, d))
-            .on("pointerleave", () => this.#hideTooltip())
+          g.on("pointerenter", (event, d) => {
+            this.hovered = d.id;
+            this.#showTooltip(event, d);
+            this.#draw();
+          })
+            .on("pointerleave", () => {
+              this.hovered = null;
+              this.#hideTooltip();
+              this.#draw();
+            })
             .on("click", (event, d) => {
               event.stopPropagation();
               if (!this.suppressClick) this.handlers.onSelect?.(d.id);
@@ -324,10 +442,14 @@ export class GraphView {
         "g-node",
         this.seeds.has(d.id) ? "is-seed" : "",
         this.cited.has(d.id) ? "is-cited" : "",
-        this.#dimmed(d) ? "is-dim" : "",
+        this.fresh.has(d.id) ? "is-fresh" : "",
+        this.hovered === d.id ? "is-hot" : "",
+        this.#dimmed(d, true) ? "is-dim" : "",
       ].filter(Boolean).join(" "))
       .attr("transform", (d) => `translate(${d.x || 0},${d.y || 0})`);
 
+    groups.select("circle.bloom")
+      .attr("r", (d) => (d.r || 8) + 11);
     groups.select("circle.halo")
       .attr("r", (d) => (d.r || 8) + 5);
     groups.select("circle.core")
@@ -336,7 +458,7 @@ export class GraphView {
     groups.select("text")
       .attr("y", (d) => (d.r || 8) + 13)
       .text((d) => (d.name.length > 26 ? `${d.name.slice(0, 25)}…` : d.name))
-      .style("display", (d) => (this.showLabels && (this.view.k > 0.42 || this.seeds.has(d.id) || this.cited.has(d.id)))
+      .style("display", (d) => (this.showLabels && (this.view.k > 0.42 || this.seeds.has(d.id) || this.cited.has(d.id) || this.hovered === d.id))
         ? null : "none");
     groups.select("title")
       .text((d) => `${d.name} (${prettyType(d.type)}${d.description ? ` — ${d.description}` : ""})`);
@@ -346,26 +468,93 @@ export class GraphView {
     this.root.setAttribute("transform", `translate(${this.view.x},${this.view.y}) scale(${this.view.k})`);
   }
 
-  #dimmed(node) {
+  /**
+   * What an edge is doing, in one place.
+   *
+   * The states are ranked rather than independent: cited, then incident, then
+   * neither, then dimmed. That matters because hover would otherwise land on top
+   * of cited and repaint the answer's own proof in a neutral grey the moment
+   * the pointer drifted across it — and a glow the reader can switch off by
+   * moving the mouse is not a signal. Hover is allowed to do exactly one thing
+   * here: pull a relationship out of the dimmed mass.
+   */
+  #edgeFlags(link) {
+    const { source: s, target: t } = link;
+    const sCited = this.cited.has(s.id);
+    const tCited = this.cited.has(t.id);
+    const cited = sCited && tCited;
+    const incident = !cited && (sCited || tCited || this.seeds.has(s.id) || this.seeds.has(t.id));
+    const touching = this.hovered === s.id || this.hovered === t.id;
+    return {
+      cited,
+      incident,
+      dim: !touching && this.#dimmed(s) && this.#dimmed(t),
+      hot: touching && !cited && !incident,
+    };
+  }
+
+  /** `ignoreHover` when asking about the node under the pointer itself. */
+  #dimmed(node, ignoreHover = false) {
     if (this.hiddenTypes.size && this.hiddenTypes.has(String(node.type).toLowerCase())) return true;
     if (!this.seeds.size && !this.cited.size) return false;
+    if (!ignoreHover && this.hovered === node.id) return false;
     return !this.seeds.has(node.id) && !this.cited.has(node.id);
+  }
+
+  /** The bow, and the parameters at which each end stops clear of its node. */
+  #edgeGeometry(link) {
+    const { source: s, target: t } = link;
+    const dx = t.x - s.x;
+    const dy = t.y - s.y;
+    const bow = BEND * (link.curve ?? 1);
+    const cx = (s.x + t.x) / 2 - dy * bow;
+    const cy = (s.y + t.y) / 2 + dx * bow;
+    /* Both ends stop just outside the circles they join. For a quadratic the
+     * tangent length at an endpoint is twice the distance to the control point,
+     * which is enough to solve for the parameter that lands there — and without
+     * the trim the arrowhead is buried inside the node it points at, which
+     * makes a cited edge look like it stops short of its own target. */
+    const out = 2 * Math.hypot(cx - s.x, cy - s.y) || 1;
+    const into = 2 * Math.hypot(t.x - cx, t.y - cy) || 1;
+    return {
+      cx, cy,
+      u0: Math.min(0.45, (s.r + 4) / out),
+      u1: 1 - Math.min(0.45, (t.r + 7) / into),
+    };
+  }
+
+  /** A point on an edge's curve, at parameter `u`. Recomputes the control point
+   *  rather than taking it as an argument — this is called twice per label per
+   *  frame and the cost is two `hypot` calls, which is not worth an extra
+   *  argument threaded through both call sites. */
+  #edgePoint(link, u) {
+    const { source: s, target: t } = link;
+    const { cx, cy } = this.#edgeGeometry(link);
+    const m = 1 - u;
+    return {
+      x: m * m * s.x + 2 * m * u * cx + u * u * t.x,
+      y: m * m * s.y + 2 * m * u * cy + u * u * t.y,
+    };
   }
 
   #edgePath(link) {
     const { source: s, target: t } = link;
     if (!s || !t) return "";
-    // A gentle curve: straight lines stack into an unreadable bundle wherever
-    // two nodes sit at the same point, which they do for the first few ticks of
-    // every simulation.
-    const mx = (s.x + t.x) / 2;
-    const my = (s.y + t.y) / 2;
-    const dx = t.x - s.x;
-    const dy = t.y - s.y;
-    const bend = 0.12;
-    const cx = mx - dy * bend;
-    const cy = my + dx * bend;
-    return `M${s.x},${s.y} Q${cx},${cy} ${t.x},${t.y}`;
+    const { cx, cy, u0, u1 } = this.#edgeGeometry(link);
+    const at = (u) => {
+      const m = 1 - u;
+      return {
+        x: m * m * s.x + 2 * m * u * cx + u * u * t.x,
+        y: m * m * s.y + 2 * m * u * cy + u * u * t.y,
+      };
+    };
+    const a = at(u0);
+    const b = at(u1);
+    // One decimal is well under a pixel at any sane zoom, and a path that does
+    // not change string between frames does not have to be re-parsed by the
+    // renderer on every tick of the simulation.
+    const f = (n) => Math.round(n * 10) / 10;
+    return `M${f(a.x)},${f(a.y)} Q${f(cx)},${f(cy)} ${f(b.x)},${f(b.y)}`;
   }
 
   /* ── viewport controls ───────────────────────────────────────────────── */
@@ -428,8 +617,103 @@ export class GraphView {
   }
 
   setCited(ids) {
-    this.cited = new Set((ids || []).filter((id) => this.byId?.has(id)));
+    const next = new Set((ids || []).filter((id) => this.byId?.has(id)));
+    this.#flash(next);
+    this.cited = next;
     this.#draw();
+  }
+
+  /** How much of the graph the current answer actually leans on. The count is
+   *  taken from the same state the drawing uses, so the number on the badge can
+   *  never disagree with what is glowing on the canvas. */
+  get citationSpread() {
+    let edges = 0;
+    for (const link of this.links) if (this.#edgeFlags(link).cited) edges += 1;
+    return { nodes: this.cited.size, edges };
+  }
+
+  /**
+   * Bloom once on the nodes an answer has just claimed.
+   *
+   * A steady glow says *these are the citations*; a single bloom says *this
+   * answer is the one you are looking at*. Without the second one, a reader who
+   * has already seen a previous answer's glow has nothing to tell the two
+   * apart. Only newly cited nodes flash — re-asking a question re-lights the
+   * whole page otherwise, and the reader cannot see what changed.
+   */
+  #flash(next) {
+    const fresh = new Set([...next].filter((id) => !this.cited.has(id)));
+    this.fresh = fresh;
+    clearTimeout(this.flashTimer);
+    if (!fresh.size) return;
+    this.flashTimer = setTimeout(() => {
+      if (this.disposed) return;
+      this.fresh = new Set();
+      this.#draw();
+    }, FLASH_MS);
+  }
+
+  /* ── marching dots ───────────────────────────────────────────────────── */
+
+  /**
+   * Run dots along the relationships an answer just leaned on.
+   *
+   * The glow says which nodes are cited; this says which *relationships* carried
+   * the answer, and it does it in the one motion that already means "travelling
+   * along" everywhere else on screen. It is drawn on the answer's own edges
+   * rather than on everything, because a subgraph can be two hundred and fifty
+   * relationships and a graph where all of them move at once is a graph nobody
+   * can read. The cited and incident ones are the ones the reader came for.
+   *
+   * The dots are zero-length dashes with a round cap on a duplicate of the edge's
+   * own path, so there is nothing to position by hand: the browser re-lays the
+   * dash pattern along whatever `d` currently is, which matters because the force
+   * simulation is still moving these nodes while the dots run.
+   */
+  #startFlow(links) {
+    this.#stopFlow();
+    if (!links.length) return;
+
+    this.flowLinks = links;
+    this.#drawFlow();
+
+    this.flowTimer = setTimeout(() => {
+      if (this.disposed) return;
+      this.#stopFlow();
+    }, FLOW_MS);
+  }
+
+  /** Re-stamp the flow paths whenever the graph is painted. Called from #draw so
+   *  the dots stay on their edges as the simulation settles, and cheap when no
+   *  flow is running. */
+  #drawFlow() {
+    const links = this.flowLinks;
+    if (!links || !links.length) return;
+    this.layerEdgeFlow
+      .selectAll("path.g-edge-flow")
+      .data(links, EDGE_KEY)
+      .join(
+        (enter) => enter.append("path").attr("class", "g-edge-flow"),
+        (update) => update,
+      )
+      .attr("d", (l) => this.#edgePath(l))
+      .attr("class", (l) => {
+        const f = this.#edgeFlags(l);
+        return ["g-edge-flow", f.cited ? "is-cited" : "is-incident"].filter(Boolean).join(" ");
+      })
+      /* Staggered in graph order so the streams start a beat apart instead of
+       * pulsing as one. A per-edge delay as a custom property rather than a
+       * class per step: the step count would be a combinatorial mess of classes
+       * to keep in step with the palette. Wrapping the index keeps the spread
+       * bounded, so a dense answer does not leave its last edges waiting. */
+      .style("--flow-delay", (_, i) => `${(i % 6) * 90}ms`);
+  }
+
+  #stopFlow() {
+    clearTimeout(this.flowTimer);
+    this.flowTimer = 0;
+    this.flowLinks = null;
+    if (!this.disposed) this.layerEdgeFlow.selectAll("path.g-edge-flow").remove();
   }
 
   setHiddenTypes(types) {
@@ -482,6 +766,8 @@ export class GraphView {
     this.disposed = true;
     this.simulation?.stop();
     if (this.frame) cancelAnimationFrame(this.frame);
+    clearTimeout(this.flashTimer);
+    clearTimeout(this.flowTimer);
     this.observer?.disconnect();
     this.root?.remove();
   }

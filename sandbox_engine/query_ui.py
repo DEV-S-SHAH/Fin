@@ -35,7 +35,7 @@ import webbrowser
 from collections import Counter
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 from urllib.parse import parse_qs, urlparse
 
 import ladybug as lb
@@ -66,7 +66,7 @@ background_queue = BackgroundIngestQueue()
 #: Frontend libraries served under ``/vendor/``. Vendored locally so the page
 _VENDOR_DIR = Path(__file__).resolve().parent / "static"
 VENDOR: dict[str, bytes] = {}
-for _vendor_name in ("d3.v7.min.js",):
+for _vendor_name in ("d3.v7.min.js", "gsap.min.js"):
     _vendor_path = _VENDOR_DIR / _vendor_name
     if _vendor_path.is_file():
         VENDOR[_vendor_name] = _vendor_path.read_bytes()
@@ -533,6 +533,15 @@ RAG_BACKEND = _setting("RAG_BACKEND", "auto").lower()
 #: dropped connection -- "Failed to fetch" in the browser, with the request
 #: still running.
 RAG_TIMEOUT = float(_setting("RAG_TIMEOUT", "900"))
+
+#: How many times a model call may be retried before the failure is reported.
+#: Two, because the hosted endpoint's own failure mode under load is 503
+#: "Service temporarily overloaded" -- a condition that clears on its own in
+#: seconds, and that used to surface as a dead answer because the client was
+#: built with no retries at all. The SDK only retries what is safe to repeat
+#: (connection errors, 408, 409, 429, 5xx), so a malformed request or a
+#: rejected key still fails on the first attempt.
+RAG_RETRIES = int(_setting("RAG_RETRIES", "2"))
 
 #: Ollama defaults to a 4k context, which the retrieved subgraph plus the
 #: instructions can overrun; a truncated prompt loses the tail of the evidence
@@ -1652,6 +1661,21 @@ def _explain_api_error(exc: Exception, state: dict[str, Any]) -> str:
         )
     if status == 429:
         return "Rate limited by NVIDIA (429). Wait a moment and try again."
+    if status in (500, 502, 503, 529):
+        # 503 is what a capacity-limited endpoint returns, and it is the one
+        # worth naming in plain words: the raw body is a dict that tells a
+        # reader nothing they can act on, and "Error communicating with" reads
+        # like their question was malformed. It is their question's fault
+        # neither -- the request was fine and the service was full. Saying so is
+        # also what keeps this from being read as a verdict on the evidence.
+        return (
+            f"NVIDIA's endpoint is temporarily overloaded ({status}) and did not "
+            f"answer. This is a capacity problem on their side, not a problem "
+            f"with the question: nothing was graded or refused, because no answer "
+            f"was ever produced. Asking again in a moment usually works, and "
+            f"RAG_BACKEND=ollama answers locally in the meantime. The graph "
+            f"explorer below does not need either."
+        )
     return f"Error communicating with {NVIDIA_MODEL}: {exc}"
 
 
@@ -1757,6 +1781,35 @@ WIRE_STAGES: tuple[str, ...] = (
     "synthesis",
 )
 
+# What each stage is doing, in the words of someone waiting on the request.
+# Keyed by the same names as WIRE_STAGES, because the client switches on those.
+# `fetching`/`extraction`/`stitching` belong to the cold-start route only; a
+# known entity is already in the graph, so it skips them and they are not
+# expected to appear in that route's plan.
+STAGE_MESSAGES: dict[str, str] = {
+    "routing": "Matching the question to an entity",
+    "fetching": "Fetching the latest filing from EDGAR",
+    "extraction": "Extracting financial facts from the filing",
+    "stitching": "Stitching the new facts onto the graph",
+    "traversal": "Traversing the knowledge graph",
+    "synthesis": "Composing the answer from the evidence",
+}
+
+# The stages a route is expected to cross, in order. Sent to the client up front
+# so it can build the pipeline before the work starts, rather than discovering
+# the shape of the run one event at a time.
+ROUTE_PLAN: dict[str, tuple[str, ...]] = {
+    "KNOWN": ("routing", "traversal", "synthesis"),
+    "COLD_START": (
+        "routing",
+        "fetching",
+        "extraction",
+        "stitching",
+        "traversal",
+        "synthesis",
+    ),
+}
+
 
 class _StageTimer:
     """Wall-clock accounting for the stages of one request.
@@ -1773,9 +1826,15 @@ class _StageTimer:
     request.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, on_enter: "Callable[[str], None] | None" = None) -> None:
         self._start = time.perf_counter()
         self._stages: dict[str, float] = {name: 0.0 for name in WIRE_STAGES}
+        # Called as each stage begins, so a client watching the request can see
+        # the pipeline advance instead of waiting on a silent socket. It is
+        # deliberately not called on exit: the duration is only known then, and a
+        # client that renders "retrieval: 412ms" before the model has been called
+        # is reporting work that has not happened yet.
+        self._on_enter = on_enter
 
     @contextlib.contextmanager
     def stage(self, name: str):
@@ -1787,6 +1846,14 @@ class _StageTimer:
         timeout look instant.
         """
         started = time.perf_counter()
+        if self._on_enter is not None:
+            # Outside the try: a broken progress callback must not be able to
+            # swallow the stage it is reporting on, which would turn a UI
+            # convenience into a request failure.
+            try:
+                self._on_enter(name)
+            except Exception:  # pragma: no cover - defensive
+                log.debug("stage callback failed for %s", name, exc_info=True)
         try:
             yield
         finally:
@@ -1880,8 +1947,12 @@ def _graph_metrics(
     }
 
 
-def ask_rag(kg: KnowledgeGraph, question: str) -> dict[str, Any]:
-    timer = _StageTimer()
+def ask_rag(
+    kg: KnowledgeGraph,
+    question: str,
+    on_stage: "Callable[[str], None] | None" = None,
+) -> dict[str, Any]:
+    timer = _StageTimer(on_enter=on_stage)
     with timer.stage("routing"):
         routing = route_query(question, kg)
 
@@ -2065,6 +2136,13 @@ def ask_rag(kg: KnowledgeGraph, question: str) -> dict[str, Any]:
     # hosted call, but far less in practice for a stalled local socket) is what
     # turns a slow model into a browser-side "Failed to fetch".
     #
+    # `max_retries` was 0, which turned every momentary blip into a dead answer.
+    # The capacity endpoint answers 503 "Service temporarily overloaded" under
+    # load, and that is the definition of a condition worth one more try: the
+    # SDK already retries only what is safe to retry (connection failures, 408,
+    # 409, 429 and 5xx) and leaves a 400 or 401 alone, because a rejected key
+    # will be rejected again just as surely. Set RAG_RETRIES=0 to opt out.
+    #
     # Imported here, not at module scope: the graph explorer, the canned
     # reports and the stats panel never construct a client, and a top-level
     # import made the whole SDK -- pydantic, httpx, numpy -- a precondition for
@@ -2076,7 +2154,7 @@ def ask_rag(kg: KnowledgeGraph, question: str) -> dict[str, Any]:
         base_url=base_url,
         api_key=api_key,
         timeout=RAG_TIMEOUT,
-        max_retries=0,
+        max_retries=RAG_RETRIES,
     )
 
     request: dict[str, Any] = {
@@ -2137,7 +2215,18 @@ def ask_rag(kg: KnowledgeGraph, question: str) -> dict[str, Any]:
             "flow": "",
             "graph": None,
             "gap": False,
-            "verdict": REFUSED,
+            # No verdict, and never REFUSED. The grader did not run, so it has
+            # nothing to say: there is no answer here, which means there is no
+            # sentence resting on evidence that does not support it either. This
+            # used to be stamped REFUSED, and the UI duly showed "At least one
+            # sentence is not supported by the evidence it cites" over a 503 --
+            # telling a reader their question was refused on quality grounds
+            # when the truth was that the model was overloaded and answered
+            # nothing. `status` is what the client keys on to tell a dead call
+            # apart from a graded one, so the two can never be confused again.
+            "status": "error",
+            "error": _explain_api_error(exc, state),
+            "verdict": None,
             "provenance_mix": {},
             "provenance": [],
             "invented_tags": [],
@@ -4243,8 +4332,40 @@ class _Handler(BaseHTTPRequestHandler):
                 return
 
             if routing.route == EntityRoute.KNOWN:
-                self._send_sse("status", {"step": "retrieval", "message": f"Retrieving knowledge graph for {routing.ticker}..."})
-                result = ask_rag(self.kg, question)
+                # The known path is the one people actually wait on. Retrieval is
+                # quick, and then the model is silent for as long as it takes, so
+                # the client used to get one "retrieval" line and nothing until
+                # the answer landed -- which reads as a hang rather than as work.
+                #
+                # ask_rag's stage timer reports each boundary as it crosses it, and
+                # every one is forwarded the moment it happens. These are the real
+                # stages, not a scripted animation: a stage that never fires never
+                # shows up, which is why the plan is sent first and the events
+                # that follow are matched against it.
+                plan = ROUTE_PLAN["KNOWN"]
+                self._send_sse("status", {
+                    "step": "start",
+                    "ticker": routing.ticker,
+                    "stages": list(plan),
+                    "message": STAGE_MESSAGES[plan[0]],
+                })
+                announced: set[str] = set()
+                stage_started = time.monotonic()
+
+                def announce(stage: str) -> None:
+                    # ``stage`` accumulates, so a re-entry must not replay it.
+                    if stage in announced:
+                        return
+                    announced.add(stage)
+                    self._send_sse("status", {
+                        "step": stage,
+                        "message": STAGE_MESSAGES.get(stage, stage),
+                        "elapsed_ms": round(
+                            (time.monotonic() - stage_started) * 1000.0, 2
+                        ),
+                    })
+
+                result = ask_rag(self.kg, question, on_stage=announce)
                 ans = str(result.get("answer") or "")
                 words = ans.split(" ")
                 for i, w in enumerate(words):
@@ -4256,8 +4377,30 @@ class _Handler(BaseHTTPRequestHandler):
                 # actually experienced.
                 stages = dict(result.get("stage_latencies_ms") or {})
                 stages["total"] = round((time.monotonic() - start_time) * 1000, 2)
+
+                # The whole of ask_rag's result, not just its answer.
+                #
+                # This event used to carry `answer` and four timing fields and
+                # nothing else, so a client reading the stream had the text and
+                # none of the evidence behind it: no verdict, no cited tags, no
+                # tag map, no provenance ledger, no subgraph. The redesigned UI
+                # renders precisely those -- they are the answer pane, the
+                # Sources and Provenance tabs, and the lit-up subgraph -- so a
+                # streamed run showed a verdict of "refused" and a graph with
+                # nothing cited on it, while the very same question over the
+                # plain JSON route graded SUPPORTED with its citations intact.
+                # The grader had run either way; the stream simply dropped its
+                # output on the floor.
+                #
+                # Merged rather than replaced, so the stream-only fields above
+                # (`status`, the measured `total`) win over ask_rag's own, and
+                # `answer` stays a plain string even when ask_rag reported a
+                # failure -- a run that died still has to say so in prose.
                 self._send_sse("done", {
-                    "status": "complete",
+                    **result,
+                    "status": (
+                        "error" if result.get("status") == "error" else "complete"
+                    ),
                     "route": "KNOWN",
                     "ticker": result.get("ticker") or routing.ticker,
                     "answer": ans,
@@ -4273,6 +4416,14 @@ class _Handler(BaseHTTPRequestHandler):
             ticker = routing.ticker or "UNKNOWN"
             answer_text = ""
             subgraph_result: dict[str, Any] = {"nodes": [], "paths": []}
+            # Same plan contract as the known route, so one timeline in the client
+            # serves both without having to know which route it is watching.
+            self._send_sse("status", {
+                "step": "start",
+                "ticker": ticker,
+                "stages": list(ROUTE_PLAN["COLD_START"]),
+                "message": STAGE_MESSAGES["routing"],
+            })
             #: Set when the live pipeline raised and the answer came from the
             #: fallback. Explicit rather than inferred from timings: a fast
             #: degraded run and a fast clean run look identical on the clock,

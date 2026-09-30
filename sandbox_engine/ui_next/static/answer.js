@@ -150,6 +150,32 @@ export class AnswerView {
 
     const fragments = [meta];
 
+    /* A model call that never came back. It is rendered before anything else
+     * and, critically, without a verdict -- #verdictCard falls back to REFUSED
+     * for any response that carries no verdict of its own, so a 503 with the
+     * verdict omitted would have put "At least one sentence is not supported by
+     * the evidence it cites" back on the screen. That sentence is a claim about
+     * an answer, and here there is no answer and no grading; showing it tells
+     * the reader their question failed on evidence grounds when in fact the
+     * model was overloaded and never wrote anything. */
+    if (res.status === "error") {
+      fragments.push(el("div", { class: "violations" }, [
+        el("div", { class: "violations__title" }, [
+          el("span", { html: ICON_ALERT }),
+          el("span", { text: "the model did not answer" }),
+        ]),
+        el("p", { class: "violations__note", text: res.error || res.text || "the model call failed" }),
+        el("p", {
+          class: "violations__note",
+          text: "Nothing was graded and nothing was refused: the retrieval above ran, and the "
+            + "generation step did not. This is a failure of the model service, not of the evidence.",
+        }),
+      ]));
+      this.panels.answer.classList.add("is-failed");
+    } else {
+      this.panels.answer.classList.remove("is-failed");
+    }
+
     /* violations — first, unmissable, in the reading path */
     const violations = res.violations || [];
     if (violations.length) {
@@ -162,7 +188,12 @@ export class AnswerView {
       ]));
     }
 
-    fragments.push(this.#verdictCard(res));
+    /* No verdict card on a failed call. #verdictCard substitutes REFUSED for
+     * any response without a verdict of its own, so rendering it here would
+     * replace the honest failure notice above with a grading judgement that was
+     * never made. The violations block above is likewise the grader's, and stays
+     * empty because the grader never ran. */
+    if (res.status !== "error") fragments.push(this.#verdictCard(res));
 
     const body = el("div", { class: "prose", html: md(res.text || res.answer || "") });
     body.addEventListener("click", (event) => {
@@ -285,6 +316,9 @@ export class AnswerView {
     const lines = [
       res.route ? `route: ${res.route}` : null,
       res.context_entities ? `retrieved: ${res.context_entities} entities, ${res.context_edges ?? 0} relationships` : null,
+      /* Spelled out, because `grounded: false` on its own reads as a failed
+       * grade. The retrieval genuinely did run; the generation did not. */
+      res.status === "error" ? "synthesis: failed — the model call never completed" : null,
       res.grounded !== undefined ? `grounded: ${res.grounded}` : null,
       (res.used_tags || []).length ? `cited: ${res.used_tags.join(", ")}` : "cited: none",
       res.background_task_scheduled ? "background ingestion: scheduled" : null,
@@ -313,9 +347,15 @@ export class AnswerView {
     if (!verdicts.length) {
       host.append(el("div", {
         class: "empty",
-        text: res.verdict
-          ? "The grader judged no sentences in this answer."
-          : "Every sentence in the answer, with the rule that judged it.",
+        /* A failed call has no verdict and no sentences. Without this it fell
+         * through to "Every sentence in the answer, with the rule that judged
+         * it" -- a tab promising per-sentence grading of an answer that was
+         * never written. */
+        text: res.status === "error"
+          ? "The model did not answer, so there are no sentences to grade."
+          : res.verdict
+            ? "The grader judged no sentences in this answer."
+            : "Every sentence in the answer, with the rule that judged it.",
       }));
       return;
     }
