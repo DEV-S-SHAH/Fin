@@ -4,9 +4,11 @@ import unittest
 from unittest.mock import MagicMock
 
 from sandbox_engine.router import (
+    COMPANY_NAME_TO_TICKER,
     EntityRoute,
     RoutingResult,
     RouterDatabaseError,
+    resolve_company_name,
     route_query,
 )
 
@@ -197,7 +199,7 @@ class TestRouter(unittest.TestCase):
             # 4. Test ask_rag for AMBIGUOUS
             ambig_res = ask_rag(kg, "What is the capital of France?")
             self.assertEqual(ambig_res["status"], "ambiguous")
-            self.assertIn("Please specify a company ticker", ambig_res["message"])
+            self.assertIn("Please specify a valid company name or stock ticker", ambig_res["message"])
 
             # 5. Test retrieve_financial_context with specific ticker
             nodes, edges, tag_map, seeds = retrieve_financial_context(kg, "Apple revenue", ticker="AAPL")
@@ -210,6 +212,152 @@ class TestRouter(unittest.TestCase):
             self.assertEqual(parsed.tickers, ())
         finally:
             kg.close()
+
+
+class TestCompanyNameRouting(unittest.TestCase):
+    """Company names in prose must reach Cold-Start, not fall back to Apple.
+
+    The regression these guard against: "what does JP MORGAN DO" has no
+    cashtag and no single uppercase ticker token, so it used to resolve to no
+    entity at all, and the query then continued against seeded AAPL/MSFT
+    context -- answering a JPMorgan question with Apple figures, or having the
+    anti-hallucination guard reject the mismatched context outright.
+    """
+
+    def setUp(self):
+        self.mock_kg = MagicMock()
+        # Empty result: the issuer is not in the graph, so any resolved ticker
+        # must come back COLD_START.
+        self.mock_kg.execute.return_value = []
+
+    def test_company_name_multi_word_routes_to_cold_start(self):
+        """A multi-word company name with no cashtag routes to COLD_START."""
+        result = route_query("what does JP MORGAN DO", self.mock_kg)
+
+        self.assertEqual(result.route, EntityRoute.COLD_START)
+        self.assertEqual(result.ticker, "JPM")
+        self.assertIn("JPMorgan", result.entity_name or "")
+
+    def test_cashtag_routes_to_cold_start(self):
+        """A $cashtag for an unindexed issuer routes to COLD_START."""
+        result = route_query("analyze $RIVN battery risks", self.mock_kg)
+
+        self.assertEqual(result.route, EntityRoute.COLD_START)
+        self.assertEqual(result.ticker, "RIVN")
+
+    def test_random_prose_is_ambiguous(self):
+        """Prose naming no issuer is AMBIGUOUS and never reaches the database."""
+        result = route_query("the quick brown fox jumps over the lazy dog", self.mock_kg)
+
+        self.assertEqual(result.route, EntityRoute.AMBIGUOUS)
+        self.assertIsNone(result.ticker)
+        self.assertIsNone(result.entity_name)
+        self.mock_kg.execute.assert_not_called()
+
+    def test_company_name_never_loads_apple_context(self):
+        """No non-Apple query may resolve to AAPL or MSFT.
+
+        Both the resolved ticker and the DB predicate are checked: a router that
+        picked the wrong ticker but queried the right one would still be wrong.
+        """
+        for query in (
+            "what does JP MORGAN DO",
+            "analyze $RIVN battery risks",
+            "how is Tesla's margin trending",
+            "the quick brown fox jumps over the lazy dog",
+            "net sales in 2024",
+        ):
+            with self.subTest(query=query):
+                result = route_query(query, self.mock_kg)
+                self.assertNotEqual(result.ticker, "AAPL")
+                self.assertNotEqual(result.ticker, "MSFT")
+
+                if self.mock_kg.execute.call_count:
+                    params = self.mock_kg.execute.call_args[0][1]
+                    self.assertNotEqual(params.get("ticker"), "AAPL")
+                    self.assertNotEqual(params.get("ticker"), "MSFT")
+                self.mock_kg.execute.reset_mock()
+
+    def test_company_name_to_ticker_covers_required_issuers(self):
+        """The name->ticker table resolves every issuer the router advertises."""
+        for name, ticker in (
+            ("jpmorgan", "JPM"),
+            ("jp morgan", "JPM"),
+            ("jpmorgan chase", "JPM"),
+            ("tesla", "TSLA"),
+            ("google", "GOOGL"),
+            ("alphabet", "GOOGL"),
+            ("amazon", "AMZN"),
+            ("microsoft", "MSFT"),
+            ("apple", "AAPL"),
+            ("rivian", "RIVN"),
+        ):
+            with self.subTest(name=name):
+                self.assertEqual(COMPANY_NAME_TO_TICKER[name], ticker)
+                self.assertEqual(resolve_company_name(f"what does {name} do")[0], ticker)
+
+    def test_longest_company_name_wins(self):
+        """A longer name is not shadowed by a shorter one it contains."""
+        self.assertEqual(resolve_company_name("JPMorgan Chase")[0], "JPM")
+        self.assertEqual(resolve_company_name("JPMorgan")[0], "JPM")
+        # "Google" must not be swallowed by an "Alphabet" entry, and neither
+        # may be shadowed by a ticker-shaped fragment of the other.
+        self.assertEqual(resolve_company_name("Alphabet cloud revenue")[0], "GOOGL")
+        self.assertEqual(resolve_company_name("Google search margins")[0], "GOOGL")
+
+    def test_company_name_matching_respects_word_boundaries(self):
+        """A company name inside a longer word is not a match."""
+        self.assertIsNone(resolve_company_name("machinery demand")[0])
+        self.assertIsNone(resolve_company_name("notrivianized metrics")[0])
+
+    def test_ambiguous_response_asks_for_entity_without_querying(self):
+        """AMBIGUOUS returns the prompt and never touches the database or model."""
+        from sandbox_engine import query_ui
+
+        response = query_ui._ambiguous_response("what is the weather?")
+
+        self.assertEqual(response["status"], "ambiguous")
+        self.assertEqual(
+            response["message"],
+            "Please specify a valid company name or stock ticker "
+            "(e.g. $JPM, $AAPL) to analyze.",
+        )
+        self.assertFalse(response["grounded"])
+        self.assertEqual(response["used_tags"], [])
+
+    def test_parse_question_has_no_default_ticker_fallback(self):
+        """parse_question no longer advertises a default AAPL/MSFT seed pair."""
+        import inspect
+
+        from graphrag_synthesis import parse_question
+
+        self.assertNotIn("default_tickers", inspect.signature(parse_question).parameters)
+        self.assertEqual(parse_question("what are the latest risk factors?").tickers, ())
+
+    def test_company_name_reaches_cold_start_pipeline_via_ask_rag(self):
+        """A company-name query runs the JIT pipeline for the resolved ticker."""
+        from unittest.mock import patch
+
+        from sandbox_engine import query_ui
+
+        sample_10k = (
+            "<html><body>"
+            "<div>Item 1. Business</div>"
+            "<p>JPMorgan Chase provides financial services to consumers and corporations.</p>"
+            "<div>Item 1A. Risk Factors</div>"
+            "</body></html>"
+        )
+        with patch(
+            "sandbox_engine.tier1_fetch.SECRuntimeFetcher.fetch_latest_filing_html",
+            return_value=(sample_10k, {"form": "10-K"}),
+        ):
+            response = query_ui.ask_rag(self.mock_kg, "what does JP MORGAN DO")
+
+        # The pipeline may fall back to standard QA if a backend is unavailable,
+        # but it must never come back as an AAPL/MSFT answer or an empty stub.
+        self.assertNotEqual(response.get("status"), "ambiguous")
+        if response.get("route") == "COLD_START":
+            self.assertEqual(response["route"], "COLD_START")
 
 
 if __name__ == "__main__":

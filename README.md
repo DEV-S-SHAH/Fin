@@ -32,6 +32,7 @@ Two independent HTTP services over two pipelines, in one repository.
 | Service | Command | Port | Serves | Without a key |
 |---|---|---|---|---|
 | Graph explorer + RAG | `python -m sandbox_engine.query_ui` | 9000, `$PORT_QUERY_UI` | `sandbox_engine/_run/sandbox.lbug` | Explorer, reports, stats all work. `/api/ask` asks for a key or offers the local model. |
+| Redesigned graph explorer | `python -m sandbox_engine.ui_next` | 9100, `$PORT_QUERY_UI_V2` | `sandbox_engine/_run/sandbox.lbug` | Same as above, new front end |
 | PDF graph viewer | `python -m graphrag.cli serve` | 8765, `$PORT_GRAPHRAG_UI` | `data/*.lbug` | Serves fine; answers fall back to a lexical provider |
 
 The two defaults live in `sandbox_engine/query_ui.py` and `graphrag/config.py`,
@@ -128,11 +129,84 @@ press Ctrl-C to stop
 rather than model-quality, but it needs no key and no network, which makes it
 the fastest way to get a graph on screen.
 
+## The redesigned explorer
+
+`sandbox_engine/ui_next/` is a second front end for the same knowledge graph. It
+replaces the layout, not the answers: `server.py` subclasses the handler in
+`query_ui.py`, so graph traversal, the RAG pipeline, grading, canned reports and
+the SSE transport are the same code answering the same questions. The old page
+is untouched and the two can run at the same time.
+
+```bash
+python -m sandbox_engine.query_ui    # original,  http://127.0.0.1:9000
+python -m sandbox_engine.ui_next     # redesigned, http://127.0.0.1:9100
+```
+
+Both take `--port`, `--host`, `--no-browser` and `--db`, and the new one defaults
+to 9100 via `$PORT_QUERY_UI_V2` so the two defaults cannot collide.
+
+### What it adds
+
+| Endpoint | Why |
+|---|---|
+| `GET /api/companies` | Filings, forms and periods per issuer. The old page hard-codes eight Apple questions, which is wrong the moment the graph holds a second issuer; this builds the sample questions from what is actually stored. |
+| `GET /api/route?q=` | Which retrieval route a question would take — `KNOWN`, `COLD_START` or `AMBIGUOUS`. One graph query, no model call. |
+
+That route probe is why the two transports differ. `COLD_START` fetches a filing
+from EDGAR and synthesises it through a generator, so the server emits tokens as
+it goes and the page streams them. `KNOWN` is one blocking call that returns the
+whole answer at once, so the page asks for it in a single request: the old SSE
+handler "streams" that route by splitting the finished string into words, which
+looks like progress and costs a second full request to recover the grading the
+stream never carried.
+
+### Layout
+
+```
+sandbox_engine/ui_next/
+  server.py            the legacy handler, plus static routes and the two endpoints above
+  static/index.html    the shell
+  static/styles.css    design system, light and dark
+  static/app.js        wiring: panels, keyboard, command palette
+  static/graph.js      D3 force graph
+  static/answer.js     answer, verdict, sources, trace, provenance ledger
+  static/reports.js    canned reports drawer
+  static/api.js        fetch wrappers, JSON and SSE
+  static/store.js      shared state
+  static/util.js       DOM, formatting, markdown, toasts
+```
+
+No build step and no npm: the page is native ES modules, and D3 is the copy
+already vendored at `sandbox_engine/static/d3.v7.min.js`.
+
+### Moving the panels
+
+The entity list and the answer column are separated by a draggable divider, and
+the answer column is the one people resize: a graded answer with a verdict, a
+source list and a provenance ledger does not read well in 440px. Three ways to
+move it, all clamped so the graph keeps a usable share of the window:
+
+- drag the divider, which has a visible grip and a 15px hit area
+- focus it and use `←` / `→`, or `⇧` with them for larger steps; `Home` resets
+- `⌘K` and search for *widen*, *narrow* or *reset* the answer panel
+
+The width is remembered per browser.
+
+### What it does not do
+
+- It never writes. The graph is opened read-only unless you pass `--read-write`.
+- It does not reimplement retrieval. Two front ends sharing one backend is the
+  point; a second copy of the RAG pipeline would drift from the first.
+- `?q=...` re-runs a question on load rather than restoring a stored answer. An
+  answer is only as good as the graph it was graded against, and that changes
+  when the next filing lands, so the link says what the evidence supports today.
+
 ## Ports
 
 | Variable | Default | Service | Flag |
 |---|---|---|---|
 | `PORT_QUERY_UI` | `9000` | `python -m sandbox_engine.query_ui` | `--port` |
+| `PORT_QUERY_UI_V2` | `9100` | `python -m sandbox_engine.ui_next` | `--port` |
 | `PORT_GRAPHRAG_UI` | `8765` | `python -m graphrag.cli serve` | `--port` |
 
 Precedence is `--port`, then the variable, then the default. A value that is not
@@ -152,7 +226,8 @@ error: port 9000 on 127.0.0.1 is already in use.
 
 ```bash
 PORT_QUERY_UI=9100 python -m sandbox_engine.query_ui
-PORT_GRAPHRAG_UI=9200 python -m graphrag.cli serve
+PORT_QUERY_UI_V2=9200 python -m sandbox_engine.ui_next
+PORT_GRAPHRAG_UI=9300 python -m graphrag.cli serve
 ```
 
 Both read `.env` as well as the process environment, so the variable belongs in
@@ -309,6 +384,7 @@ To add a company, create its folder and drop filings in. Nothing else to edit.
 | `sandbox_engine/loader.py` | Idempotent load into LadybugDB (lookup-before-insert) |
 | `sandbox_engine/benchmarks.py` | The five graph integrity benchmarks (B1–B5) |
 | `sandbox_engine/query_ui.py` | HTTP server, `/api/ask`, graph payload for the UI |
+| `sandbox_engine/ui_next/` | Redesigned front end over the same graph; imports the backend, adds two read-only endpoints |
 | `sandbox_engine/router.py` | Discriminated query router (KNOWN, COLD_START, AMBIGUOUS) |
 | `sandbox_engine/tier1_fetch.py` | Runtime SEC EDGAR filing fetcher (< 2.5s SLA budget) |
 | `sandbox_engine/tier1_clean.py` | High-signal section slicing (Item 1/2) and token capping |

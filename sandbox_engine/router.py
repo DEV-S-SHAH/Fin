@@ -130,6 +130,33 @@ COMPANY_ALIASES: dict[str, tuple[str, tuple[str, ...]]] = {
     ),
 }
 
+#: Company name -> ticker, keyed on the normalised (lowercased, punctuation
+#: stripped) company name. This is the table a human reads to answer "which
+#: ticker does 'JP Morgan' mean?" without tracing the alias machinery.
+#:
+#: Longest name wins, so "jp morgan chase" resolves before "jp morgan" and
+#: "jpmorgan chase" before "jpmorgan". A shorter name that is a suffix of a
+#: longer one still matches, because matching is done on space-padded
+#: substrings rather than whole tokens.
+COMPANY_NAME_TO_TICKER: dict[str, str] = {
+    # JPMorgan Chase
+    "jpmorgan": "JPM",
+    "jp morgan": "JPM",
+    "jpmorgan chase": "JPM",
+    # Alphabet / Google
+    "alphabet": "GOOGL",
+    "google": "GOOGL",
+    # The rest of the megacaps
+    "amazon": "AMZN",
+    "apple": "AAPL",
+    "microsoft": "MSFT",
+    "meta": "META",
+    "meta platforms": "META",
+    "nvidia": "NVDA",
+    "rivian": "RIVN",
+    "tesla": "TSLA",
+}
+
 # Precompute ranked alias patterns sorted by length descending (longest pattern first)
 _SORTED_ALIAS_PATTERNS: tuple[tuple[str, str, str], ...] = tuple(
     sorted(
@@ -143,10 +170,46 @@ _SORTED_ALIAS_PATTERNS: tuple[tuple[str, str, str], ...] = tuple(
     )
 )
 
+#: Same longest-first ranking, built from COMPANY_NAME_TO_TICKER. Kept as its
+#: own table rather than folded into _SORTED_ALIAS_PATTERNS so the name->ticker
+#: contract is independently inspectable and testable.
+_SORTED_NAME_TO_TICKER: tuple[tuple[str, str], ...] = tuple(
+    sorted(COMPANY_NAME_TO_TICKER.items(), key=lambda item: len(item[0]), reverse=True)
+)
+
 
 def _strip_possessives(text: str) -> str:
     """Remove possessive 's suffixes."""
     return _POSSESSIVE_RE.sub("", text)
+
+
+def _normalise_for_match(text: str) -> str:
+    """Lowercase, strip punctuation, collapse whitespace, and pad with spaces.
+
+    The padding is what makes substring matching safe: without it, "jp morgan"
+    would match inside "notjp morganx", and "mac" inside "machine".
+    """
+    norm = re.sub(r"[^a-z0-9\s]", " ", text.lower())
+    return f" {re.sub(r'\s+', ' ', norm).strip()} "
+
+
+def resolve_company_name(query: str) -> tuple[Optional[str], Optional[str]]:
+    """Resolve a company name mentioned in prose to its ticker.
+
+    Matches on space-padded substrings, longest name first, so "JP Morgan
+    Chase" resolves as JPM rather than as an incidental "jp morgan" inside a
+    longer phrase. Returns ``(None, None)`` when no name in
+    ``COMPANY_NAME_TO_TICKER`` appears.
+    """
+    if not isinstance(query, str) or not query.strip():
+        return None, None
+
+    padded_query = _normalise_for_match(_strip_possessives(query))
+    for name, ticker in _SORTED_NAME_TO_TICKER:
+        if f" {_normalise_for_match(name).strip()} " in padded_query:
+            return ticker, COMPANY_ALIASES.get(ticker, (None, ()))[0]
+
+    return None, None
 
 
 def extract_candidate_entity(query: str) -> tuple[Optional[str], Optional[str]]:
@@ -154,8 +217,9 @@ def extract_candidate_entity(query: str) -> tuple[Optional[str], Optional[str]]:
 
     Checks:
     1. Cashtag pattern: $TICKER
-    2. Alias dictionary matching: matches known company alias phrases (e.g. 'Apple', 'Rivian', 'JP Morgan')
-    3. Uppercase token: TICKER (filtering out stop words)
+    2. Company name: matches COMPANY_NAME_TO_TICKER phrases (e.g. 'JP Morgan', 'Rivian')
+    3. Alias dictionary: product and brand names (e.g. 'iPhone', 'Azure')
+    4. Uppercase token: TICKER (filtering out stop words)
     """
     if not isinstance(query, str) or not query.strip():
         return None, None
@@ -167,18 +231,20 @@ def extract_candidate_entity(query: str) -> tuple[Optional[str], Optional[str]]:
         entity_name = COMPANY_ALIASES.get(ticker, (None, ()))[0]
         return ticker, entity_name
 
-    # 2. Alias dictionary matching (e.g. 'Apple', 'Rivian', 'JP Morgan', 'Tesla')
-    # Normalize text by removing punctuation and collapsing spaces
-    norm_text = re.sub(r"[^a-z0-9\s]", " ", _strip_possessives(query).lower())
-    padded_norm = f" {re.sub(r'\s+', ' ', norm_text).strip()} "
+    # 2. Company name -> ticker (e.g. 'JP Morgan', 'Rivian', 'Google')
+    ticker, entity_name = resolve_company_name(query)
+    if ticker:
+        return ticker, entity_name
+
+    # 3. Alias dictionary matching (product/brand names not in COMPANY_NAME_TO_TICKER,
+    #    e.g. 'iPhone', 'Azure', 'Blackwell')
+    padded_norm = _normalise_for_match(_strip_possessives(query))
 
     for pattern, ticker, entity_name in _SORTED_ALIAS_PATTERNS:
-        pattern_norm = re.sub(r"[^a-z0-9\s]", " ", pattern)
-        padded_pattern = f" {re.sub(r'\s+', ' ', pattern_norm).strip()} "
-        if padded_pattern in padded_norm:
+        if f" {_normalise_for_match(pattern).strip()} " in padded_norm:
             return ticker, entity_name
 
-    # 3. Uppercase token matching (unlisted / unmapped tickers like $COIN, PLTR, BABA)
+    # 4. Uppercase token matching (unlisted / unmapped tickers like $COIN, PLTR, BABA)
     stripped = _strip_possessives(query)
     uppercase_tokens = _UPPERCASE_RE.findall(stripped)
     for token in uppercase_tokens:
@@ -218,6 +284,16 @@ def _check_db_presence(kg_connection: Any, ticker: str) -> bool:
 
 def route_query(query: str, kg_connection: Any) -> RoutingResult:
     """Route a natural language query based on extracted entity and database presence.
+
+    Resolution order:
+    1. ``$TICKER`` cashtag.
+    2. Company name matched against COMPANY_NAME_TO_TICKER, longest name first,
+       so a multi-word name like "JP Morgan" resolves where a ticker regex
+       cannot see it.
+    3. Product/brand aliases, then bare uppercase ticker tokens.
+    4. LadybugDB presence decides KNOWN vs COLD_START for whatever ticker was
+       resolved. An unresolved query is AMBIGUOUS and stops here -- the
+       database is never consulted, and no default ticker is substituted.
 
     Returns:
     - EntityRoute.KNOWN: Candidate entity found and present in knowledge graph.

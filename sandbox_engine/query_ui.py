@@ -20,6 +20,7 @@ editing a literal.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import errno
 import json
 import logging
@@ -1723,7 +1724,13 @@ def _cold_start_response(ticker: str | None, question: str) -> dict[str, Any]:
 
 
 def _ambiguous_response(question: str) -> dict[str, Any]:
-    msg = "Please specify a company ticker or name (e.g. $AAPL, $MSFT) to answer your question."
+    """Ask for an entity instead of guessing one.
+
+    This is a terminal response: ask_rag returns it before touching the
+    database or the model, so an unresolvable question can never be answered
+    against a silently substituted issuer.
+    """
+    msg = "Please specify a valid company name or stock ticker (e.g. $JPM, $AAPL) to analyze."
     return {
         "status": "ambiguous",
         "message": msg,
@@ -1736,50 +1743,196 @@ def _ambiguous_response(question: str) -> dict[str, Any]:
     }
 
 
+# ── Wire telemetry ────────────────────────────────────────────────────────────
+
+#: The stages reported on the wire, in pipeline order. ``total`` is not a stage
+#: -- it is the request duration and so is measured from construction, not
+#: accumulated from the others.
+WIRE_STAGES: tuple[str, ...] = (
+    "routing",
+    "fetching",
+    "extraction",
+    "stitching",
+    "traversal",
+    "synthesis",
+)
+
+
+class _StageTimer:
+    """Wall-clock accounting for the stages of one request.
+
+    Every stage the pipeline can take is declared up front, so a stage that did
+    not run reports ``0.0`` rather than going missing. That distinction is the
+    reason this exists: a client cannot tell "extraction took 4ms" from
+    "extraction never ran" when the key is simply absent, and the benchmark
+    scores cold-start and known paths against each other. Absent-vs-zero is
+    also why a stage a route does not use is zeroed rather than filled with
+    the request's own duration.
+
+    Not thread-safe, and does not need to be: one instance belongs to one
+    request.
+    """
+
+    def __init__(self) -> None:
+        self._start = time.perf_counter()
+        self._stages: dict[str, float] = {name: 0.0 for name in WIRE_STAGES}
+
+    @contextlib.contextmanager
+    def stage(self, name: str):
+        """Time the enclosed block and add it to ``name``'s total.
+
+        Accumulates, so nesting or re-entry adds up rather than overwrites.
+        Exceptions still record the time spent before unwinding: a stage that
+        raised did consume wall clock, and reporting 0.0 for it would make a
+        timeout look instant.
+        """
+        started = time.perf_counter()
+        try:
+            yield
+        finally:
+            self._stages[name] = self._stages.get(name, 0.0) + (
+                time.perf_counter() - started
+            ) * 1000.0
+
+    def elapsed_ms(self) -> float:
+        return (time.perf_counter() - self._start) * 1000.0
+
+    def as_wire(self) -> dict[str, float]:
+        """The ``stage_latencies_ms`` block, rounded for the wire.
+
+        ``total`` is measured from the timer's construction rather than summed
+        from the stages, because the two differ by real work -- payload
+        assembly, provenance formatting, background scheduling -- and a total
+        that does not match the sum of its parts is the only way a client can
+        notice unaccounted time.
+        """
+        out = {name: round(self._stages[name], 2) for name in WIRE_STAGES}
+        out["total"] = round(self.elapsed_ms(), 2)
+        return out
+
+
+def _hop_depth_from_paths(paths: Sequence[Sequence[dict[str, Any]]]) -> int:
+    """Longest path in a traversal result, in hops.
+
+    The traverser already returns paths, so its own length is the depth -- no
+    reconstruction. The client used to rebuild depth from a flattened edge list,
+    which is why a wire that carried the edges but not the depth forced that
+    guess in the first place.
+    """
+    return max((len(path) for path in paths), default=0)
+
+
+def _hop_depth_from_seeds(
+    seed_ids: Sequence[str], edges: Sequence[dict[str, Any]]
+) -> int:
+    """Deepest node reachable from any seed, in hops.
+
+    The known route does not run the cold-start traverser; it selects evidence
+    and then fetches the edges among the selected nodes. Its depth is therefore
+    a property of that evidence subgraph, so it is measured the same way the
+    graph is built: breadth-first from the seeds over the returned edges.
+
+    A seed is depth 0, so a company with no relations reports 0 rather than 1 --
+    the honest answer to "how far from the start node did we get".
+    """
+    if not seed_ids:
+        return 0
+    adjacency: dict[str, set[str]] = {}
+    for e in edges:
+        src, dst = e.get("source"), e.get("target")
+        if src is None or dst is None:
+            continue
+        adjacency.setdefault(src, set()).add(dst)
+        adjacency.setdefault(dst, set()).add(src)
+    seen = {s for s in seed_ids if s is not None}
+    frontier = set(seen)
+    depth = 0
+    while frontier:
+        nxt: set[str] = set()
+        for node in frontier:
+            nxt |= adjacency.get(node, set()) - seen
+        if not nxt:
+            break
+        seen |= nxt
+        frontier = nxt
+        depth += 1
+    return depth
+
+
+def _graph_metrics(
+    *,
+    max_hop_depth: int,
+    node_count: int,
+    edge_count: int,
+) -> dict[str, int]:
+    """The ``graph_metrics`` block.
+
+    Plain counts of what was actually traversed, so a client can report reach
+    and shape without re-deriving them. ``node_count``/``edge_count`` count the
+    subgraph, not the corpus: the number that matters when asking whether a
+    question was answered from context or from the model's memory is how much
+    context it was given.
+    """
+    return {
+        "max_hop_depth": int(max_hop_depth),
+        "node_count": int(node_count),
+        "edge_count": int(edge_count),
+    }
+
+
 def ask_rag(kg: KnowledgeGraph, question: str) -> dict[str, Any]:
-    routing = route_query(question, kg)
+    timer = _StageTimer()
+    with timer.stage("routing"):
+        routing = route_query(question, kg)
 
     if routing.route == EntityRoute.COLD_START:
         ticker = (routing.ticker or "").strip().upper()
         t0 = time.perf_counter()
         try:
             # Step 1: Fetch latest 10-K from SEC EDGAR
-            fetcher = SECRuntimeFetcher()
-            raw_html, _meta = fetcher.fetch_latest_filing_html(
-                ticker, form_type="10-K", timeout=2.0
-            )
-
-            # Step 2: Clean and cap to 6 000-token budget
-            cleaned_text = clean_and_truncate_section(
-                raw_html, form_type="10-K", max_tokens=6000
-            )
+            # ``fetching`` covers the EDGAR round trip and the slice written to
+            # the token budget together: the clean is what makes the bytes
+            # usable, and timing the socket alone would flatter a pipeline that
+            # spent its time in the HTML parser.
+            with timer.stage("fetching"):
+                fetcher = SECRuntimeFetcher()
+                raw_html, _meta = fetcher.fetch_latest_filing_html(
+                    ticker, form_type="10-K", timeout=2.0
+                )
+                cleaned_text = clean_and_truncate_section(
+                    raw_html, form_type="10-K", max_tokens=6000
+                )
 
             # Step 3: Extract 15-30 financial triples
-            extractor = ColdStartExtractor()
-            payload = (
-                extractor.extract(cleaned_text, ticker)
-                if hasattr(extractor, "extract")
-                else extractor.extract_triples(cleaned_text, target_ticker=ticker)
-            )
+            with timer.stage("extraction"):
+                extractor = ColdStartExtractor()
+                payload = (
+                    extractor.extract(cleaned_text, ticker)
+                    if hasattr(extractor, "extract")
+                    else extractor.extract_triples(cleaned_text, target_ticker=ticker)
+                )
 
             # Step 4: Stitch ephemeral overlay onto backbone
-            overlay = InMemoryOverlayGraph(kg_connection=kg)
-            stitch_coldstart_payload(overlay, payload, target_ticker=ticker)
+            with timer.stage("stitching"):
+                overlay = InMemoryOverlayGraph(kg_connection=kg)
+                stitch_coldstart_payload(overlay, payload, target_ticker=ticker)
 
             # Step 5: 2-hop hybrid traversal
-            traverser = HybridGraphTraverser(overlay)
-            subgraph = traverser.traverse_neighborhood(ticker, max_hops=2)
+            with timer.stage("traversal"):
+                traverser = HybridGraphTraverser(overlay)
+                subgraph = traverser.traverse_neighborhood(ticker, max_hops=2)
 
             # Step 6: Synthesize full 5-section investment analysis
-            synthesizer = ColdStartSynthesizer()
-            context = {
-                "target_ticker": ticker,
-                "query": question,
-                "paths": subgraph.get("paths", []),
-                "filing_text": cleaned_text,
-            }
-            tokens: list[str] = list(synthesizer.stream_synthesis(context))
-            answer_text = "".join(tokens)
+            with timer.stage("synthesis"):
+                synthesizer = ColdStartSynthesizer()
+                context = {
+                    "target_ticker": ticker,
+                    "query": question,
+                    "paths": subgraph.get("paths", []),
+                    "filing_text": cleaned_text,
+                }
+                tokens: list[str] = list(synthesizer.stream_synthesis(context))
+                answer_text = "".join(tokens)
 
             from .traversal import format_provenance_ledger
             provenance_text = format_provenance_ledger(subgraph.get("paths", []))
@@ -1814,7 +1967,18 @@ def ask_rag(kg: KnowledgeGraph, question: str) -> dict[str, Any]:
                     ],
                 },
                 "route": "COLD_START",
+                "ticker": ticker,
                 "latency_ms": latency_ms,
+                "stage_latencies_ms": timer.as_wire(),
+                "graph_metrics": _graph_metrics(
+                    max_hop_depth=_hop_depth_from_paths(
+                        subgraph.get("paths", [])
+                    ),
+                    node_count=len(subgraph.get("nodes", [])),
+                    edge_count=sum(
+                        len(path) for path in subgraph.get("paths", [])
+                    ),
+                ),
                 "background_task_scheduled": True,
                 "question": question,
                 "grounded": bool(answer_text),
@@ -1844,7 +2008,15 @@ def ask_rag(kg: KnowledgeGraph, question: str) -> dict[str, Any]:
     backend = state["backend"]
 
     t0 = time.perf_counter()
-    nodes, edges, tag_map, seed_ids = retrieve_financial_context(kg, question, ticker=routing.ticker)
+    # The known route's graph work -- seeded selection, the edges among the
+    # selected nodes, and the evidence block -- is its traversal. It runs no
+    # fetch, extraction or stitch stage, and those report 0.0 rather than
+    # going missing, so a client can tell a cheap known request from a cold
+    # start that skipped work.
+    with timer.stage("traversal"):
+        nodes, edges, tag_map, seed_ids = retrieve_financial_context(
+            kg, question, ticker=routing.ticker
+        )
 
     # Provenance is resolved here, by code, before the model is called: every
     # retrieved node gets a tag and a Source, and the tags that will be legal to
@@ -1855,6 +2027,37 @@ def ask_rag(kg: KnowledgeGraph, question: str) -> dict[str, Any]:
     evidence_block = serialise_evidence(evidence)
 
     log.info("Retrieved %d entities and %d relationships for: %s", len(nodes), len(edges), question)
+
+    # Graph payload for visualization.
+    # Both merges happen here, at the boundary, so no caller's bookkeeping is
+    # load-bearing: one entry per node id, one arrow per (source, target,
+    # relation), and a label no other node shares.
+    graph_payload_nodes = merge_nodes(nodes)
+    graph_payload_edges = merge_edges(edges)
+    # Merged once, here, for both the wire and the depth measurement: the graph
+    # the client is told about and the graph the depth was computed from must
+    # be the same object, or node_count describes a payload nobody receives.
+    graph_payload = {
+        "seeds": seed_ids,
+        "nodes": [
+            {
+                "id": n["id"],
+                "name": n["name"],
+                "type": n["type"],
+                "description": n.get("description", ""),
+            }
+            for n in graph_payload_nodes
+        ],
+        "edges": [
+            {
+                "source": e["source"],
+                "target": e["target"],
+                "relation": e["relation"],
+                "description": e.get("description", ""),
+            }
+            for e in graph_payload_edges
+        ],
+    }
 
     # One client for whichever backend resolved; both speak the
     # OpenAI-compatible chat API, so only the URL, the model and the timeout
@@ -1905,16 +2108,21 @@ def ask_rag(kg: KnowledgeGraph, question: str) -> dict[str, Any]:
         }
 
     try:
-        completion = client.chat.completions.create(**request)
-        msg = completion.choices[0].message
-        content = (msg.content or "").strip()
-        reasoning = (
-            getattr(msg, "reasoning_content", None)
-            or getattr(msg, "reasoning", None)
-            or ""
-        )
-        if not content and reasoning:
-            content = reasoning
+        # The synthesis stage is the whole model call, from request to last
+        # byte. This route is non-streaming, so there is no first-token moment
+        # to split out; the cold-start route streams and records the same stage
+        # as a single block, which is why the two remain comparable.
+        with timer.stage("synthesis"):
+            completion = client.chat.completions.create(**request)
+            msg = completion.choices[0].message
+            content = (msg.content or "").strip()
+            reasoning = (
+                getattr(msg, "reasoning_content", None)
+                or getattr(msg, "reasoning", None)
+                or ""
+            )
+            if not content and reasoning:
+                content = reasoning
     except Exception as exc:
         log.error("RAG call to %s (%s) failed: %s", state["model"], backend, exc)
         return {
@@ -1936,6 +2144,18 @@ def ask_rag(kg: KnowledgeGraph, question: str) -> dict[str, Any]:
             "ungrounded_figures": [],
             "misattributed": [],
             "violations": [],
+            # A failed model call still has a real shape: it routed, it retrieved
+            # a graph, and it spent a measurable time failing. Reporting zeros
+            # here rather than omitting the keys keeps a client's telemetry
+            # reader from having to special-case the error path -- and an
+            # omitted key is indistinguishable from a stage that never ran.
+            "ticker": routing.ticker,
+            "stage_latencies_ms": timer.as_wire(),
+            "graph_metrics": _graph_metrics(
+                max_hop_depth=_hop_depth_from_seeds(seed_ids, edges),
+                node_count=len(nodes),
+                edge_count=len(edges),
+            ),
         }
 
     # Extract cited tags. The grammar is the grader's, so a citation the grader
@@ -1972,33 +2192,10 @@ def ask_rag(kg: KnowledgeGraph, question: str) -> dict[str, Any]:
     flow_lines.append(f"  └─ Generated answer citing: {', '.join(f'[{t}]' for t in used_tags) if used_tags else 'none'}")
     flow = "\n".join(flow_lines)
 
-    # Graph payload for visualization
-    # Both merges happen here, at the boundary, so no caller's bookkeeping is
-    # load-bearing: one entry per node id, one arrow per (source, target,
-    # relation), and a label no other node shares.
-    graph_nodes = merge_nodes(nodes)
-    graph_edges = merge_edges(edges)
-    graph_payload = {
-        "seeds": seed_ids,
-        "nodes": [
-            {
-                "id": n["id"],
-                "name": n["name"],
-                "type": n["type"],
-                "description": n.get("description", ""),
-            }
-            for n in graph_nodes
-        ],
-        "edges": [
-            {
-                "source": e["source"],
-                "target": e["target"],
-                "relation": e["relation"],
-                "description": e.get("description", ""),
-            }
-            for e in graph_edges
-        ],
-    }
+    # Graph payload was built above, immediately after retrieval, so the same
+    # merged objects could be measured for the wire. Building it a second time
+    # here would let the payload and the reported counts describe different
+    # graphs.
 
     elapsed = time.perf_counter() - t0
     log.info("RAG QA completed in %.2fs (cited: %s)", elapsed, used_tags)
@@ -2041,6 +2238,13 @@ def ask_rag(kg: KnowledgeGraph, question: str) -> dict[str, Any]:
         # names regardless of which path produced the response.
         "answer": content,
         "route": "KNOWN",
+        "ticker": routing.ticker,
+        "stage_latencies_ms": timer.as_wire(),
+        "graph_metrics": _graph_metrics(
+            max_hop_depth=_hop_depth_from_seeds(seed_ids, graph_payload_edges),
+            node_count=len(graph_payload_nodes),
+            edge_count=len(graph_payload_edges),
+        ),
         "background_task_scheduled": False,
         "latency_ms": round(elapsed * 1000, 2),
     }
@@ -4006,15 +4210,36 @@ class _Handler(BaseHTTPRequestHandler):
         self.close_connection = True
 
         start_time = time.monotonic()
+        # Same accounting as ask_rag, so the two transports report the same
+        # stage names with the same meaning. A client that measures one
+        # transport and compares against the other should not have to know
+        # which one it got.
+        timer = _StageTimer()
         try:
             # 1. Routing
             self._send_sse("status", {"step": "routing", "message": "Analyzing entity..."})
-            routing = route_query(question, self.kg)
+            with timer.stage("routing"):
+                routing = route_query(question, self.kg)
 
             if routing.route == EntityRoute.AMBIGUOUS:
+                # Same terminal response ask_rag returns, so the streaming and
+                # JSON transports cannot drift apart on what "unresolved" means.
                 self._send_sse("status", {"step": "ambiguous", "message": "Ambiguous entity"})
-                self._send_sse("token", {"token": "Please clarify which stock ticker or company you are inquiring about."})
-                self._send_sse("done", {"status": "complete", "route": "AMBIGUOUS", "latency_ms": round((time.monotonic() - start_time) * 1000, 2)})
+                self._send_sse("token", {"token": _ambiguous_response(question)["message"]})
+                # A refusal touched no graph, so the depth is 0 and the counts
+                # are 0 -- stated rather than omitted, so a client reading
+                # graph_metrics unconditionally gets a real "nothing was
+                # traversed" instead of a missing field it has to guess at.
+                self._send_sse("done", {
+                    "status": "complete",
+                    "route": "AMBIGUOUS",
+                    "ticker": None,
+                    "stage_latencies_ms": timer.as_wire(),
+                    "graph_metrics": _graph_metrics(
+                        max_hop_depth=0, node_count=0, edge_count=0
+                    ),
+                    "latency_ms": round((time.monotonic() - start_time) * 1000, 2),
+                })
                 return
 
             if routing.route == EntityRoute.KNOWN:
@@ -4024,13 +4249,35 @@ class _Handler(BaseHTTPRequestHandler):
                 words = ans.split(" ")
                 for i, w in enumerate(words):
                     self._send_sse("token", {"token": w + (" " if i < len(words) - 1 else "")})
-                self._send_sse("done", {"status": "complete", "route": "KNOWN", "latency_ms": round((time.monotonic() - start_time) * 1000, 2)})
+                # ask_rag already measured this request's stages, so its numbers
+                # are forwarded rather than re-timed -- only ``total`` is
+                # replaced, with the wall clock measured from the first byte
+                # this handler accepted, which is the duration the client
+                # actually experienced.
+                stages = dict(result.get("stage_latencies_ms") or {})
+                stages["total"] = round((time.monotonic() - start_time) * 1000, 2)
+                self._send_sse("done", {
+                    "status": "complete",
+                    "route": "KNOWN",
+                    "ticker": result.get("ticker") or routing.ticker,
+                    "answer": ans,
+                    "stage_latencies_ms": stages,
+                    "graph_metrics": result.get("graph_metrics") or _graph_metrics(
+                        max_hop_depth=0, node_count=0, edge_count=0
+                    ),
+                    "latency_ms": round((time.monotonic() - start_time) * 1000, 2),
+                })
                 return
 
             # COLD_START — run the full foreground JIT pipeline with SSE progress
             ticker = routing.ticker or "UNKNOWN"
             answer_text = ""
             subgraph_result: dict[str, Any] = {"nodes": [], "paths": []}
+            #: Set when the live pipeline raised and the answer came from the
+            #: fallback. Explicit rather than inferred from timings: a fast
+            #: degraded run and a fast clean run look identical on the clock,
+            #: and a client scoring the answer needs to know which it got.
+            degraded = False
 
             try:
                 # Step 1: Fetch SEC 10-K filing
@@ -4038,61 +4285,67 @@ class _Handler(BaseHTTPRequestHandler):
                     "step": "fetching",
                     "message": f"Fetching SEC 10-K for {ticker}...",
                 })
-                fetcher = SECRuntimeFetcher()
-                raw_html, _meta = fetcher.fetch_latest_filing_html(
-                    ticker, form_type="10-K", timeout=2.0
-                )
-                cleaned_text = clean_and_truncate_section(
-                    raw_html, form_type="10-K", max_tokens=6000
-                )
+                with timer.stage("fetching"):
+                    fetcher = SECRuntimeFetcher()
+                    raw_html, _meta = fetcher.fetch_latest_filing_html(
+                        ticker, form_type="10-K", timeout=2.0
+                    )
+                    cleaned_text = clean_and_truncate_section(
+                        raw_html, form_type="10-K", max_tokens=6000
+                    )
 
                 # Step 2: Triple extraction
                 self._send_sse("status", {
                     "step": "extracting",
                     "message": "Extracting financial triples...",
                 })
-                extractor = ColdStartExtractor()
-                payload = (
-                    extractor.extract(cleaned_text, ticker)
-                    if hasattr(extractor, "extract")
-                    else extractor.extract_triples(cleaned_text, target_ticker=ticker)
-                )
+                with timer.stage("extraction"):
+                    extractor = ColdStartExtractor()
+                    payload = (
+                        extractor.extract(cleaned_text, ticker)
+                        if hasattr(extractor, "extract")
+                        else extractor.extract_triples(cleaned_text, target_ticker=ticker)
+                    )
 
                 # Step 3: Overlay stitching
                 self._send_sse("status", {
                     "step": "stitching",
                     "message": "Stitching to in-memory graph...",
                 })
-                overlay = InMemoryOverlayGraph(kg_connection=self.kg)
-                stitch_coldstart_payload(overlay, payload, target_ticker=ticker)
+                with timer.stage("stitching"):
+                    overlay = InMemoryOverlayGraph(kg_connection=self.kg)
+                    stitch_coldstart_payload(overlay, payload, target_ticker=ticker)
 
                 # Step 4: 2-hop traversal
                 self._send_sse("status", {
                     "step": "traversing",
                     "message": "Running 2-hop traversal...",
                 })
-                traverser = HybridGraphTraverser(overlay)
-                subgraph_result = traverser.traverse_neighborhood(ticker, max_hops=2)
+                with timer.stage("traversal"):
+                    traverser = HybridGraphTraverser(overlay)
+                    subgraph_result = traverser.traverse_neighborhood(ticker, max_hops=2)
 
                 # Step 5: Stream synthesis tokens
-                synthesizer = ColdStartSynthesizer()
-                context = {
-                    "target_ticker": ticker,
-                    "query": question,
-                    "paths": subgraph_result.get("paths", []),
-                    "filing_text": cleaned_text,
-                }
-                token_parts: list[str] = []
-                for token in synthesizer.stream_synthesis(context):
-                    self._send_sse("token", {"token": token})
-                    token_parts.append(token)
-                answer_text = "".join(token_parts)
+                with timer.stage("synthesis"):
+                    synthesizer = ColdStartSynthesizer()
+                    context = {
+                        "target_ticker": ticker,
+                        "query": question,
+                        "paths": subgraph_result.get("paths", []),
+                        "filing_text": cleaned_text,
+                    }
+                    token_parts: list[str] = []
+                    for token in synthesizer.stream_synthesis(context):
+                        self._send_sse("token", {"token": token})
+                        token_parts.append(token)
+                    answer_text = "".join(token_parts)
 
                 # Step 7 (spec): Non-blocking background ingestion
                 background_queue.enqueue_coldstart_sync(ticker)
 
             except Exception as jit_exc:
                 # Fallback guard — inform the client then fall back to standard QA.
+                degraded = True
                 log.warning(
                     "SSE COLD_START JIT pipeline failed for %s (%s: %s); "
                     "falling back to standard graph QA",
@@ -4122,20 +4375,32 @@ class _Handler(BaseHTTPRequestHandler):
                 except Exception:
                     pass
 
+            # A stage that raised still records the time it spent before
+            # unwinding, so a degraded run reports where its wall clock went
+            # instead of a set of zeros that looks like a fast success.
             from .traversal import format_provenance_ledger
+            cold_paths = subgraph_result.get("paths", [])
             self._send_sse("done", {
                 "status": "complete",
                 "answer": answer_text,
-                "provenance": format_provenance_ledger(subgraph_result.get("paths", [])),
+                "provenance": format_provenance_ledger(cold_paths),
                 "graph": {
                     "nodes": subgraph_result.get("nodes", []),
                     "edges": [
                         hop
-                        for path in subgraph_result.get("paths", [])
+                        for path in cold_paths
                         for hop in path
                     ],
                 },
                 "route": "COLD_START",
+                "ticker": ticker,
+                "stage_latencies_ms": timer.as_wire(),
+                "graph_metrics": _graph_metrics(
+                    max_hop_depth=_hop_depth_from_paths(cold_paths),
+                    node_count=len(subgraph_result.get("nodes", [])),
+                    edge_count=sum(len(path) for path in cold_paths),
+                ),
+                "degraded": degraded,
                 "latency_ms": round((time.monotonic() - start_time) * 1000, 2),
                 "background_task_scheduled": True,
             })
@@ -4144,6 +4409,14 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_sse("done", {
                 "status": "error",
                 "error": str(exc),
+                "ticker": None,
+                # Timings for the stages that did run before the failure. A
+                # stage that never started is 0.0, not missing, so a client can
+                # tell "never ran" from "took no measurable time".
+                "stage_latencies_ms": timer.as_wire(),
+                "graph_metrics": _graph_metrics(
+                    max_hop_depth=0, node_count=0, edge_count=0
+                ),
                 "latency_ms": round((time.monotonic() - start_time) * 1000, 2),
             })
 

@@ -501,9 +501,12 @@ def detect_intent(text: str) -> Intent:
 def parse_question(
     text: str,
     default_year: int = graph.FISCAL_YEAR,
-    default_tickers: Sequence[str] = ("AAPL", "MSFT"),
 ) -> ParsedQuestion:
     """Read a natural-language question into tickers, year, intent, keywords.
+
+    A question that names no issuer yields ``tickers == ()``. There is no
+    default pair of seed companies: an empty result is the honest reading, and
+    the caller decides what to do about a question it cannot attribute.
 
     Year handling is deliberately conservative: an explicit four-digit year in
     the question wins, otherwise the caller's default applies. The resolved year

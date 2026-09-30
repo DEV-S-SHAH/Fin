@@ -1,0 +1,321 @@
+"""Server for the redesigned UI, served from :mod:`sandbox_engine.ui_next`.
+
+The old three-pane viewer lives in :mod:`sandbox_engine.query_ui` and is left
+exactly as it is. This module does not reimplement any of its behaviour: it
+subclasses the handler, so the graph queries, the RAG pipeline, the grader and
+the SSE stream are the *same code paths* the old page already runs. What is new
+is everything in front of them -- the markup, the stylesheet and the ES modules
+under ``static/`` -- plus two small read-only endpoints described below.
+
+Why a subclass rather than a second handler
+-------------------------------------------
+
+Duplicating the request router would let the two UIs drift: a fix to the
+citation grammar or the verdict payload would land in one and not the other, and
+the "new" UI would quietly go stale while looking newer. Subclassing makes drift
+impossible, because there is only one implementation of ``/api/ask``.
+
+Two additions
+-------------
+
+``GET /api/companies``
+    An overview of the issuers actually in the graph -- filings per ticker, the
+    forms on file, the newest period. The old page hard-codes eight Apple
+    questions, which is wrong the moment the graph holds a second issuer; this
+    endpoint lets the new page build its sample questions from the data.
+
+``GET /api/route?q=...``
+    Which of the three retrieval routes a question would take: ``KNOWN`` from the
+    stored graph, ``COLD_START`` through the live fetch pipeline, or ``AMBIGUOUS``
+    when the question names more than one issuer. It costs one graph query and no
+    model call, and it is what lets the new page tell the reader which of those
+    is about to happen before it spends anything.
+
+Nothing here writes. The knowledge graph is opened read-only, exactly as the old
+server opens it.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import threading
+import webbrowser
+from collections import OrderedDict
+from http.server import ThreadingHTTPServer
+from pathlib import Path
+from typing import Any
+from urllib.parse import parse_qs, urlparse
+
+from .. import query_ui as _legacy
+from ..query_ui import (
+    KnowledgeGraph,
+    _int_param,
+    _listeners,
+    parse_ports,
+    resolve_db_path,
+)
+from ..router import route_query
+
+log = logging.getLogger("graphrag_ui_next")
+
+_HERE = Path(__file__).resolve().parent
+_STATIC = _HERE / "static"
+
+UI_PORT_ENV = "PORT_QUERY_UI_V2"
+DEFAULT_UI_PORT = 9100
+
+#: Only these filenames are reachable. A set of names rather than a path join is
+#: what keeps ``/static/../query_ui.py`` from being served as text.
+_ASSETS: dict[str, str] = {
+    "index.html": "text/html; charset=utf-8",
+    "styles.css": "text/css; charset=utf-8",
+    "app.js": "text/javascript; charset=utf-8",
+    "api.js": "text/javascript; charset=utf-8",
+    "store.js": "text/javascript; charset=utf-8",
+    "graph.js": "text/javascript; charset=utf-8",
+    "answer.js": "text/javascript; charset=utf-8",
+    "reports.js": "text/javascript; charset=utf-8",
+    "util.js": "text/javascript; charset=utf-8",
+}
+
+
+def default_ui_port() -> int:
+    """Resolve the port from ``$PORT_QUERY_UI_V2``, then :data:`DEFAULT_UI_PORT`."""
+    raw = os.environ.get(UI_PORT_ENV, "").strip()
+    if raw:
+        try:
+            return int(raw)
+        except ValueError:
+            log.warning("%s=%r is not a port number; using %d", UI_PORT_ENV, raw, DEFAULT_UI_PORT)
+    return DEFAULT_UI_PORT
+
+
+# ── the issuer overview ──────────────────────────────────────────────────────
+
+def companies(kg: KnowledgeGraph) -> list[dict[str, Any]]:
+    """Summarise the issuers in the graph, newest filing first.
+
+    One query returns every filing row -- a graph with three issuers holds a few
+    dozen -- and the aggregation happens here, so the page needs a single round
+    trip to build its overview.
+    """
+    try:
+        rows = kg.execute(
+            "MATCH (c:Company)-[:SUBMITTED]->(f:Filing) "
+            "RETURN c.ticker, c.legal_name, f.form_type, "
+            "f.fiscal_year, f.fiscal_period, f.period_end_date "
+            "ORDER BY c.ticker, f.fiscal_year DESC, f.fiscal_period DESC"
+        )
+    except Exception as exc:  # a graph with no SUBMITTED edges is empty, not broken
+        log.warning("company overview unavailable: %s", exc)
+        return []
+
+    by_ticker: "OrderedDict[str, dict[str, Any]]" = OrderedDict()
+    for ticker, name, form, fy, fp, period_end in rows:
+        key = str(ticker or "").strip().upper()
+        if not key:
+            continue
+        entry = by_ticker.setdefault(
+            key,
+            {"ticker": key, "name": str(name or key), "filings": 0,
+             "forms": [], "periods": []},
+        )
+        entry["filings"] += 1
+        form_s = str(form or "?")
+        if form_s not in entry["forms"]:
+            entry["forms"].append(form_s)
+        entry["periods"].append(
+            {"form": form_s, "fiscal_year": fy,
+             "period": fp, "period_end": period_end}
+        )
+
+    for entry in by_ticker.values():
+        # The query sorted year-descending, so the head is the newest filing --
+        # unless a null year sorted first, which a filter also handles.
+        entry["periods"].sort(
+            key=lambda p: (str(p.get("fiscal_year") or ""), str(p.get("period_end") or "")),
+            reverse=True,
+        )
+        entry["latest"] = entry["periods"][0] if entry["periods"] else None
+        entry["forms"].sort()
+    return list(by_ticker.values())
+
+
+# ── request handler ──────────────────────────────────────────────────────────
+
+class _NextHandler(_legacy._Handler):
+    """The legacy router plus a static-file route for the new assets."""
+
+    server_version = "graphrag-ui-next"
+
+    def _send(self, status: int, body: bytes, ct: str, etag: str | None = None) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", ct)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store" if etag is None else "no-cache")
+        if etag:
+            self.send_header("ETag", etag)
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
+
+    # -- static ---------------------------------------------------------------
+
+    def _serve_asset(self, name: str) -> bool:
+        ct = _ASSETS.get(name)
+        if ct is None:
+            return self._err(404, f"no asset: {name}")
+        path = _STATIC / name
+        try:
+            stat = path.stat()
+            body = path.read_bytes()
+        except OSError:
+            return self._err(404, f"asset missing: {name}")
+
+        # The shell is never cached: it is the document that names every asset,
+        # so a stale copy pins an old stylesheet. The rest revalidates against
+        # mtime+size, so an edited module shows up on reload while an unchanged
+        # one costs a 304.
+        etag = f'W/"{name}-{int(stat.st_mtime)}-{len(body)}"'
+        if name != "index.html" and self.headers.get("If-None-Match") == etag:
+            self.send_response(304)
+            self.send_header("ETag", etag)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return True
+        self._send(200, body, ct, etag=None if name == "index.html" else etag)
+
+    def _get(self) -> None:
+        parsed = urlparse(self.path)
+        p = parsed.path
+
+        if p in ("/", "/index.html"):
+            return self._serve_asset("index.html")
+        if p.startswith("/static/"):
+            return self._serve_asset(p[len("/static/"):])
+        if p in ("/favicon.svg", "/favicon.ico"):
+            # Inline SVG, so the browser stops asking for a file that is not here
+            # and no binary asset has to be checked in beside the source.
+            svg = (
+                b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
+                b'<rect width="32" height="32" rx="8" fill="#6366f1"/>'
+                b'<circle cx="16" cy="9" r="3.4" fill="#fff"/>'
+                b'<circle cx="8" cy="22" r="3.4" fill="#a5b4fc"/>'
+                b'<circle cx="24" cy="22" r="3.4" fill="#67e8f9"/>'
+                b'<path d="M16 9 8 22M16 9l8 13M8 22h16" stroke="#fff" '
+                b'stroke-width="1.6" opacity=".7" fill="none"/></svg>'
+            )
+            return self._send(200, svg, "image/svg+xml")
+        if p == "/api/companies":
+            return self._json({"companies": companies(self.kg)})
+        if p == "/api/route":
+            question = (parse_qs(parsed.query).get("q") or [""])[0].strip()
+            if not question:
+                return self._err(400, "q is required")
+            routing = route_query(question, self.kg)
+            return self._json({
+                "route": routing.route.name,
+                "ticker": routing.ticker,
+            })
+
+        # Everything else -- /api/stats, /api/entities, /api/graph, /api/rag,
+        # /api/reports, /vendor/* -- is the old router, unchanged.
+        return super()._get()
+
+
+# ── server runner ────────────────────────────────────────────────────────────
+
+def serve(host: str = "127.0.0.1",
+          port: int | str | list[int] | None = None,
+          open_browser: bool = True,
+          read_only: bool = True,
+          db_path: Path | None = None) -> None:
+    _legacy._configure_logging()
+    ports = parse_ports(default_ui_port() if port is None else port)
+    db_path = db_path or resolve_db_path()
+    if db_path is None:
+        log.error(
+            "No graph database found. Build one first:\n"
+            "  python -m sandbox_engine --reset\n"
+            "then start this server again. To serve a different graph, pass --db <path>."
+        )
+        raise SystemExit(1)
+
+    # Built here, at start-up, so a missing credential is a line in the banner
+    # rather than a hang on the first question.
+    _legacy.get_backends()
+
+    kg = KnowledgeGraph(db_path, read_only=read_only)
+    handler = type("_BoundNextHandler", (_NextHandler,), {"kg": kg})
+    servers: list[ThreadingHTTPServer] = _listeners(host, ports, handler)
+
+    primary = f"http://{host}:{ports[0]}/"
+    stats = kg.stats()
+    tickers = ", ".join(c["ticker"] for c in companies(kg)) or "none"
+    where = {"nvidia": "NVIDIA NIM", "ollama": "local Ollama"}.get(stats["rag_backend"], "unavailable")
+
+    bar = "=" * 74
+    print(f"\n{bar}")
+    print("  GraphRAG Studio  —  redesigned UI (ui_next)")
+    print(f"{bar}")
+    for number in ports:
+        print(f"  Web UI       : http://{host}:{number}/")
+    print(f"  Database     : {db_path}")
+    print(f"  Schema       : {stats['schema']}")
+    print(f"  Graph        : {stats['nodes']} entities · {stats['edges']} relationships")
+    print(f"  Issuers      : {tickers}")
+    print(f"  RAG Model    : {stats['rag_model'] or 'none'} via {where}")
+    if stats["rag_backend"] == "none":
+        print("  Answers      : DISABLED. Paste a key in the browser, or run `ollama serve`.")
+    print(f"  Legacy UI    : python -m sandbox_engine.query_ui  (unchanged, port 9000)")
+    print(f"  Press Ctrl-C to stop")
+    print(f"{bar}\n")
+
+    if open_browser:
+        threading.Timer(0.6, lambda: webbrowser.open(primary)).start()
+
+    for server in servers[1:]:
+        threading.Thread(target=server.serve_forever, daemon=True,
+                         name=f"http-{server.server_address[1]}").start()
+    try:
+        servers[0].serve_forever()
+    except KeyboardInterrupt:
+        print("\nStopping server...")
+    finally:
+        for server in servers:
+            server.shutdown()
+            server.server_close()
+        kg.close()
+
+
+def main() -> None:
+    import argparse
+
+    _legacy._configure_logging()
+    p = argparse.ArgumentParser(
+        prog="python -m sandbox_engine.ui_next",
+        description="Redesigned GraphRAG UI over the same live graph as query_ui.",
+    )
+    p.add_argument("--port", default=str(default_ui_port()),
+                   help="one port or several, e.g. --port 9100,9200")
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--no-browser", action="store_true")
+    p.add_argument("--db", type=Path, default=None)
+    p.add_argument("--read-write", action="store_true")
+    args = p.parse_args()
+    try:
+        ports = parse_ports(args.port)
+        serve(args.host, ports, open_browser=not args.no_browser,
+              read_only=not args.read_write, db_path=args.db)
+    except OSError as exc:
+        log.error("%s", exc)
+        raise SystemExit(1)
+    except ValueError as exc:
+        log.error("%s", exc)
+        raise SystemExit(2)
+
+
+__all__ = ["companies", "default_ui_port", "main", "serve", "DEFAULT_UI_PORT", "UI_PORT_ENV"]

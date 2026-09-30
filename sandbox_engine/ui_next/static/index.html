@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<meta name="description" content="GraphRAG Studio — explore a financial knowledge graph and ask questions that are graded against their sources.">
+<title>GraphRAG Studio</title>
+
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/styles.css">
+
+<script>
+  /* Applied before first paint: a theme that lands after the stylesheet renders
+     as a white flash on every reload, which reads as a broken page. */
+  try {
+    var saved = localStorage.getItem("ui2.theme");
+    if (saved === "light" || saved === "dark") {
+      document.documentElement.dataset.theme = saved;
+    } else if (window.matchMedia("(prefers-color-scheme: light)").matches) {
+      document.documentElement.dataset.theme = "light";
+    }
+  } catch (e) { /* private mode: the default dark theme stands */ }
+</script>
+</head>
+
+<body>
+<a class="skip-link" href="#qa-input">Skip to the question box</a>
+
+<div class="app" id="app" data-view="graph">
+
+  <!-- ── topbar ────────────────────────────────────────────────────────── -->
+  <header class="topbar">
+    <button id="explorer-toggle" class="btn btn--ghost btn--icon explorer-toggle" aria-expanded="false" aria-controls="explorer" title="Toggle entity explorer">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 6h16M4 12h10M4 18h13" stroke-linecap="round"/></svg>
+      <span class="sr-only">Toggle entity explorer</span>
+    </button>
+
+    <div class="brand">
+      <span class="brand__mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.9" stroke-linecap="round">
+          <circle cx="12" cy="5.5" r="2.6" fill="#fff" stroke="none"/>
+          <circle cx="5.5" cy="17.5" r="2.6" fill="#fff" stroke="none"/>
+          <circle cx="18.5" cy="17.5" r="2.6" fill="#fff" stroke="none"/>
+          <path d="M12 8.1 5.5 15M12 8.1l6.5 6.9M8.1 17.5h7.8" opacity=".75"/>
+        </svg>
+      </span>
+      <span class="brand__name">GraphRAG Studio</span>
+      <span class="brand__env" id="schema-chip" hidden></span>
+    </div>
+
+    <div class="topbar__stats" id="topbar-stats" aria-live="off">
+      <span><b id="stat-nodes">—</b> entities</span>
+      <span class="dot" aria-hidden="true"></span>
+      <span><b id="stat-edges">—</b> relationships</span>
+      <span class="dot" aria-hidden="true"></span>
+      <span><b id="stat-issuers">—</b> issuers</span>
+    </div>
+
+    <div class="topbar__spacer"></div>
+
+    <div class="topbar__actions">
+      <button id="palette-btn" class="btn btn--ghost" title="Command palette">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5" stroke-linecap="round"/></svg>
+        <span class="btn__kbd">⌘K</span>
+        <span class="sr-only">Open the command palette</span>
+      </button>
+
+      <div class="search" style="width: min(30vw, 260px)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5" stroke-linecap="round"/></svg>
+        <input id="topbar-search" class="input" type="search" placeholder="Filter entities" autocomplete="off" aria-label="Filter entities">
+      </div>
+
+      <label class="sr-only" for="hops">Traversal depth</label>
+      <select id="hops" class="select" style="width: auto" title="Traversal depth in hops">
+        <option value="1">1 hop</option>
+        <option value="2" selected>2 hops</option>
+        <option value="3">3 hops</option>
+      </select>
+
+      <button id="reports-btn" class="btn btn--ghost btn--icon" title="Canned reports">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 20V10m5 10V4m5 16v-7m5 7V8" stroke-linecap="round"/></svg>
+        <span class="sr-only">Canned reports</span>
+      </button>
+
+      <button id="theme-btn" class="btn btn--ghost btn--icon" title="Toggle light and dark">
+        <svg id="theme-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M20 13.5A8 8 0 0 1 10.5 4a8.2 8.2 0 1 0 9.5 9.5Z" stroke-linejoin="round"/></svg>
+        <span class="sr-only">Toggle light and dark theme</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- ── workspace ─────────────────────────────────────────────────────── -->
+  <main class="workspace" id="workspace">
+
+    <!-- left: entity explorer -->
+    <aside class="panel panel--explorer" id="explorer" aria-label="Entity explorer">
+      <div class="panel__head">
+        <h2 class="panel__title">Entities</h2>
+        <span class="panel__sub" id="entity-count">—</span>
+        <div class="topbar__spacer"></div>
+        <button id="explorer-close" class="btn btn--ghost btn--icon btn--sm explorer-toggle" title="Close">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke-linecap="round"/></svg>
+          <span class="sr-only">Close the explorer</span>
+        </button>
+      </div>
+
+      <div style="padding: var(--sp-3) var(--sp-4) 0">
+        <div class="search">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5" stroke-linecap="round"/></svg>
+          <input id="entity-search" class="input" type="search" placeholder="Name, type or text" autocomplete="off" aria-label="Filter entities by name or type">
+          <button id="entity-clear" class="search__clear" hidden title="Clear">
+            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke-linecap="round"/></svg>
+            <span class="sr-only">Clear the filter</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="facets" id="facets" role="group" aria-label="Filter by entity type"></div>
+
+      <div class="panel__body">
+        <ul class="entity-list" id="entity-list" tabindex="0" aria-label="Entity list"></ul>
+      </div>
+
+      <div class="panel__foot">
+        <div style="display: flex; gap: var(--sp-2)">
+          <button id="show-all" class="btn btn--primary" style="flex: 1">Show whole graph</button>
+          <button id="clear-focus" class="btn" title="Clear the citation focus">Clear</button>
+        </div>
+        <div style="display: flex; align-items: center; gap: var(--sp-2); margin-top: var(--sp-2)">
+          <label class="field__label" for="graph-limit" style="margin: 0">Nodes</label>
+          <select id="graph-limit" class="select" style="width: auto">
+            <option value="60">60</option>
+            <option value="150" selected>150</option>
+            <option value="300">300</option>
+            <option value="500">500</option>
+          </select>
+          <div class="topbar__spacer"></div>
+          <span class="chip" id="model-chip" title="Answering model and backend">
+            <span class="status-dot" id="model-dot"></span><span id="model-label">model</span>
+          </span>
+        </div>
+      </div>
+    </aside>
+
+    <div class="splitter splitter--left" id="split-left" role="separator" aria-orientation="vertical" aria-label="Resize the entity explorer" tabindex="0"></div>
+
+    <!-- centre: graph -->
+    <section class="panel panel--graph graph-panel" id="graph-panel" aria-label="Knowledge graph">
+      <svg id="graph-canvas" role="img" aria-label="Force-directed graph of the retrieved entities"></svg>
+
+      <div class="graph-toolbar" role="toolbar" aria-label="Graph controls">
+        <button id="g-relayout" class="btn btn--ghost btn--sm" title="Re-run the layout">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><path d="M4 12a8 8 0 0 1 13.7-5.7M20 12a8 8 0 0 1-13.7 5.7" stroke-linecap="round"/><path d="M17 3.5v3h-3M7 20.5v-3h3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span>Layout</span>
+        </button>
+        <button id="g-fit" class="btn btn--ghost btn--sm btn--icon" title="Fit to view (F)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span class="sr-only">Fit the graph to the view</span>
+        </button>
+        <button id="g-zoom-in" class="btn btn--ghost btn--sm btn--icon" title="Zoom in">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 6v12M6 12h12" stroke-linecap="round"/></svg>
+          <span class="sr-only">Zoom in</span>
+        </button>
+        <button id="g-zoom-out" class="btn btn--ghost btn--sm btn--icon" title="Zoom out">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 12h12" stroke-linecap="round"/></svg>
+          <span class="sr-only">Zoom out</span>
+        </button>
+        <button id="g-labels" class="btn btn--ghost btn--sm" aria-pressed="true" title="Toggle node labels (L)">Labels</button>
+        <button id="g-legend-toggle" class="btn btn--ghost btn--sm btn--icon" aria-pressed="true" title="Toggle the legend">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 3v18" opacity=".4"/><path d="M12 3a9 9 0 0 1 0 18" fill="currentColor" stroke="none"/></svg>
+          <span class="sr-only">Toggle the legend</span>
+        </button>
+      </div>
+
+      <div class="graph-legend" id="legend" aria-label="Entity types"></div>
+      <p class="graph-hint" id="graph-hint">Drag a node to move it · click to focus · scroll to zoom · drag the background to pan</p>
+      <span class="chip graph-count" id="graph-count">0 nodes</span>
+      <div class="graph-tooltip" id="graph-tooltip" role="presentation"></div>
+    </section>
+
+    <div class="splitter splitter--right" id="split-right" role="separator" aria-orientation="vertical" aria-label="Resize the answer panel" tabindex="0"></div>
+
+    <!-- right: question + answer -->
+    <section class="panel panel--qa" id="qa" aria-label="Ask the graph">
+      <form class="composer" id="composer">
+        <label class="field__label" for="qa-input">Ask the graph</label>
+        <div class="composer__box">
+          <textarea class="composer__input" id="qa-input" rows="2"
+            placeholder="e.g. What was Apple's total net sales in fiscal 2025, and how much came from the Americas segment?"
+            autocomplete="off"></textarea>
+          <div class="composer__bar">
+            <span class="chip chip--dot" id="model-chip-inline" title="Answering model">…</span>
+            <div class="grow"></div>
+            <button type="button" id="samples-btn" class="btn btn--ghost btn--sm" aria-pressed="false" title="Sample questions">Samples</button>
+            <button type="submit" id="ask-btn" class="btn btn--primary">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M5 12h13M13 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              <span id="ask-label">Ask</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="samples" id="samples" hidden></div>
+        <div class="pipeline" id="pipeline" hidden></div>
+
+        <div class="keypanel" id="keypanel" hidden>
+          <p class="notice" id="key-note"></p>
+          <div class="row">
+            <input id="key-input" class="input" type="password" placeholder="nvapi-…" autocomplete="off" spellcheck="false" aria-label="NVIDIA API key" style="flex: 1">
+            <button type="button" id="key-save" class="btn btn--primary">Use key</button>
+          </div>
+          <div class="row">
+            <button type="button" id="key-forget" class="btn btn--ghost btn--sm" hidden>Forget key</button>
+            <button type="button" id="use-local" class="btn btn--ghost btn--sm" hidden>Use local model</button>
+            <span class="panel__sub">Held in this process only — never written to disk.</span>
+          </div>
+        </div>
+      </form>
+
+      <div class="tabs" role="tablist" aria-label="Answer detail">
+        <button class="tab" role="tab" id="tab-btn-answer" aria-selected="true" aria-controls="tab-answer" data-tab="answer">Answer</button>
+        <button class="tab" role="tab" id="tab-btn-sources" aria-selected="false" aria-controls="tab-sources" data-tab="sources">Sources<span class="tab__n" id="tab-n-sources"></span></button>
+        <button class="tab" role="tab" id="tab-btn-trace" aria-selected="false" aria-controls="tab-trace" data-tab="trace">Trace</button>
+        <button class="tab" role="tab" id="tab-btn-provenance" aria-selected="false" aria-controls="tab-provenance" data-tab="provenance">Provenance<span class="tab__n" id="tab-n-provenance"></span></button>
+        <div class="topbar__spacer"></div>
+        <span class="chip" id="wait-timer" hidden></span>
+        <button type="button" id="copy-answer" class="btn btn--ghost btn--sm" title="Copy the answer text">Copy</button>
+      </div>
+
+      <div class="tabpanels" id="tabpanels">
+        <div class="tabpanel" id="tab-answer" role="tabpanel" aria-labelledby="tab-btn-answer" tabindex="0"></div>
+        <div class="tabpanel" id="tab-sources" role="tabpanel" aria-labelledby="tab-btn-sources" tabindex="0" hidden></div>
+        <div class="tabpanel" id="tab-trace" role="tabpanel" aria-labelledby="tab-btn-trace" tabindex="0" hidden></div>
+        <div class="tabpanel" id="tab-provenance" role="tabpanel" aria-labelledby="tab-btn-provenance" tabindex="0" hidden></div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ── mobile nav ────────────────────────────────────────────────────── -->
+  <nav class="mobile-nav" id="mobile-nav" role="tablist" aria-label="Views">
+    <button role="tab" data-view="explore" aria-selected="false">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+      Explore
+    </button>
+    <button role="tab" data-view="graph" aria-selected="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="6" r="2.5"/><circle cx="6" cy="17" r="2.5"/><circle cx="18" cy="17" r="2.5"/><path d="M12 8.5 6 14.5M12 8.5l6 6M8.5 17h7"/></svg>
+      Graph
+    </button>
+    <button role="tab" data-view="ask" aria-selected="false">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M20 12a7.5 7.5 0 0 1-11 6.6L4 20l1.4-4.6A7.5 7.5 0 1 1 20 12Z" stroke-linejoin="round"/></svg>
+      Ask
+    </button>
+  </nav>
+</div>
+
+<!-- ── reports drawer ───────────────────────────────────────────────────── -->
+<div class="scrim" id="scrim" hidden></div>
+<aside class="drawer" id="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title" hidden>
+  <div class="drawer__head">
+    <h2 id="drawer-title">Canned reports</h2>
+    <span class="chip">Zero-LLM · pure Cypher</span>
+    <div class="topbar__spacer"></div>
+    <div class="search" style="width: min(34vw, 240px)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5" stroke-linecap="round"/></svg>
+      <input id="report-filter" class="input" type="search" placeholder="Filter rows" autocomplete="off" aria-label="Filter report rows">
+    </div>
+    <button type="button" id="csv-btn" class="btn btn--sm" title="Download the current result as CSV">CSV</button>
+    <button type="button" id="drawer-close" class="btn btn--ghost btn--icon" title="Close (Esc)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke-linecap="round"/></svg>
+      <span class="sr-only">Close the reports panel</span>
+    </button>
+  </div>
+  <div class="drawer__nav" id="report-tabs" role="tablist" aria-label="Reports"></div>
+  <div class="drawer__body" id="report-body"></div>
+</aside>
+
+<!-- ── command palette ──────────────────────────────────────────────────── -->
+<div class="scrim" id="palette-scrim" hidden></div>
+<div class="palette" id="palette" role="dialog" aria-modal="true" aria-label="Command palette" hidden>
+  <input class="palette__input" id="palette-input" placeholder="Jump to…" autocomplete="off" spellcheck="false" aria-label="Command palette input" role="combobox" aria-expanded="true" aria-controls="palette-list">
+  <ul class="palette__list" id="palette-list" role="listbox" aria-label="Commands"></ul>
+  <div class="palette__foot">
+    <span><kbd class="kbd">↑</kbd><kbd class="kbd">↓</kbd> navigate</span>
+    <span><kbd class="kbd">↵</kbd> run</span>
+    <span><kbd class="kbd">esc</kbd> close</span>
+  </div>
+</div>
+
+<div class="toasts" id="toasts" aria-live="polite"></div>
+<p class="sr-only" id="announcer" role="status" aria-live="polite"></p>
+
+<!-- D3 comes from the copy already vendored for the old page. It is a classic
+     script, not a module, because graph.js reads the global `d3` it installs. -->
+<script src="/vendor/d3.v7.min.js"></script>
+<script type="module" src="/static/app.js"></script>
+</body>
+</html>
