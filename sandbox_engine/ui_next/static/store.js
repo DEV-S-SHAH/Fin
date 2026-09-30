@@ -44,7 +44,6 @@ export const state = {
 
   /* ui */
   view: loadPref("view", "graph"),
-  explorerOpen: false,
   lastQuestion: loadPref("lastQuestion", ""),
 };
 

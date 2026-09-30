@@ -55,27 +55,27 @@ export function svgEl(tag, attrs = {}) {
 /* ── type colours ─────────────────────────────────────────────────────────── */
 
 const KNOWN_COLORS = {
-  company: "#34d399",
-  filing: "#818cf8",
-  financialmetric: "#fbbf24",
-  segment: "#c084fc",
-  disclosureevent: "#f472b6",
-  documentchunk: "#22d3ee",
-  executive: "#fcd34d",
-  supplier: "#a3e635",
-  riskfactor: "#f87171",
-  productfamily: "#fcd34d",
-  geographicmarket: "#5eead4",
-  competitor: "#fda4af",
-  customer: "#bef264",
-  section: "#f9a8d4",
-  causalrelation: "#b9a7f2",
-  regulatorybody: "#c4b5fd",
-  macrovariable: "#fdba74",
-  footnote: "#d9f99d",
-  fiscalperiod: "#93c5fd",
-  rawfact: "#f0abfc",
-  standardizedconcept: "#6ee7b7",
+  company: "#FF3C00",
+  filing: "#FF551C",
+  financialmetric: "#F59E0B",
+  segment: "#FF6B35",
+  disclosureevent: "#FF7A45",
+  documentchunk: "#FF8A50",
+  executive: "#FBBF24",
+  supplier: "#FB923C",
+  riskfactor: "#EF4444",
+  productfamily: "#FCD34D",
+  geographicmarket: "#F97316",
+  competitor: "#EA580C",
+  customer: "#FDBA74",
+  section: "#FFA07A",
+  causalrelation: "#E63600",
+  regulatorybody: "#D97706",
+  macrovariable: "#F59E0B",
+  footnote: "#FED7AA",
+  fiscalperiod: "#FB923C",
+  rawfact: "#FF6B35",
+  standardizedconcept: "#FF551C",
 };
 
 /* One hue per entity type, stable across reloads: a type that hashes to a
@@ -85,7 +85,8 @@ export function typeColor(type) {
   if (KNOWN_COLORS[key]) return KNOWN_COLORS[key];
   let hash = 0;
   for (const ch of key) hash = (hash * 31 + ch.codePointAt(0)) >>> 0;
-  return `hsl(${hash % 360} 62% 62%)`;
+  const hue = 10 + (hash % 45);
+  return `hsl(${hue} 85% 60%)`;
 }
 
 export function prettyType(type) {

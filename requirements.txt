@@ -33,3 +33,6 @@ typer==0.27.2
 # Cold-start JIT Graph RAG: Pydantic schema validation and in-memory overlay graph.
 pydantic>=2.0.0
 networkx>=3.0
+
+# Live market data for the landing page: lightweight Yahoo Finance API calls.
+requests>=2.31.0

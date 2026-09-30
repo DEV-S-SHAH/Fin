@@ -38,6 +38,9 @@ const PHASES = {
 const PHASE_ORDER = ["routing", "live fetch", "extraction", "stitching", "traversal", "retrieval", "synthesis"];
 
 class App {
+  #selectedResult = 0;
+  #searchNavBound = false;
+
   constructor() {
     this.graph = new GraphView($("graph-canvas"), {
       onSelect: (id) => this.focusEntity(id),
@@ -82,7 +85,7 @@ class App {
     /* Started together, not one after the other. Asking for 500 entities is the
      * slowest read on the page, and the graph is the thing a reader looks at
      * first — chaining them behind it left the canvas empty for seconds. */
-    await Promise.all([this.loadEntities(), this.showWholeGraph()]);
+    await this.showWholeGraph();
 
     /* ?q=... re-runs a question on load, so a link to a question is a link to
      * the answer. The question is stored in the URL rather than the answer:
@@ -119,7 +122,6 @@ class App {
       chip.textContent = stats.schema;
       chip.title = `LadybugDB schema: ${stats.schema}`;
     }
-    this.#renderFacets(stats.entity_types || []);
     this.#renderLegend();
     this.applyRagState(stats);
   }
@@ -130,26 +132,6 @@ class App {
     toast(`could not read the graph stats: ${error.message}`, "bad");
   }
 
-  #renderFacets(entityTypes) {
-    const host = clear($("facets"));
-    for (const [type, count] of entityTypes) {
-      const key = String(type).toLowerCase();
-      const button = el("button", {
-        class: "facet",
-        type: "button",
-        style: `color:${typeColor(type)}`,
-        "aria-pressed": "false",
-        title: `Filter by ${prettyType(type)}`,
-        onclick: () => this.toggleType(key),
-      }, [
-        el("span", { class: "facet__swatch" }),
-        el("span", { text: prettyType(type) }),
-        el("span", { class: "facet__n", text: fmtNumber(count) }),
-      ]);
-      host.append(button);
-    }
-  }
-
   toggleType(key) {
     const hidden = new Set(state.hiddenTypes);
     if (hidden.has(key)) hidden.delete(key);
@@ -157,20 +139,9 @@ class App {
     setCollection("hiddenTypes", hidden);
     this.graph.setHiddenTypes(hidden);
     this.#syncTypeControls();
-    const input = $("entity-search");
-    if (input.value.trim().toLowerCase() !== key) {
-      input.value = key;
-      this.entityTerm = key;
-      this.loadEntities();
-    }
   }
 
   #syncTypeControls() {
-    for (const button of $("facets").querySelectorAll(".facet")) {
-      const type = button.querySelector("span:nth-child(2)").textContent.replace(/\s+/g, "").toLowerCase();
-      const on = !state.hiddenTypes.has(type);
-      button.setAttribute("aria-pressed", on ? "true" : "false");
-    }
     for (const row of $("legend").querySelectorAll(".legend-row")) {
       row.setAttribute("aria-pressed", state.hiddenTypes.has(row.dataset.type) ? "false" : "true");
     }
@@ -229,48 +200,81 @@ class App {
     try {
       const data = await fetchEntities(this.entityTerm, 500);
       set({ entities: data.entities || [] });
-      this.#renderEntities();
+      this.#renderSearchResults();
     } catch (error) {
-      toast(`entity list failed: ${error.message}`, "bad");
+      toast(`entity search failed: ${error.message}`, "bad");
     }
   }
 
-  #renderEntities() {
-    const host = clear($("entity-list"));
+  #renderSearchResults() {
+    const host = $("search-results");
+    const input = $("topbar-search");
     const term = (this.entityTerm || "").toLowerCase();
-    const rows = state.entities.filter((entity) => {
-      if (!term) return true;
-      return [entity.name, entity.entity_type, entity.description]
-        .some((value) => String(value ?? "").toLowerCase().includes(term));
-    });
 
-    $("entity-count").textContent = rows.length === state.entities.length
-      ? fmtNumber(rows.length)
-      : `${fmtNumber(rows.length)} / ${fmtNumber(state.entities.length)}`;
-    $("entity-clear").hidden = !this.entityTerm;
-
-    if (!rows.length) {
-      host.append(el("li", {}, el("div", { class: "empty", text: "No matching entities." })));
+    if (!term) {
+      host.hidden = true;
       return;
     }
 
-    const fragment = document.createDocumentFragment();
-    for (const entity of rows.slice(0, 500)) {
-      const type = entity.entity_type || "";
-      const item = el("li", {}, el("button", {
-        class: "entity",
-        type: "button",
-        "aria-current": state.selected === entity.id ? "true" : "false",
-        title: entity.description || entity.name,
-        onclick: () => this.focusEntity(entity.id),
-      }, [
-        el("span", { class: "entity__dot", style: `background:${typeColor(type)}` }),
-        el("span", { class: "entity__name", html: highlightTerm(entity.name, term) }),
-        el("span", { class: "entity__type", text: prettyType(type) }),
-      ]));
-      fragment.append(item);
+    const rows = state.entities.filter((entity) =>
+      [entity.name, entity.entity_type, entity.description]
+        .some((value) => String(value ?? "").toLowerCase().includes(term)),
+    );
+
+    host.hidden = false;
+    clear(host);
+
+    if (!rows.length) {
+      host.append(el("div", { class: "search-empty", text: "No matching entities." }));
+      return;
     }
-    host.append(fragment);
+
+    this.#selectedResult = 0;
+    for (const entity of rows.slice(0, 50)) {
+      const type = entity.entity_type || "";
+      const item = el("button", {
+        class: "search-result",
+        type: "button",
+        role: "option",
+        title: entity.description || entity.name,
+        dataset: { id: entity.id },
+        onclick: () => { this.#pickResult(entity.id); },
+      }, [
+        el("span", { class: "search-result__dot", style: `background:${typeColor(type)}` }),
+        el("span", { class: "search-result__name", html: highlightTerm(entity.name, term) }),
+        el("span", { class: "search-result__type", text: prettyType(type) }),
+      ]);
+      host.append(item);
+    }
+
+    /* The dropdown scrolls with the keyboard: keep the active row in sight. */
+    if (!this.#searchNavBound) {
+      host.addEventListener("mousemove", (event) => {
+        const row = event.target.closest(".search-result");
+        if (!row) return;
+        const rows = [...host.querySelectorAll(".search-result")];
+        this.#activeResult(rows.indexOf(row), false);
+      });
+      this.#searchNavBound = true;
+    }
+  }
+
+  #activeResult(index, scroll) {
+    const host = $("search-results");
+    const rows = [...host.querySelectorAll(".search-result")];
+    if (!rows.length) return;
+    this.#selectedResult = Math.max(0, Math.min(rows.length - 1, index));
+    rows.forEach((row, i) => row.setAttribute("aria-selected", i === this.#selectedResult ? "true" : "false"));
+    if (scroll) rows[this.#selectedResult]?.scrollIntoView({ block: "nearest" });
+  }
+
+  #pickResult(id) {
+    this.#hideSearch();
+    this.focusEntity(id);
+  }
+
+  #hideSearch() {
+    $("search-results").hidden = true;
   }
 
   /* ── graph ───────────────────────────────────────────────────────────── */
@@ -291,7 +295,6 @@ class App {
 
   async focusEntity(id) {
     set({ selected: id });
-    this.#renderEntities();
     if (window.matchMedia("(max-width: 859px)").matches) this.setView("graph");
     try {
       const payload = await fetchGraph({ seed: id, hops: state.hops, limit: Number(state.graphLimit) });
@@ -308,10 +311,9 @@ class App {
   focusCitation(id) {
     if (this.graph.focus(id)) {
       set({ selected: id });
-      this.#renderEntities();
       // Below the two-column breakpoint the graph is its own view, so focusing a
       // citation has to move the reader there or it happens off-screen.
-      if (window.matchMedia("(max-width: 1119px)").matches) this.setView("graph");
+      if (window.matchMedia("(max-width: 859px)").matches) this.setView("graph");
       return;
     }
     toast("that entity is not in the current view — loading its neighbourhood", "");
@@ -589,8 +591,6 @@ class App {
   #restorePreferences() {
     const root = document.documentElement;
 
-    const explorerWidth = loadPref("explorerWidth", null);
-    if (explorerWidth) root.style.setProperty("--w-explorer", `${explorerWidth}px`);
     const qaWidth = loadPref("qaWidth", null);
     if (qaWidth) root.style.setProperty("--w-qa", `${qaWidth}px`);
 
@@ -606,41 +606,40 @@ class App {
   }
 
   #wireChrome() {
-    /* entity filter — one input, two places, kept in step */
+    /* topbar entity search — one input, results drop below it */
     const onFilter = debounce((term) => {
       this.entityTerm = term;
-      this.loadEntities();
+      if (term) this.loadEntities();
+      else this.#hideSearch();
     }, 180);
-    for (const id of ["entity-search", "topbar-search"]) {
-      const input = $(id);
-      input.addEventListener("input", () => {
-        for (const other of ["entity-search", "topbar-search"]) {
-          if (other !== id) $(other).value = input.value;
-        }
-        onFilter(input.value.trim().toLowerCase());
-      });
-    }
-    $("entity-clear").addEventListener("click", () => this.#clearFilter());
-
-    $("entity-list").addEventListener("keydown", (event) => {
-      const rows = [...$("entity-list").querySelectorAll(".entity")];
-      if (!rows.length) return;
-      const at = rows.indexOf(document.activeElement);
-      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    const input = $("topbar-search");
+    input.addEventListener("input", () => onFilter(input.value.trim().toLowerCase()));
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "ArrowDown") {
         event.preventDefault();
-        const next = Math.max(0, Math.min(rows.length - 1, (at === -1 ? -1 : at) + (event.key === "ArrowDown" ? 1 : -1)));
-        rows[next]?.focus();
-      } else if (event.key === "Enter" && at === -1 && rows[0]) {
+        const host = $("search-results");
+        if (host.hidden) { onFilter(input.value.trim().toLowerCase()); return; }
+        this.#activeResult((this.#selectedResult ?? 0) + 1, true);
+      } else if (event.key === "ArrowUp") {
         event.preventDefault();
-        rows[0].click();
+        this.#activeResult((this.#selectedResult ?? 0) - 1, true);
+      } else if (event.key === "Enter") {
+        const host = $("search-results");
+        const rows = [...host.querySelectorAll(".search-result")];
+        if (host.hidden || !rows.length) return;
+        event.preventDefault();
+        this.#pickResult(rows[this.#selectedResult ?? 0].dataset.id);
+      } else if (event.key === "Escape") {
+        this.#hideSearch();
+        input.blur();
       }
     });
-
-    $("show-all").addEventListener("click", () => this.showWholeGraph());
-    $("clear-focus").addEventListener("click", () => {
-      setCollection("cited", new Set());
-      this.graph.setCited([]);
+    input.addEventListener("blur", () => {
+      /* Clicking a result fires blur before click; hide now rather than let the
+       * click target disappear. */
+      setTimeout(() => this.#hideSearch(), 120);
     });
+
     $("graph-limit").addEventListener("change", (event) => {
       const value = Number(event.target.value);
       set({ graphLimit: value });
@@ -748,22 +747,12 @@ class App {
       });
     }
 
-    /* explorer drawer (narrow windows) */
-    $("explorer-toggle").addEventListener("click", () => this.toggleExplorer());
-    $("explorer-close").addEventListener("click", () => this.toggleExplorer(false));
-
     /* mobile view switch */
     for (const button of $("mobile-nav").querySelectorAll("button")) {
       button.addEventListener("click", () => this.setView(button.dataset.view));
     }
 
     $("palette-btn").addEventListener("click", () => this.palette.open());
-  }
-
-  #clearFilter() {
-    for (const id of ["entity-search", "topbar-search"]) $(id).value = "";
-    this.entityTerm = "";
-    this.loadEntities();
   }
 
   toggleTheme() {
@@ -788,6 +777,7 @@ class App {
   }
 
   setView(view) {
+    if (!["ask", "graph"].includes(view)) view = "graph";
     set({ view });
     savePref("view", view);
     $("app").dataset.view = view;
@@ -796,38 +786,27 @@ class App {
     }
   }
 
-  toggleExplorer(force) {
-    const open = force ?? !$("explorer").classList.contains("is-open");
-    $("explorer").classList.toggle("is-open", open);
-    $("explorer-toggle").setAttribute("aria-expanded", open ? "true" : "false");
-    set({ explorerOpen: open });
-  }
-
   /* ── splitters ───────────────────────────────────────────────────────── */
 
-  /** Nudge a panel's width, in pixels. The splitter is a 1px target on a wide
-   *  screen, so the command palette offers the same resize to anyone who would
-   *  rather not go looking for the handle. */
-  resizePanel(which, delta) {
-    const pane = $(which === "left" ? "explorer" : "qa");
-    this.setPanelWidth(which, pane.getBoundingClientRect().width + delta);
+  /** Nudge the answer panel's width, in pixels. The splitter is a 1px target on
+   *  a wide screen, so the command palette offers the same resize to anyone who
+   *  would rather not go looking for the handle. */
+  resizePanel(delta) {
+    this.setPanelWidth($("qa").getBoundingClientRect().width + delta);
     this.graph.fit();
   }
 
-  /** The one place a panel width is set: clamped to what the viewport can spare,
-   *  written to the grid variable, remembered, and reflected in the splitter's
-   *  ARIA values so a screen reader announces the new size. */
-  setPanelWidth(which, width) {
+  /** The one place the answer panel width is set: clamped to what the viewport
+   *  can spare, written to the grid variable, remembered, and reflected in the
+   *  splitter's ARIA values so a screen reader announces the new size. */
+  setPanelWidth(width) {
     const room = window.innerWidth - 300 - 360;
-    const [low, high] = which === "left"
-      ? [220, Math.min(520, room)]
-      : [320, Math.max(460, Math.min(960, room))];
+    const low = 320;
+    const high = Math.max(460, Math.min(960, room));
     const clamped = Math.max(low, Math.min(high, Math.round(width)));
-    const property = which === "left" ? "--w-explorer" : "--w-qa";
-    const pref = which === "left" ? "explorerWidth" : "qaWidth";
-    const element = $(which === "left" ? "split-left" : "split-right");
-    document.documentElement.style.setProperty(property, `${clamped}px`);
-    savePref(pref, clamped);
+    document.documentElement.style.setProperty("--w-qa", `${clamped}px`);
+    savePref("qaWidth", clamped);
+    const element = $("split-right");
     element.setAttribute("aria-valuemin", String(low));
     element.setAttribute("aria-valuemax", String(high));
     element.setAttribute("aria-valuenow", String(clamped));
@@ -838,69 +817,61 @@ class App {
   #wireSplitters() {
     /* The same numbers the stylesheet starts from, so a double-click, a Home
      * key and a cleared preference all land in the same place. */
-    const DEFAULTS = { left: 300, right: 520 };
-    const idFor = (which) => (which === "left" ? "explorer" : "qa");
-    const apply = (which, width) => this.setPanelWidth(which, width);
+    const DEFAULT = 520;
+    const element = $("split-right");
+    const pane = () => $("qa");
+    const apply = (width) => this.setPanelWidth(width);
 
-    const attach = (element, which) => {
-      let startX = 0;
-      let startWidth = 0;
+    let startX = 0;
+    let startWidth = 0;
 
-      const pane = () => $(idFor(which));
-      // Announce the width the pane actually has, which is the restored
-      // preference on a reload rather than the stylesheet default.
-      this.setPanelWidth(which, pane().getBoundingClientRect().width);
+    // Announce the width the pane actually has, which is the restored
+    // preference on a reload rather than the stylesheet default.
+    this.setPanelWidth(pane().getBoundingClientRect().width);
 
-      element.addEventListener("pointerdown", (event) => {
-        const rect = pane().getBoundingClientRect();
-        // The grid owns the width, so the drag has to start from what is on
-        // screen rather than from the stylesheet default.
-        if (rect.width < 10) return;
-        event.preventDefault();
-        element.setPointerCapture(event.pointerId);
-        element.classList.add("is-dragging");
-        startX = event.clientX;
-        startWidth = rect.width;
-      });
+    element.addEventListener("pointerdown", (event) => {
+      // The grid owns the width, so the drag has to start from what is on
+      // screen rather than from the stylesheet default.
+      event.preventDefault();
+      element.setPointerCapture(event.pointerId);
+      element.classList.add("is-dragging");
+      startX = event.clientX;
+      startWidth = pane().getBoundingClientRect().width;
+    });
 
-      element.addEventListener("pointermove", (event) => {
-        if (!element.hasPointerCapture(event.pointerId)) return;
-        const delta = which === "left" ? event.clientX - startX : startX - event.clientX;
-        apply(which, startWidth + delta);
-      });
+    element.addEventListener("pointermove", (event) => {
+      if (!element.hasPointerCapture(event.pointerId)) return;
+      apply(startWidth - (event.clientX - startX));
+    });
 
-      const end = (event) => {
-        element.classList.remove("is-dragging");
-        try { element.releasePointerCapture(event.pointerId); } catch { /* already released */ }
-        this.graph.fit();
-      };
-      element.addEventListener("pointerup", end);
-      element.addEventListener("pointercancel", end);
-
-      /* Keyboard, because a 1px target is a mouse-only affordance and because
-       * arrow keys are how anyone resizes a pane in an IDE. Home puts it back
-       * to the default width. */
-      element.addEventListener("keydown", (event) => {
-        const step = event.shiftKey ? 64 : 16;
-        const current = pane().getBoundingClientRect().width;
-        let next = null;
-        if (event.key === "ArrowLeft") next = which === "left" ? current - step : current + step;
-        else if (event.key === "ArrowRight") next = which === "left" ? current + step : current - step;
-        else if (event.key === "Home" || event.key === "Enter" || event.key === " ") next = DEFAULTS[which];
-        if (next === null) return;
-        event.preventDefault();
-        apply(which, next);
-        this.graph.fit();
-      });
-
-      element.addEventListener("dblclick", () => {
-        apply(which, DEFAULTS[which]);
-        this.graph.fit();
-      });
+    const end = (event) => {
+      element.classList.remove("is-dragging");
+      try { element.releasePointerCapture(event.pointerId); } catch { /* already released */ }
+      this.graph.fit();
     };
+    element.addEventListener("pointerup", end);
+    element.addEventListener("pointercancel", end);
 
-    attach($("split-left"), "left");
-    attach($("split-right"), "right");
+    /* Keyboard, because a 1px target is a mouse-only affordance and because
+     * arrow keys are how anyone resizes a pane in an IDE. Home puts it back
+     * to the default width. */
+    element.addEventListener("keydown", (event) => {
+      const step = event.shiftKey ? 64 : 16;
+      const current = pane().getBoundingClientRect().width;
+      let next = null;
+      if (event.key === "ArrowLeft") next = current + step;
+      else if (event.key === "ArrowRight") next = current - step;
+      else if (event.key === "Home" || event.key === "Enter" || event.key === " ") next = DEFAULT;
+      if (next === null) return;
+      event.preventDefault();
+      apply(next);
+      this.graph.fit();
+    });
+
+    element.addEventListener("dblclick", () => {
+      apply(DEFAULT);
+      this.graph.fit();
+    });
   }
 
   /* ── keyboard ────────────────────────────────────────────────────────── */
@@ -913,7 +884,6 @@ class App {
       if (event.key === "Escape") {
         if (this.palette.isOpen) { this.palette.close(); return; }
         if (this.reports.isOpen) { this.reports.close(); return; }
-        if ($("explorer").classList.contains("is-open")) { this.toggleExplorer(false); return; }
         if (typing) document.activeElement.blur();
         return;
       }
@@ -931,8 +901,8 @@ class App {
 
       if (event.key === "/") {
         event.preventDefault();
-        $("entity-search").focus();
-        $("entity-search").select();
+        $("topbar-search").focus();
+        $("topbar-search").select();
       } else if (event.key === "?" ) {
         event.preventDefault();
         this.palette.open("");
@@ -1016,9 +986,9 @@ class Palette {
       { label: app.graph.showLabels ? "Hide node labels" : "Show node labels", group: "graph", keys: "L", run: () => $("g-labels").click() },
       { label: state.legendOpen ? "Hide the legend" : "Show the legend", group: "graph", run: () => $("g-legend-toggle").click() },
       { label: "Open the canned reports", group: "view", keys: "", run: () => app.reports.open() },
-      { label: "Widen the answer panel", group: "view", keys: "⇧←", run: () => app.resizePanel("right", 80) },
-      { label: "Narrow the answer panel", group: "view", keys: "⇧→", run: () => app.resizePanel("right", -80) },
-      { label: "Reset both panel widths", group: "view", keys: "", run: () => { app.setPanelWidth("left", 300); app.setPanelWidth("right", 520); app.graph.fit(); } },
+      { label: "Widen the answer panel", group: "view", keys: "⇧←", run: () => app.resizePanel(80) },
+      { label: "Narrow the answer panel", group: "view", keys: "⇧→", run: () => app.resizePanel(-80) },
+      { label: "Reset the answer panel width", group: "view", keys: "", run: () => { app.setPanelWidth(520); app.graph.fit(); } },
       { label: "Copy the last answer", group: "answer", run: () => $("copy-answer").click() },
       { label: "Show the answer", group: "answer", keys: "1", run: () => app.showTab("answer") },
       { label: "Show the cited sources", group: "answer", keys: "2", run: () => app.showTab("sources") },

@@ -1,0 +1,343 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<meta name="description" content="FinGraph — GraphRAG financial intelligence. Explore financial data, company relationships, filings and market signals through an intelligent knowledge graph.">
+<meta name="theme-color" content="#030303">
+<title>FinGraph — Financial intelligence, connected.</title>
+
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/landing/styles.css">
+
+<script>
+  /* Theme applied before first paint (see the studio page for the rationale). */
+  try {
+    var saved = localStorage.getItem("fin.landing.theme");
+    if (saved === "light" || saved === "dark") {
+      document.documentElement.dataset.theme = saved;
+    } else if (window.matchMedia("(prefers-color-scheme: light)").matches) {
+      document.documentElement.dataset.theme = "light";
+    }
+  } catch (e) { /* private mode — the dark default stands */ }
+</script>
+</head>
+
+<body class="landing">
+<a class="skip-link" href="#intro">Skip to content</a>
+
+<div class="page" id="page">
+
+  <!-- ambient gradient-bar floor; every section sits on it -->
+  <div class="gradient-bars" id="gradient-bars" aria-hidden="true"></div>
+
+  <!-- ── floating navigation ─────────────────────────────────────────────── -->
+  <header class="nav-wrap" id="nav-wrap">
+    <nav class="nav" id="nav" aria-label="Primary">
+
+      <a class="nav__brand" href="#top" aria-label="FinGraph — home">
+        <span class="logo" data-logo></span>
+        <span class="nav__brand-name">FinGraph</span>
+      </a>
+
+      <div class="nav__links" id="nav-links" role="list">
+        <a role="listitem" class="nav__link" href="#about" data-scroll>About</a>
+        <a role="listitem" class="nav__link" href="#features" data-scroll>Features</a>
+        <a role="listitem" class="nav__link" href="#insights" data-scroll>Insights</a>
+        <a role="listitem" class="nav__link" href="#markets" data-scroll>Markets</a>
+        <a role="listitem" class="nav__link" href="#how-it-works" data-scroll>How it works</a>
+        <a role="listitem" class="nav__link" href="#pricing" data-scroll>Pricing</a>
+      </div>
+
+      <div class="nav__actions">
+        <a class="btn btn--ghost btn--sm" href="/auth">Sign in</a>
+        <a class="btn btn--primary btn--sm" href="/auth">Get Started</a>
+      </div>
+
+      <button class="nav__toggle" id="nav-toggle" type="button" aria-expanded="false" aria-controls="nav-panel" aria-label="Open the menu">
+        <span class="nav__toggle-bar"></span>
+        <span class="nav__toggle-bar"></span>
+        <span class="nav__toggle-bar"></span>
+      </button>
+    </nav>
+
+    <!-- mobile panel -->
+    <div class="nav-panel" id="nav-panel" hidden>
+      <div class="nav-panel__links" role="list">
+        <a role="listitem" class="nav-panel__link" href="#about" data-scroll>About</a>
+        <a role="listitem" class="nav-panel__link" href="#features" data-scroll>Features</a>
+        <a role="listitem" class="nav-panel__link" href="#insights" data-scroll>Insights</a>
+        <a role="listitem" class="nav-panel__link" href="#markets" data-scroll>Markets</a>
+        <a role="listitem" class="nav-panel__link" href="#how-it-works" data-scroll>How it works</a>
+        <a role="listitem" class="nav-panel__link" href="#pricing" data-scroll>Pricing</a>
+      </div>
+      <div class="nav-panel__actions">
+        <a class="btn btn--ghost" href="/auth">Sign in</a>
+        <a class="btn btn--primary" href="/auth">Get Started</a>
+      </div>
+    </div>
+  </header>
+
+  <main id="top">
+
+    <!-- ── hero ──────────────────────────────────────────────────────────── -->
+    <section class="hero" id="hero" aria-labelledby="hero-title">
+      <div class="hero__bg" aria-hidden="true"></div>
+
+      <div class="hero__content">
+        <p class="eyebrow">Financial intelligence&nbsp;/&nbsp;GraphRAG</p>
+
+        <h1 class="hero__title" id="hero-title" aria-label="See the connections behind the numbers.">
+          <span class="hero__title-line hero__title-line--top">
+            <span class="hero__title-prefix">See the</span>
+            <span class="text-loop" data-text-loop aria-hidden="true"><span class="text-loop__spacer">relationships</span><span class="text-loop__inner"><span class="text-loop__word">connections</span></span></span>
+          </span>
+          <span class="hero__title-line hero__title-line--bottom">behind the numbers.</span>
+        </h1>
+
+        <p class="hero__lede">
+          Explore financial data, company relationships, filings, and market
+          signals through an intelligent knowledge graph.
+        </p>
+
+        <div class="hero__cta">
+          <a class="btn btn--primary btn--lg" href="/auth">
+            <span class="btn__label">Explore FinGraph</span>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M5 12h13M13 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </a>
+          <a class="btn btn--ghost btn--lg" href="#intro" data-scroll>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M8 5l10 7-10 7V5Z" stroke-linejoin="round"/></svg>
+            <span class="btn__label">See how it works</span>
+          </a>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── intro statement ───────────────────────────────────────────────── -->
+    <section class="intro" id="intro" aria-labelledby="intro-title">
+      <div class="section-head">
+        <h2 class="section-head__title" id="intro-title">
+          Financial data is connected.<br>
+          Your analysis should be too.
+        </h2>
+        <p class="section-head__sub">
+          FinGraph connects financial metrics, company relationships, filings,
+          events, and market data into one explorable intelligence layer.
+        </p>
+      </div>
+
+      <div class="intro__cards">
+        <article class="num-card">
+          <span class="num-card__index" aria-hidden="true">01</span>
+          <h3 class="num-card__title">Connected data</h3>
+          <p class="num-card__body">
+            Metrics, relationships and filings live in one graph that keeps
+            every connection explicit.
+          </p>
+        </article>
+
+        <article class="num-card">
+          <span class="num-card__index" aria-hidden="true">02</span>
+          <h3 class="num-card__title">Evidence-ground answers</h3>
+          <p class="num-card__body">
+            Answers are traced back to the filings and figures they draw on,
+            with the path shown, not hidden.
+          </p>
+        </article>
+
+        <article class="num-card">
+          <span class="num-card__index" aria-hidden="true">03</span>
+          <h3 class="num-card__title">Relationship-based insights</h3>
+          <p class="num-card__body">
+            Understand how a company, its segments, its geography and its
+            reporting fit together — as a shape, not a spreadsheet.
+          </p>
+        </article>
+      </div>
+    </section>
+
+    <!-- ── markets ─────────────────────────────────────────────────────────── -->
+    <section class="markets" id="markets" aria-labelledby="markets-title">
+      <div class="section-head">
+        <h2 class="section-head__title" id="markets-title">
+          Live markets,<br>
+          straight from the source.
+        </h2>
+        <p class="section-head__sub">
+          Real-time quotes from Yahoo Finance — the same tickers FinGraph
+          grounds its answers in, plus the names that move the market.
+        </p>
+      </div>
+
+      <div class="ticker" id="ticker" aria-label="Live market ticker">
+        <div class="ticker__track" id="ticker-track"></div>
+      </div>
+
+      <div class="markets__grid" id="markets-grid" aria-live="off"></div>
+
+      <p class="markets__status" id="markets-status" role="status" aria-live="polite"></p>
+    </section>
+
+    <!-- ── pricing ─────────────────────────────────────────────────────────── -->
+    <section class="plans" id="pricing" aria-labelledby="pricing-title">
+      <div class="section-head">
+        <h2 class="section-head__title" id="pricing-title">
+          Plans that fit<br>your analysis.
+        </h2>
+        <p class="section-head__sub">
+          Choose the FinGraph plan that matches your financial intelligence needs.
+        </p>
+      </div>
+
+      <!-- billing toggle -->
+      <div class="billing-toggle" role="group" aria-label="Billing period">
+        <span class="billing-toggle__label" id="label-monthly">Monthly</span>
+        <button class="billing-toggle__switch" id="billing-switch" type="button"
+                role="switch" aria-checked="false"
+                aria-labelledby="label-monthly label-yearly"
+                aria-label="Toggle monthly and yearly billing">
+          <span class="billing-toggle__thumb" aria-hidden="true"></span>
+        </button>
+        <span class="billing-toggle__label" id="label-yearly">Yearly</span>
+        <span class="billing-toggle__save" aria-hidden="true">Save 20%</span>
+      </div>
+
+      <div class="plans__grid">
+
+        <!-- Free -->
+        <article class="plan" data-plan="free">
+          <header class="plan__head">
+            <h2 class="plan__name">Free</h2>
+            <p class="plan__blurb">For exploring the graph on your own.</p>
+          </header>
+
+          <p class="plan__price">
+            <span class="plan__amount" data-monthly="0" data-yearly="0">$0</span>
+            <span class="plan__period">/ month</span>
+          </p>
+          <p class="plan__billing-note" data-billing-note>Free forever</p>
+
+          <ul class="plan__features">
+            <li>3 questions per day</li>
+            <li>Single-issuer graph view</li>
+            <li>Community support</li>
+            <li>Public filings only</li>
+          </ul>
+
+          <a class="btn btn--ghost plan__cta" href="/auth">Start for free</a>
+        </article>
+
+        <!-- Pro (highlighted) -->
+        <article class="plan plan--pro" data-plan="pro">
+          <span class="plan__badge">Most Popular</span>
+
+          <header class="plan__head">
+            <h2 class="plan__name">Pro</h2>
+            <p class="plan__blurb">For analysts who live in the data.</p>
+          </header>
+
+          <p class="plan__price">
+            <span class="plan__amount" data-monthly="29" data-yearly="23">$29</span>
+            <span class="plan__period">/ month</span>
+          </p>
+          <p class="plan__billing-note" data-billing-note>Billed monthly</p>
+
+          <ul class="plan__features">
+            <li>Unlimited questions</li>
+            <li>Multi-issuer comparison</li>
+            <li>Live market data &amp; signals</li>
+            <li>Full filing history &amp; traces</li>
+            <li>Priority support</li>
+          </ul>
+
+          <a class="btn btn--primary plan__cta" href="/auth">Get Started</a>
+        </article>
+
+        <!-- Enterprise -->
+        <article class="plan" data-plan="enterprise">
+          <header class="plan__head">
+            <h2 class="plan__name">Enterprise</h2>
+            <p class="plan__blurb">For teams and institutions.</p>
+          </header>
+
+          <p class="plan__price">
+            <span class="plan__amount plan__amount--custom">Custom</span>
+          </p>
+          <p class="plan__billing-note" data-billing-note>Tailored to your stack</p>
+
+          <ul class="plan__features">
+            <li>Everything in Pro</li>
+            <li>Private graph deployment</li>
+            <li>SSO &amp; audit logs</li>
+            <li>Dedicated data pipeline</li>
+            <li>Custom integrations &amp; SLA</li>
+          </ul>
+
+          <a class="btn btn--ghost plan__cta" href="/auth">Contact Sales</a>
+        </article>
+
+      </div>
+
+      <p class="plans__note">
+        All plans include read-only access to the public knowledge graph.
+        No credit card required to start.
+      </p>
+    </section>
+
+  </main>
+
+  <footer class="footer">
+    <div class="footer__card">
+      <div class="footer__glow" aria-hidden="true"></div>
+
+      <div class="footer__content">
+        <div class="footer__left">
+          <div class="footer__brand">
+            <span class="logo logo--sm" data-logo></span>
+            <span class="footer__brand-name">FinGraph</span>
+            <p class="footer__tag">Financial intelligence, connected.</p>
+          </div>
+
+          <nav class="footer__nav" aria-label="Footer">
+            <a href="#about">About</a>
+            <a href="#features">Features</a>
+            <a href="#insights">Insights</a>
+            <a href="#pricing">Pricing</a>
+          </nav>
+        </div>
+
+        <div class="footer__right">
+          <div class="footer__social">
+            <a href="#" aria-label="X">
+              <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M4 4l7.2 9.3L4.4 20h2.5l5.4-5.4L16.8 20H20l-7.5-9.7L18.9 4h-2.5l-4.8 4.9L8.2 4H4z"/></svg>
+            </a>
+            <a href="#" aria-label="LinkedIn">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 8a6 6 0 0 1 6 6v7h-4v-7a2 2 0 0 0-2-2 2 2 0 0 0-2 2v7h-4v-7a6 6 0 0 1 6-6z"/><rect width="4" height="12" x="2" y="9"/><circle cx="4" cy="4" r="2"/></svg>
+            </a>
+            <a href="#" aria-label="GitHub">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4"/><path d="M9 18c-4.51 2-5-2-7-2"/></svg>
+            </a>
+          </div>
+          <a class="footer__contact" href="mailto:hello@fingraph.com">hello@fingraph.com</a>
+        </div>
+      </div>
+
+      <div class="footer__wordmark" aria-hidden="true">
+        <span class="footer__wordmark-blur">FinGraph</span>
+        <span class="footer__wordmark-fade">FinGraph</span>
+      </div>
+
+      <p class="footer__disclaimer">
+        FinGraph is an information tool. It helps you understand what the data
+        shows; it does not tell you what to buy or sell.
+      </p>
+    </div>
+  </footer>
+</div>
+
+<p class="sr-only" id="announcer" role="status" aria-live="polite"></p>
+
+<script type="module" src="/landing/app.js"></script>
+</body>
+</html>

@@ -31,11 +31,6 @@
 
   <!-- ── topbar ────────────────────────────────────────────────────────── -->
   <header class="topbar">
-    <button id="explorer-toggle" class="btn btn--ghost btn--icon explorer-toggle" aria-expanded="false" aria-controls="explorer" title="Toggle entity explorer">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 6h16M4 12h10M4 18h13" stroke-linecap="round"/></svg>
-      <span class="sr-only">Toggle entity explorer</span>
-    </button>
-
     <div class="brand">
       <span class="brand__mark" aria-hidden="true">
         <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.9" stroke-linecap="round">
@@ -49,6 +44,12 @@
       <span class="brand__env" id="schema-chip" hidden></span>
     </div>
 
+    <div class="search topbar__search">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5" stroke-linecap="round"/></svg>
+      <input id="topbar-search" class="input" type="search" placeholder="Find an entity…" autocomplete="off" aria-label="Find an entity">
+      <div class="search-results" id="search-results" hidden></div>
+    </div>
+
     <div class="topbar__stats" id="topbar-stats" aria-live="off">
       <span><b id="stat-nodes">—</b> entities</span>
       <span class="dot" aria-hidden="true"></span>
@@ -60,16 +61,17 @@
     <div class="topbar__spacer"></div>
 
     <div class="topbar__actions">
-      <button id="palette-btn" class="btn btn--ghost" title="Command palette">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5" stroke-linecap="round"/></svg>
-        <span class="btn__kbd">⌘K</span>
-        <span class="sr-only">Open the command palette</span>
-      </button>
+      <span class="chip" id="model-chip" title="Answering model and backend">
+        <span class="status-dot" id="model-dot"></span><span id="model-label">model</span>
+      </span>
 
-      <div class="search" style="width: min(30vw, 260px)">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5" stroke-linecap="round"/></svg>
-        <input id="topbar-search" class="input" type="search" placeholder="Filter entities" autocomplete="off" aria-label="Filter entities">
-      </div>
+      <label class="sr-only" for="graph-limit">Nodes to load</label>
+      <select id="graph-limit" class="select" style="width: auto" title="Nodes to load into the graph">
+        <option value="60">60</option>
+        <option value="150" selected>150</option>
+        <option value="300">300</option>
+        <option value="500">500</option>
+      </select>
 
       <label class="sr-only" for="hops">Traversal depth</label>
       <select id="hops" class="select" style="width: auto" title="Traversal depth in hops">
@@ -77,6 +79,12 @@
         <option value="2" selected>2 hops</option>
         <option value="3">3 hops</option>
       </select>
+
+      <button id="palette-btn" class="btn btn--ghost" title="Command palette">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5" stroke-linecap="round"/></svg>
+        <span class="btn__kbd">⌘K</span>
+        <span class="sr-only">Open the command palette</span>
+      </button>
 
       <button id="reports-btn" class="btn btn--ghost btn--icon" title="Canned reports">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 20V10m5 10V4m5 16v-7m5 7V8" stroke-linecap="round"/></svg>
@@ -92,58 +100,6 @@
 
   <!-- ── workspace ─────────────────────────────────────────────────────── -->
   <main class="workspace" id="workspace">
-
-    <!-- left: entity explorer -->
-    <aside class="panel panel--explorer" id="explorer" aria-label="Entity explorer">
-      <div class="panel__head">
-        <h2 class="panel__title">Entities</h2>
-        <span class="panel__sub" id="entity-count">—</span>
-        <div class="topbar__spacer"></div>
-        <button id="explorer-close" class="btn btn--ghost btn--icon btn--sm explorer-toggle" title="Close">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke-linecap="round"/></svg>
-          <span class="sr-only">Close the explorer</span>
-        </button>
-      </div>
-
-      <div style="padding: var(--sp-3) var(--sp-4) 0">
-        <div class="search">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5" stroke-linecap="round"/></svg>
-          <input id="entity-search" class="input" type="search" placeholder="Name, type or text" autocomplete="off" aria-label="Filter entities by name or type">
-          <button id="entity-clear" class="search__clear" hidden title="Clear">
-            <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke-linecap="round"/></svg>
-            <span class="sr-only">Clear the filter</span>
-          </button>
-        </div>
-      </div>
-
-      <div class="facets" id="facets" role="group" aria-label="Filter by entity type"></div>
-
-      <div class="panel__body">
-        <ul class="entity-list" id="entity-list" tabindex="0" aria-label="Entity list"></ul>
-      </div>
-
-      <div class="panel__foot">
-        <div style="display: flex; gap: var(--sp-2)">
-          <button id="show-all" class="btn btn--primary" style="flex: 1">Show whole graph</button>
-          <button id="clear-focus" class="btn" title="Clear the citation focus">Clear</button>
-        </div>
-        <div style="display: flex; align-items: center; gap: var(--sp-2); margin-top: var(--sp-2)">
-          <label class="field__label" for="graph-limit" style="margin: 0">Nodes</label>
-          <select id="graph-limit" class="select" style="width: auto">
-            <option value="60">60</option>
-            <option value="150" selected>150</option>
-            <option value="300">300</option>
-            <option value="500">500</option>
-          </select>
-          <div class="topbar__spacer"></div>
-          <span class="chip" id="model-chip" title="Answering model and backend">
-            <span class="status-dot" id="model-dot"></span><span id="model-label">model</span>
-          </span>
-        </div>
-      </div>
-    </aside>
-
-    <div class="splitter splitter--left" id="split-left" role="separator" aria-orientation="vertical" aria-label="Resize the entity explorer" tabindex="0"></div>
 
     <!-- centre: graph -->
     <section class="panel panel--graph graph-panel" id="graph-panel" aria-label="Knowledge graph">
@@ -238,10 +194,6 @@
 
   <!-- ── mobile nav ────────────────────────────────────────────────────── -->
   <nav class="mobile-nav" id="mobile-nav" role="tablist" aria-label="Views">
-    <button role="tab" data-view="explore" aria-selected="false">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
-      Explore
-    </button>
     <button role="tab" data-view="graph" aria-selected="true">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="6" r="2.5"/><circle cx="6" cy="17" r="2.5"/><circle cx="18" cy="17" r="2.5"/><path d="M12 8.5 6 14.5M12 8.5l6 6M8.5 17h7"/></svg>
       Graph

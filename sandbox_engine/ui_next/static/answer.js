@@ -42,7 +42,7 @@ const MIX_COLORS = {
   STATED: "var(--green)",
   DERIVED: "var(--accent)",
   INFERRED: "var(--amber)",
-  EXTERNAL: "var(--violet)",
+  EXTERNAL: "var(--accent-2)",
   GAP: "var(--red)",
 };
 

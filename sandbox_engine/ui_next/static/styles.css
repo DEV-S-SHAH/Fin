@@ -7,11 +7,11 @@
      2. primitives  reset, typography, the handful of base elements
      3. components  the app shell and everything in it
 
-   Layout is a CSS grid of three panels with two drag handles. The grid owns
+   Layout is a CSS grid of two panels with one drag handle. The grid owns
    the widths; the panels are `min-width: 0` and never size themselves, which is
-   what lets a long metric name in the explorer shrink the column instead of
-   widening the page. Below 1180px the explorer becomes a slide-over, and below
-   860px the three panels become one at a time, chosen from the bottom nav.
+   what lets a long metric name in the topbar shrink the column instead of
+   widening the page. Below 860px the two panels become one at a time, chosen
+   from the bottom nav.
    ========================================================================== */
 
 /* ── 1. tokens ───────────────────────────────────────────────────────────── */
@@ -57,7 +57,6 @@
 
   --topbar-h: 56px;
   --mobile-nav-h: 58px;
-  --w-explorer: 300px;
   --w-qa: 520px;
 
   color-scheme: dark;
@@ -68,34 +67,33 @@
    every token that matters has its own light value below. */
 :root,
 [data-theme="dark"] {
-  --bg: #08090c;
-  --bg-grad: radial-gradient(120% 80% at 12% -10%, #1a1f2e 0%, transparent 60%),
-             radial-gradient(100% 70% at 100% 0%, #16121f 0%, transparent 55%),
-             #08090c;
-  --surface-1: #0e1015;   /* panels */
-  --surface-2: #14171e;   /* raised: headers, cards, list rows */
-  --surface-3: #1b1f28;   /* raised on hover / inputs */
-  --surface-glass: rgba(20, 23, 30, 0.82);
+  --bg: #030303;
+  --bg-grad: radial-gradient(120% 80% at 12% -10%, #1a0f0a 0%, transparent 60%),
+             radial-gradient(100% 70% at 100% 0%, #1f0f08 0%, transparent 55%),
+             #030303;
+  --surface-1: #0d0d0e;   /* panels */
+  --surface-2: #141416;   /* raised: headers, cards, list rows */
+  --surface-3: #1a1a1e;   /* raised on hover / inputs */
+  --surface-glass: rgba(20, 20, 22, 0.82);
 
   --border: #23262f;
   --border-strong: #333846;
-  --border-focus: #6366f1;
+  --border-focus: #FF3C00;
 
-  --text: #eef1f6;
-  --text-muted: #9aa3b4;
-  --text-faint: #6b7484;
+  --text: #f5f5f7;
+  --text-muted: #9ca3af;
+  --text-faint: #6b7280;
 
-  --accent: #818cf8;
-  --accent-strong: #6366f1;
-  --accent-soft: rgba(99, 102, 241, 0.14);
-  --accent-ring: rgba(129, 140, 248, 0.32);
+  --accent: #FF3C00;
+  --accent-strong: #E63600;
+  --accent-2: #FF6B35;
+  --accent-soft: rgba(255, 60, 0, 0.14);
+  --accent-ring: rgba(255, 60, 0, 0.32);
   --on-accent: #ffffff;
 
-  --cyan: #22d3ee;
   --green: #34d399;
   --amber: #fbbf24;
   --red: #f87171;
-  --violet: #c084fc;
 
   --green-soft: rgba(52, 211, 153, 0.12);
   --amber-soft: rgba(251, 191, 36, 0.12);
@@ -104,51 +102,50 @@
   --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
   --shadow-2: 0 4px 16px -4px rgba(0, 0, 0, 0.5);
   --shadow-3: 0 18px 48px -12px rgba(0, 0, 0, 0.7);
-  --graph-bg: #0a0c11;
+  --graph-bg: #0a0a0b;
   --graph-grid: rgba(255, 255, 255, 0.028);
 }
 
 [data-theme="light"] {
-  color-scheme: light;
+  color-scheme: dark;
 
-  --bg: #f4f5f8;
-  --bg-grad: radial-gradient(120% 80% at 12% -10%, #e5e9ff 0%, transparent 60%),
-             radial-gradient(100% 70% at 100% 0%, #f2e8ff 0%, transparent 55%),
-             #f4f5f8;
-  --surface-1: #ffffff;
-  --surface-2: #fafbfd;
-  --surface-3: #f0f2f6;
-  --surface-glass: rgba(255, 255, 255, 0.86);
+  --bg: #030303;
+  --bg-grad: radial-gradient(120% 80% at 12% -10%, #1a0f0a 0%, transparent 60%),
+             radial-gradient(100% 70% at 100% 0%, #1f0f08 0%, transparent 55%),
+             #030303;
+  --surface-1: #0d0d0e;
+  --surface-2: #141416;
+  --surface-3: #1a1a1e;
+  --surface-glass: rgba(20, 20, 22, 0.82);
 
-  --border: #e2e5ec;
-  --border-strong: #cbd1dd;
-  --border-focus: #4f46e5;
+  --border: #23262f;
+  --border-strong: #333846;
+  --border-focus: #FF3C00;
 
-  --text: #14161c;
-  --text-muted: #5c6474;
-  --text-faint: #8a92a3;
+  --text: #f5f5f7;
+  --text-muted: #9ca3af;
+  --text-faint: #6b7280;
 
-  --accent: #4f46e5;
-  --accent-strong: #4338ca;
-  --accent-soft: rgba(79, 70, 229, 0.09);
-  --accent-ring: rgba(79, 70, 229, 0.22);
+  --accent: #FF3C00;
+  --accent-strong: #E63600;
+  --accent-2: #FF6B35;
+  --accent-soft: rgba(255, 60, 0, 0.09);
+  --accent-ring: rgba(255, 60, 0, 0.22);
   --on-accent: #ffffff;
 
-  --cyan: #0891b2;
-  --green: #059669;
-  --amber: #b45309;
-  --red: #dc2626;
-  --violet: #7c3aed;
+  --green: #34d399;
+  --amber: #fbbf24;
+  --red: #f87171;
 
-  --green-soft: rgba(5, 150, 105, 0.1);
-  --amber-soft: rgba(180, 83, 9, 0.1);
-  --red-soft: rgba(220, 38, 38, 0.08);
+  --green-soft: rgba(52, 211, 153, 0.1);
+  --amber-soft: rgba(251, 191, 36, 0.1);
+  --red-soft: rgba(248, 113, 113, 0.08);
 
-  --shadow-1: 0 1px 2px rgba(16, 24, 40, 0.06);
-  --shadow-2: 0 6px 20px -6px rgba(16, 24, 40, 0.12);
-  --shadow-3: 0 24px 56px -16px rgba(16, 24, 40, 0.22);
-  --graph-bg: #fbfbfd;
-  --graph-grid: rgba(15, 23, 42, 0.035);
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-2: 0 4px 16px -4px rgba(0, 0, 0, 0.5);
+  --shadow-3: 0 18px 48px -12px rgba(0, 0, 0, 0.7);
+  --graph-bg: #0a0a0b;
+  --graph-grid: rgba(255, 255, 255, 0.028);
 }
 
 /* ── 2. primitives ───────────────────────────────────────────────────────── */
@@ -264,7 +261,7 @@ svg { display: block; }
   width: 30px; height: 30px;
   flex: 0 0 auto;
   border-radius: var(--r-sm);
-  background: linear-gradient(140deg, var(--accent-strong), var(--violet));
+  background: linear-gradient(140deg, var(--accent-strong), var(--accent-2));
   box-shadow: 0 2px 10px -2px var(--accent-ring);
 }
 .brand__mark svg { width: 18px; height: 18px; }
@@ -307,6 +304,9 @@ svg { display: block; }
 
 .topbar__spacer { flex: 1 1 auto; min-width: var(--sp-2); }
 .topbar__actions { display: flex; align-items: center; gap: var(--sp-1); }
+
+.topbar__search { width: min(30vw, 280px); }
+.topbar__search .input { padding-left: 2rem; padding-right: 2rem; }
 
 /* --- buttons -------------------------------------------------------------- */
 
@@ -483,7 +483,7 @@ svg { display: block; }
 
 .workspace {
   display: grid;
-  grid-template-columns: var(--w-explorer) 1px minmax(0, 1fr) 1px var(--w-qa);
+  grid-template-columns: minmax(0, 1fr) 1px var(--w-qa);
   min-height: 0;
   min-width: 0;
 }
@@ -496,7 +496,6 @@ svg { display: block; }
   background: var(--surface-1);
   overflow: hidden;
 }
-.panel--explorer { border-right: none; }
 .panel--qa { border-left: none; }
 
 .splitter {
@@ -594,36 +593,24 @@ svg { display: block; }
 }
 @keyframes shimmer { from { background-position: 100% 0; } to { background-position: 0 0; } }
 
-/* --- explorer ------------------------------------------------------------- */
+/* --- entity search results -------------------------------------------------- */
 
-.facets {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--sp-1);
-  padding: 0 var(--sp-4) var(--sp-3);
-  border-bottom: 1px solid var(--border);
-  flex: 0 0 auto;
-}
-.facet {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 2px var(--sp-2);
-  border: 1px solid var(--border);
-  border-radius: var(--r-full);
+.search-results {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  z-index: 30;
+  max-height: min(48vh, 380px);
+  overflow-y: auto;
+  padding: var(--sp-1);
+  border-radius: var(--r-md);
+  border: 1px solid var(--border-strong);
   background: var(--surface-2);
-  color: var(--text-muted);
-  font-size: var(--text-xs);
-  font-weight: 520;
-  transition: all var(--dur-fast) var(--ease);
+  box-shadow: var(--shadow-3);
 }
-.facet:hover { border-color: var(--border-strong); color: var(--text); }
-.facet[aria-pressed="true"] { color: var(--text); border-color: currentColor; }
-.facet__swatch { width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: 0 0 auto; }
-.facet__n { color: var(--text-faint); font-variant-numeric: tabular-nums; }
-
-.entity-list { list-style: none; padding: var(--sp-1) var(--sp-2) var(--sp-4); margin: 0; }
-.entity {
+.search-results[hidden] { display: none; }
+.search-result {
   display: flex;
   align-items: baseline;
   gap: var(--sp-2);
@@ -634,9 +621,8 @@ svg { display: block; }
   cursor: pointer;
   transition: background var(--dur-fast) var(--ease);
 }
-.entity:hover { background: var(--surface-2); }
-.entity[aria-current="true"] { background: var(--accent-soft); }
-.entity__name {
+.search-result:hover, .search-result[aria-selected="true"] { background: var(--accent-soft); }
+.search-result__name {
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
@@ -644,14 +630,19 @@ svg { display: block; }
   white-space: nowrap;
   font-size: var(--text-sm);
 }
-.entity__type {
+.search-result__type {
   flex: 0 0 auto;
   font-size: var(--text-xs);
   color: var(--text-faint);
   font-weight: 520;
 }
-.entity__dot { width: 6px; height: 6px; border-radius: 50%; flex: 0 0 auto; }
-.entity.is-kbd { box-shadow: inset 0 0 0 1px var(--accent-ring); }
+.search-result__dot { width: 6px; height: 6px; border-radius: 50%; flex: 0 0 auto; }
+.search-empty {
+  padding: var(--sp-3) var(--sp-2);
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  text-align: center;
+}
 mark.hit {
   background: var(--accent-soft);
   color: var(--accent);
@@ -776,7 +767,7 @@ mark.hit {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: var(--cyan);
+  color: var(--accent);
 }
 .graph-tooltip__desc { margin-top: var(--sp-1); color: var(--text-muted); font-size: var(--text-xs); line-height: 1.5; }
 .graph-tooltip__rel { margin-top: var(--sp-2); display: grid; gap: 2px; }
@@ -1174,7 +1165,7 @@ mark.hit {
 .prov-row--STATED { border-left-color: var(--green); }
 .prov-row--DERIVED { border-left-color: var(--accent); }
 .prov-row--INFERRED { border-left-color: var(--amber); }
-.prov-row--EXTERNAL { border-left-color: var(--violet); }
+.prov-row--EXTERNAL { border-left-color: var(--accent-2); }
 .prov-row--GAP { border-left-color: var(--red); }
 .prov-row__body { flex: 1 1 auto; min-width: 0; }
 .prov-row__text { font-size: var(--text-sm); line-height: 1.6; }
@@ -1426,40 +1417,11 @@ table.data td.mono { font-family: var(--font-mono); font-size: var(--text-xs); }
 /* ==========================================================================
    Responsive
    --------------------------------------------------------------------------
-   Three breakpoints, each a different shape rather than the same layout squashed:
+   Two breakpoints, each a different shape rather than the same layout squashed:
 
-   ≥1180px  three columns, two drag handles
-   860–1179 two columns; the explorer becomes a slide-over drawer
-   <860px   one panel at a time, chosen from a bottom nav
+   ≥860px  two columns, one drag handle
+   <860px  one panel at a time, chosen from a bottom nav
    ========================================================================== */
-
-/* --- ≥1180px: full three-column layout ------------------------------------ */
-@media (min-width: 1180px) {
-  .mobile-nav { display: none; }
-  .explorer-toggle { display: none; }
-}
-
-/* --- 860–1179px: explorer becomes an overlay drawer ------------------------ */
-@media (max-width: 1179px) {
-  .workspace { grid-template-columns: minmax(0, 1fr) 1px var(--w-qa); }
-  .workspace > .splitter--left { display: none; }
-
-  .panel--explorer {
-    position: fixed;
-    top: var(--topbar-h);
-    left: 0;
-    bottom: 0;
-    z-index: 60;
-    width: min(88vw, 340px);
-    border-right: 1px solid var(--border);
-    box-shadow: var(--shadow-3);
-    translate: -101% 0;
-    visibility: hidden;
-    transition: translate var(--dur-slow) var(--ease-out), visibility var(--dur);
-  }
-  .panel--explorer.is-open { translate: 0 0; visibility: visible; }
-  .explorer-toggle { display: inline-flex; }
-}
 
 /* --- <860px: one panel at a time ------------------------------------------ */
 @media (max-width: 859px) {
@@ -1469,28 +1431,21 @@ table.data td.mono { font-family: var(--font-mono); font-size: var(--text-xs); }
   .workspace > .splitter { display: none; }
 
   .panel { grid-area: 1 / 1; }
-  .panel--explorer { position: static; width: auto; box-shadow: none; translate: none; visibility: visible; border-right: none; }
 
   /* Which panel is on screen is a state, not a guess from the viewport, so the
-     same three panels work as tabs, a graph, and a stack.
+     same panels work as a graph and a stack.
 
      Ask is the question and its answer. Graph is the canvas on its own, with the
-     full width of a phone given over to it. Explore is the entity list beside
-     the graph it filters, which is the one view where the two belong together. */
-  .app[data-view="ask"] .panel--explorer,
+     full width of a phone given over to it. The search box in the topbar finds
+     an entity for the graph on either view. */
   .app[data-view="ask"] .panel--graph,
-  .app[data-view="graph"] .panel--explorer,
-  .app[data-view="graph"] .panel--qa,
-  .app[data-view="explore"] .panel--qa { display: none; }
+  .app[data-view="graph"] .panel--qa { display: none; }
   .app[data-view="ask"] .panel--qa,
-  .app[data-view="graph"] .panel--graph,
-  .app[data-view="explore"] .panel--explorer,
-  .app[data-view="explore"] .panel--graph { display: flex; }
-
-  .explorer-toggle { display: none; }
+  .app[data-view="graph"] .panel--graph { display: flex; }
 
   .topbar { padding: 0 var(--sp-2); gap: var(--sp-2); }
   .topbar__stats { display: none; }
+  .topbar__search { width: auto; flex: 1 1 auto; }
   .brand__env { display: none; }
   .graph-legend {
     top: auto;
@@ -1503,7 +1458,7 @@ table.data td.mono { font-family: var(--font-mono); font-size: var(--text-xs); }
 
   .mobile-nav {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(2, 1fr);
     border-top: 1px solid var(--border);
     background: var(--surface-glass);
     backdrop-filter: blur(14px);

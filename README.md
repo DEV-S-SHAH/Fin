@@ -141,11 +141,21 @@ is untouched and the two can run at the same time.
 
 ```bash
 python -m sandbox_engine.query_ui    # original,  http://127.0.0.1:9000
-python -m sandbox_engine.ui_next     # redesigned, http://127.0.0.1:9100
+python -m sandbox_engine.ui_next     # landing page + redesigned explorer, http://127.0.0.1:9100
 ```
 
 Both take `--port`, `--host`, `--no-browser` and `--db`, and the new one defaults
 to 9100 via `$PORT_QUERY_UI_V2` so the two defaults cannot collide.
+
+### Routes
+
+| Path | Page |
+|---|---|
+| `/` | Public landing page (`landing/`) — financial-intelligence position, hero, navigation |
+| `/app` | The redesigned explorer (`static/`) — the working dashboard, unchanged |
+
+The two static trees have separate allow-lists in `server.py`, so the landing
+page and the studio cannot reach into each other's assets.
 
 ### What it adds
 
@@ -167,7 +177,13 @@ stream never carried.
 ```
 sandbox_engine/ui_next/
   server.py            the legacy handler, plus static routes and the two endpoints above
-  static/index.html    the shell
+  landing/index.html   the public landing page shell
+  landing/styles.css   landing design system, light and dark
+  landing/app.js       entry: assembles the page, starts the hero graph
+  landing/components.js  reusable pieces: logo, buttons, cards, tickers
+  landing/nav.js       floating navigation: scroll state, mobile panel, anchors
+  landing/hero-graph.js  canvas knowledge-graph hero visual
+  static/index.html    the studio shell
   static/styles.css    design system, light and dark
   static/app.js        wiring: panels, keyboard, command palette
   static/graph.js      D3 force graph

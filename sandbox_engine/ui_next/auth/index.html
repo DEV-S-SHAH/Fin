@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="description" content="Sign in to FinGraph — GraphRAG financial intelligence.">
+<meta name="theme-color" content="#030303">
+<title>Sign in — FinGraph</title>
+
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/auth/styles.css">
+
+<script>
+  /* Theme applied before first paint, same rationale as the landing page. */
+  try {
+    var saved = localStorage.getItem("fin.landing.theme");
+    if (saved === "light" || saved === "dark") {
+      document.documentElement.dataset.theme = saved;
+    } else if (window.matchMedia("(prefers-color-scheme: light)").matches) {
+      document.documentElement.dataset.theme = "light";
+    }
+  } catch (e) { /* private mode — the dark default stands */ }
+</script>
+</head>
+<body class="auth">
+<a class="skip-link" href="#auth-card">Skip to sign-in</a>
+
+<div class="auth__space" aria-hidden="true">
+  <canvas class="auth__stars" id="stars"></canvas>
+  <div class="auth__nebula auth__nebula--a"></div>
+  <div class="auth__nebula auth__nebula--b"></div>
+</div>
+
+<main class="auth__main" id="top">
+  <a class="auth__back" href="/">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M19 12H5M11 6l-6 6 6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    <span>Back to home</span>
+  </a>
+
+  <div class="auth__card" id="auth-card">
+    <div class="auth__brand">
+      <span class="logo" data-logo></span>
+      <span class="auth__brand-name">FinGraph</span>
+    </div>
+
+    <h1 class="auth__title">Welcome to FinGraph</h1>
+    <p class="auth__sub">Sign in to continue to your workspace.</p>
+
+    <div class="auth__notice" id="auth-notice" role="status" aria-live="polite" hidden></div>
+
+    <div class="auth__providers" id="providers">
+      <button class="oauth" type="button" data-provider="google" id="btn-google">
+        <svg class="oauth__icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path fill="#4285F4" d="M23.5 12.27c0-.85-.08-1.66-.22-2.45H12v4.64h6.45a5.52 5.52 0 0 1-2.39 3.62v3h3.87c2.26-2.09 3.57-5.16 3.57-8.81z"/>
+          <path fill="#34A853" d="M12 24c3.24 0 5.96-1.07 7.94-2.91l-3.87-3c-1.07.72-2.44 1.15-4.07 1.15-3.13 0-5.78-2.11-6.73-4.96H1.29v3.1A12 12 0 0 0 12 24z"/>
+          <path fill="#FBBC05" d="M5.27 14.28A7.2 7.2 0 0 1 4.89 12c0-.79.14-1.56.38-2.28v-3.1H1.29a12 12 0 0 0 0 10.76l3.98-3.1z"/>
+          <path fill="#EA4335" d="M12 4.77c1.76 0 3.34.61 4.58 1.8l3.44-3.44A11.98 11.98 0 0 0 12 0 12 12 0 0 0 1.29 6.62l3.98 3.1C6.22 6.88 8.87 4.77 12 4.77z"/>
+        </svg>
+        <span>Continue with Google</span>
+      </button>
+
+      <button class="oauth" type="button" data-provider="apple" id="btn-apple">
+        <svg class="oauth__icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <path d="M17.05 12.54c-.03-2.89 2.36-4.27 2.47-4.34-1.35-1.97-3.44-2.24-4.18-2.27-1.78-.18-3.47 1.05-4.37 1.05-.9 0-2.29-1.02-3.77-1-1.94.03-3.72 1.13-4.72 2.86-2.01 3.49-.51 8.66 1.45 11.5.96 1.39 2.1 2.94 3.6 2.88 1.45-.06 2-.93 3.74-.93s2.24.93 3.77.9c1.56-.03 2.55-1.41 3.5-2.8 1.1-1.61 1.55-3.17 1.58-3.25-.04-.02-3.03-1.16-3.07-4.6zM14.16 4.06c.8-.97 1.34-2.32 1.19-3.66-1.15.05-2.55.77-3.38 1.74-.74.86-1.39 2.23-1.22 3.55 1.29.1 2.6-.65 3.41-1.63z"/>
+        </svg>
+        <span>Continue with Apple</span>
+      </button>
+
+      <button class="oauth" type="button" data-provider="tradingview" id="btn-tradingview">
+        <svg class="oauth__icon" viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="7.5" cy="16.5" r="4.5" fill="none" stroke="#2962FF" stroke-width="2.2"/>
+          <circle cx="16.5" cy="7.5" r="4.5" fill="none" stroke="#3BB3E3" stroke-width="2.2"/>
+          <path d="M10.5 13.5 13.5 10.5" stroke="#2962FF" stroke-width="2.2" stroke-linecap="round"/>
+        </svg>
+        <span>Continue with TradingView</span>
+      </button>
+    </div>
+
+    <div class="auth__dev" id="auth-dev" hidden>
+      <p class="auth__dev-note">
+        No OAuth providers are configured. Set
+        <code>FINGRAPH_GOOGLE_CLIENT_ID</code>,
+        <code>FINGRAPH_APPLE_CLIENT_ID</code> or
+        <code>FINGRAPH_TRADINGVIEW_CLIENT_ID</code> to enable the official flows.
+      </p>
+      <button class="oauth oauth--dev" type="button" data-provider="dev" id="btn-dev">
+        <svg class="oauth__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3l7 4v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V7z" stroke-linejoin="round"/></svg>
+        <span>Continue locally (development)</span>
+      </button>
+    </div>
+
+    <p class="auth__legal">
+      By continuing you agree to FinGraph's
+      <a href="/">Terms</a> and <a href="/">Privacy Policy</a>.
+    </p>
+  </div>
+</main>
+
+<script type="module" src="/auth/app.js"></script>
+</body>
+</html>
