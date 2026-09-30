@@ -57,7 +57,8 @@ pip install -r requirements.txt
 
 python setup.py                     # prompts for your NVIDIA key, verifies it
 python -m sandbox_engine --reset    # build the graph, run 5 benchmarks
-python -m sandbox_engine.query_ui   # http://127.0.0.1:9000
+python -m sandbox_engine.ui_next    # redesigned explorer, http://127.0.0.1:9100
+python -m sandbox_engine.query_ui   # original explorer,  http://127.0.0.1:9000
 ```
 
 ### Windows (PowerShell)
@@ -72,6 +73,7 @@ pip install -r requirements.txt
 
 python setup.py
 python -m sandbox_engine --reset
+python -m sandbox_engine.ui_next    # redesigned explorer,  http://127.0.0.1:9100
 python -m sandbox_engine.query_ui
 ```
 
