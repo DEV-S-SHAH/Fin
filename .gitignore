@@ -1,56 +1,39 @@
-# ── Secrets ──────────────────────────────────────────────────────────────────
-# Live credentials are never committed. `.env.example` is the tracked template;
-# copy it to `.env` and paste your own key. This repository is private, but git
-# history is permanent: a key committed once stays readable after the file is
-# deleted, so a leaked key has to be rotated, not removed.
+# Dependencies
+node_modules/
+web/node_modules/
+
+# Build outputs
+dist/
+build/
+*.log
+
+# Runtime
+server.log
+cookies.txt
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
 .env
-.env.*
-!.env.example
+.env.local
+.env.*.local
 
-# Ad-hoc launcher and smoke-test scripts, written to get a server up by hand.
-# Two of them carry a real NVIDIA key as a literal in `os.environ[...]` rather
-# than reading `.env`, which is the one thing the rule above cannot catch: a
-# file that is not named like a secret is still a file holding one. Ignored by
-# name so a `git add -A` cannot sweep them in, and left in the working tree
-# because they are still useful locally. Rotate any key that was pasted into
-# one of these.
-start_server*.py
-test_qa.py
-test_*_questions.py
-
-# ── Agent Manager ─────────────────────────────────────────────────────────────
-# `.kilo/worktrees/` holds full git worktree checkouts -- a second copy of every
-# source file, data corpus and UI asset. Nothing in it is unique: it is generated
-# by `agent_manager` and recreated on demand, and a commit that swept it in would
-# duplicate the whole repository inside the repository. `.kilo/.gitignore` already
-# excludes `worktrees/`, but that only protects someone who has Kilo installed,
-# so the rule is repeated here for a plain `git clone`.
-.kilo/
-
-# ── Build artefacts & ephemeral runs ──────────────────────────────────────────
-# Transient staging parquet and scratch databases:
-sandbox_engine/_run/
-sandbox_engine/staging_parquet/
-graph.db/
-*.parquet
-data/staging/
-
-# Graph databases are build output, not source: `python -m sandbox_engine
-# --reset` regenerates them from the committed filings in ~10s, and a binary
-# graph committed here only ever disagrees with the code that built it. The
-# source of truth is sandbox_engine/data/, which is tracked.
-*.lbug
-*.lbug/
-
-# ── Python ───────────────────────────────────────────────────────────────────
+# Python
+__pycache__/
+*.pyc
+*.pyo
 .venv/
 venv/
-__pycache__/
-*.py[cod]
 *.egg-info/
 .pytest_cache/
-.mypy_cache/
-.ruff_cache/
 
-# ── OS ───────────────────────────────────────────────────────────────────────
-.DS_Store
+# Vite
+web/.vite/
