@@ -1,49 +1,48 @@
-# Fin
+# FinGraph
 
-Turns SEC filings into a property graph you can query, with a browser UI over it
-and LLM question answering on top. No LLM runs on the way in — the parse stage is
-pure Python, so a build is deterministic and needs no API key. The model is only
-ever used to phrase an answer over retrieved graph context.
+Turns SEC filings into a property graph you can query, with a premium GraphRAG workspace and LLM question answering on top. No LLM runs on the way in — the parse stage is pure Python, so a build is deterministic and needs no API key. The model is only ever used to phrase an answer over retrieved graph context.
 
 ## Architecture
 
-Two independent HTTP services over two pipelines, in one repository.
+Two independent HTTP services over two pipelines, plus a React + TypeScript GraphRAG workspace, in one repository.
 
 ```
               30 SEC filings (committed, 39 MB)
         sandbox_engine/data/<company>/<year>/<form>/
-                            │
+                                │
             python -m sandbox_engine --reset
               pure Python, ~11 s, no network
-                            │
+                                │
               Arrow → Parquet spill → LadybugDB
-                            │
+                                │
         sandbox_engine/_run/sandbox.lbug          data/<name>.lbug
-                            │                            │
-                            │                   python -m graphrag.cli ingest <pdf>
-                            │                            │
-                            ▼                            ▼
-     python -m sandbox_engine.query_ui       python -m graphrag.cli serve
-       graph explorer, reports, stats          domain-agnostic PDF viewer
-       /api/ask → LLM answer, per request      /api/ask → LLM answer, per request
-       $PORT_QUERY_UI · 127.0.0.1:9000         $PORT_GRAPHRAG_UI · 127.0.0.1:8765
+                                │                            │
+                                │                   python -m graphrag.cli ingest <pdf>
+                                │                            │
+                                ▼                            ▼
+      python -m sandbox_engine.ui_next       python -m graphrag.cli serve
+        GraphRAG workspace, port 9100           domain-agnostic PDF viewer
+        /api/ask → LLM answer, per request      /api/ask → LLM answer, per request
+        $PORT_QUERY_UI_V2 · 127.0.0.1:9100      $PORT_GRAPHRAG_UI · 127.0.0.1:8765
+
+      cd web && npm run dev
+        Vite + React 19 + Tailwind 4
+        Premium GraphRAG Studio at http://localhost:5173
+        Proxies API calls to sandbox_engine on port 9100
 ```
 
 | Service | Command | Port | Serves | Without a key |
 |---|---|---|---|---|
-| Graph explorer + RAG | `python -m sandbox_engine.query_ui` | 9000, `$PORT_QUERY_UI` | `sandbox_engine/_run/sandbox.lbug` | Explorer, reports, stats all work. `/api/ask` asks for a key or offers the local model. |
-| Redesigned graph explorer | `python -m sandbox_engine.ui_next` | 9100, `$PORT_QUERY_UI_V2` | `sandbox_engine/_run/sandbox.lbug` | Same as above, new front end |
-| PDF graph viewer | `python -m graphrag.cli serve` | 8765, `$PORT_GRAPHRAG_UI` | `data/*.lbug` | Serves fine; answers fall back to a lexical provider |
+| GraphRAG Workspace (React) | `cd web && npm run dev` | 5173 (proxies to 9100) | `sandbox_engine/_run/sandbox.lbug` | Explorer works; `/api/ask` asks for key or offers local model |
+| Redesigned Graph Explorer (vanilla JS) | `python -m sandbox_engine.ui_next` | 9100, `$PORT_QUERY_UI_V2` | `sandbox_engine/_run/sandbox.lbug` | Same as above |
+| Original Graph Explorer | `python -m sandbox_engine.query_ui` | 9000, `$PORT_QUERY_UI` | `sandbox_engine/_run/sandbox.lbug` | Explorer, reports, stats work |
+| PDF Graph Viewer | `python -m graphrag.cli serve` | 8765, `$PORT_GRAPHRAG_UI` | `data/*.lbug` | Serves fine; answers fall back to lexical provider |
 
-The two defaults live in `sandbox_engine/query_ui.py` and `graphrag/config.py`,
-so they cannot be made to collide by editing a literal. Both services bind to
-loopback and neither authenticates — `--host 0.0.0.0` is an explicit choice, not
-an accident.
+All services bind to loopback (`127.0.0.1`). `--host 0.0.0.0` is an explicit choice.
 
-## Quick start
+## Quick Start
 
-Requires **Python 3.13**. Nothing else — no database server, no Docker, no
-system packages.
+Requires **Python 3.13** and **Node.js 20+**. No database server, no Docker, no system packages.
 
 ### macOS / Linux
 
@@ -51,14 +50,20 @@ system packages.
 git clone https://github.com/DEV-S-SHAH/Fin.git
 cd Fin
 
+# Backend
 python3.13 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
 python setup.py                     # prompts for your NVIDIA key, verifies it
 python -m sandbox_engine --reset    # build the graph, run 5 benchmarks
-python -m sandbox_engine.ui_next    # redesigned explorer, http://127.0.0.1:9100
-python -m sandbox_engine.query_ui   # original explorer,  http://127.0.0.1:9000
+
+# Terminal 1: Backend API (required for web app)
+python -m sandbox_engine.ui_next --port 9100 --no-browser
+
+# Terminal 2: Frontend (GraphRAG Workspace)
+cd web && npm install && npm run dev
+# Opens http://localhost:5173
 ```
 
 ### Windows (PowerShell)
@@ -73,21 +78,17 @@ pip install -r requirements.txt
 
 python setup.py
 python -m sandbox_engine --reset
-python -m sandbox_engine.ui_next    # redesigned explorer,  http://127.0.0.1:9100
-python -m sandbox_engine.query_ui
+
+# Terminal 1: Backend API
+python -m sandbox_engine.ui_next --port 9100 --no-browser
+
+# Terminal 2: Frontend
+cd web
+npm install
+npm run dev
 ```
 
-If PowerShell refuses to activate the venv, its execution policy is blocking
-it. Either run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once, or
-skip activation entirely — every command below works with the interpreter
-called out in full:
-
-```powershell
-.\.venv\Scripts\python.exe -m sandbox_engine --reset
-```
-
-`--reset` prints a load report and five benchmarks, then exits. **All five
-should pass**, in about 11 seconds:
+`--reset` prints a load report and five benchmarks, then exits. **All five should pass**, in about 11 seconds:
 
 ```
   [PASS] B1 graph shape and referential integrity
@@ -98,126 +99,196 @@ should pass**, in about 11 seconds:
   5/5 passed
 ```
 
-If `py -3.13` is not recognised, install Python 3.13 from python.org and tick
-"Add python.exe to PATH".
+## The Three Services
 
-## The second service
+### 1. GraphRAG Workspace (`web/`) — Premium React + TypeScript App
 
-`graphrag/` is the older, domain-agnostic pipeline: arbitrary PDFs in, an
-LLM-discovered graph out, no SEC vocabulary anywhere. It has its own database
-and its own UI, so it needs its own ingest before it will serve:
+Modern GraphRAG financial-intelligence workspace built with React 19, TypeScript, Tailwind 4, Vite, D3, and motion.
+
+**Features:**
+- **Left panel**: Searchable entity browser with type filters (Company, Filing, FinancialMetric, Segment, DisclosureEvent)
+- **Center**: Force-directed knowledge graph (D3) with citation highlighting, zoom/pan, auto-fit
+- **Right panel**: Ask FinGraph — streaming answers with citations, provenance tags, follow-up suggestions
+- **Trace Journey**: Animated "How FinGraph Thinks" modal showing query routing → entity resolution → graph retrieval → filing retrieval → evidence grading → synthesis
+- **Design system**: Near-black `#030303` background, `#FF3C00` primary accent, deep red/orange gradients, subtle glow, semi-transparent dark cards
+- **Auth**: Dev mode fallback, cookie-based sessions with `credentials: "include"`
+
+**Routes:**
+| Path | Page |
+|---|---|
+| `/` | Public landing page with hero, markets ticker, features, pricing |
+| `/app` | Protected GraphRAG Studio dashboard |
+| `/auth` | Sign-in page with OAuth providers + dev fallback |
+
+### 2. Redesigned Graph Explorer (`sandbox_engine/ui_next/`) — Vanilla JS
+
+Second front end for the same knowledge graph. Replaces layout, not answers.
 
 ```bash
-python -m graphrag.cli ingest samples/marine_biology.pdf   # or any PDF, or a directory
+python -m sandbox_engine.ui_next --port 9100 --no-browser  # http://127.0.0.1:9100
+```
+
+**Routes:** `/` (landing), `/app` (studio), `/auth` (sign-in), `/api/*` (REST + SSE)
+
+**Adds endpoints:** `GET /api/companies`, `GET /api/route?q=`
+
+### 3. PDF Graph Viewer (`graphrag/`) — Domain-Agnostic Pipeline
+
+Arbitrary PDFs in, LLM-discovered graph out. Own database, own UI, own ingest.
+
+```bash
+python -m graphrag.cli ingest samples/marine_biology.pdf
 python -m graphrag.cli serve                              # http://127.0.0.1:8765
 python -m graphrag.cli ask "what are the main species?" --json
 ```
 
-`samples/` holds four PDFs for exactly this. `ingest` defaults to
-`data/aapl-2026.lbug`; `serve` and `ask` take the same `--db`. The database is
-build output, so a fresh clone has to run `ingest` once — `serve` against a
-missing file fails inside LadybugDB with `Cannot create an empty database under
-READ ONLY mode` rather than naming the command that would fix it. That is the
-one rough edge here.
+`ingest` accepts `--provider heuristic` to skip the LLM entirely.
+
+## The GraphRAG Workspace (`web/`) — Deep Dive
+
+### Tech Stack
+- **React 19** + **TypeScript** + **Vite 8**
+- **Tailwind 4** (CSS-first, no config file)
+- **react-router-dom** v7 for routing
+- **SWR** for data fetching with caching
+- **D3 v7** for force-directed graph visualization
+- **motion/react** (Framer Motion) for animations
+- **lucide-react** for icons
+
+### Project Structure
 
 ```
-graphrag UI   : http://127.0.0.1:8765/
-database      : data/aapl-2026.lbug
-graph         : 1042 entities, 1519 relationships
-press Ctrl-C to stop
+web/
+├── src/
+│   ├── main.tsx                 # App entry, providers, router
+│   ├── App.tsx                  # Routes: /, /app, /auth, /auth/callback
+│   ├── index.css                # Tailwind imports, design tokens
+│   ├── vite-env.d.ts
+│   │
+│   ├── types/
+│   │   ├── graphrag.ts          # GraphRAG types: Entity, GraphPayload, TraceStep, etc.
+│   │   └── index.ts             # Re-exports
+│   │
+│   ├── lib/
+│   │   ├── api.ts               # API client with credentials:include, all endpoints
+│   │   └── utils.tsx            # cn(), FinGraphLogo, formatters
+│   │
+│   ├── hooks/
+│   │   ├── useGraphRAG.ts       # SWR hooks: useEntities, useGraph, useRoute, useCompanies, useReports
+│   │   └── useData.ts           # Landing page hooks: useMarkets, useCompanies
+│   │
+│   ├── context/
+│   │   └── AuthContext.tsx      # Auth state, OAuth flow, dev fallback
+│   │
+│   ├── components/
+│   │   ├── app/
+│   │   │   ├── KnowledgeGraph.tsx     # D3 force graph with citation highlighting
+│   │   │   ├── EntityBrowser.tsx      # Searchable, filterable entity tree
+│   │   │   ├── AskFinGraph.tsx        # Streaming Q&A with citations
+│   │   │   └── TraceJourney.tsx       # Animated query journey modal
+│   │   ├── auth/
+│   │   │   └── ProtectedRoute.tsx     # Route guard
+│   │   └── ui/
+│   │       ├── gradient-bars-background.tsx
+│   │       └── footer-section.tsx
+│   │
+│   └── pages/
+│       ├── AppPage.tsx          # Main dashboard layout (3 columns)
+│       ├── LandingPage.tsx      # Public marketing page
+│       ├── AuthPage.tsx         # Sign-in with OAuth providers
+│       └── AuthCallbackPage.tsx # OAuth callback handler
+│
+├── package.json
+├── tsconfig.json
+├── vite.config.ts               # API proxy to localhost:9100
+└── index.html
 ```
 
-`ingest` accepts `--provider heuristic` to skip the LLM entirely. It is lexical
-rather than model-quality, but it needs no key and no network, which makes it
-the fastest way to get a graph on screen.
+### Components
 
-## The redesigned explorer
+#### `KnowledgeGraph.tsx`
+D3 force-directed graph with:
+- Node types: Company, Filing, FinancialMetric, Segment, DisclosureEvent (color-coded)
+- Citation highlighting: cited nodes glow `#FF3C00`, highlighted nodes `#FF6B35`
+- Selected node: white stroke, fixed position
+- Zoom/pan with double-click reset, auto-fit on data change
+- Labels show on hover or when cited/selected
+- Grid pattern background with subtle accent color
 
-`sandbox_engine/ui_next/` is a second front end for the same knowledge graph. It
-replaces the layout, not the answers: `server.py` subclasses the handler in
-`query_ui.py`, so graph traversal, the RAG pipeline, grading, canned reports and
-the SSE transport are the same code answering the same questions. The old page
-is untouched and the two can run at the same time.
+#### `EntityBrowser.tsx`
+- Real-time search with `/` keyboard shortcut
+- Type filter pills (All, Company, Filing, FinancialMetric, Segment, DisclosureEvent)
+- Collapsible categories with entity counts
+- Entity rows show name, label_hint (ticker), fiscal_year badge
+- Selected state synced with graph
 
-```bash
-python -m sandbox_engine.query_ui    # original,  http://127.0.0.1:9000
-python -m sandbox_engine.ui_next     # landing page + redesigned explorer, http://127.0.0.1:9100
+#### `AskFinGraph.tsx`
+- Example questions carousel
+- Streaming answer via SSE with token-by-token rendering
+- Citations with provenance badges (STATED, DERIVED, INFERRED, EXTERNAL, GAP)
+- Follow-up question chips
+- Route badge (KNOWN/COLD_START/AMBIGUOUS) and ticker chip
+- "View Trace" button opens TraceJourney modal
+
+#### `TraceJourney.tsx`
+Animated stage-by-stage visualization:
+1. **Routing** — shows route type and resolved ticker
+2. **Entity Resolution** — extracted entities with types
+3. **Graph Retrieval** — nodes/edges/hops retrieved
+4. **Filing Retrieval** — SEC filings fetched (accession numbers)
+5. **Evidence & Provenance** — provenance tag counts (STATED/DERIVED/INFERRED/EXTERNAL/GAP)
+6. **Synthesis** — verdict (SUPPORTED/QUALIFIED/REFUSED) and citation count
+- Each stage animates in sequence with timing
+- Expandable detail panels per stage
+- Final answer rendered below
+
+### API Integration (`lib/api.ts`)
+
+All endpoints use `credentials: "include"` for cookie-based auth:
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/api/entities?q=&limit=` | GET | Search entities |
+| `/api/graph?seed=&hops=&limit=` | GET | Graph payload for visualization |
+| `/api/route?q=` | GET | Route classification (KNOWN/COLD_START/AMBIGUOUS) |
+| `/api/ask` | POST | `{question, stream?}` → RAG answer |
+| `/api/ask/stream` | POST | SSE streaming answer |
+| `/api/reports?type=` | GET | Canned reports (segments, cash_flow, etc.) |
+| `/api/companies` | GET | Companies with filing metadata |
+| `/auth/config` | GET | OAuth provider availability |
+| `/auth/login` | POST | `{provider}` → initiate OAuth |
+| `/auth/logout` | POST | Clear session |
+| `/auth/me` | GET | Current session |
+
+### Design System
+
+**Colors:**
+- Background: `#030303` (near-black)
+- Primary: `#FF3C00` (vivid red-orange)
+- Secondary: `#FF6B35`, `#E63600`, `#FF8A50`, `#B84A2E` (gradient steps)
+- Surface: `rgba(13,13,14,0.6)` with `backdrop-blur-sm`
+- Borders: `rgba(255,255,255,0.05)`
+- Text: `#FFFFFF` / `rgba(255,255,255,0.7)` / `rgba(255,255,255,0.4)`
+
+**Provenance tag colors:**
+- STATED: Blue
+- DERIVED: Purple
+- INFERRED: Orange
+- EXTERNAL: Cyan
+- GAP: Red
+
+### Vite Proxy
+
+`vite.config.ts` proxies `/api/*` and `/auth/*` to `http://localhost:9100` so the dev server works without CORS issues.
+
+```typescript
+server: {
+  proxy: {
+    '/api': { target: 'http://localhost:9100', changeOrigin: true },
+    '/auth': { target: 'http://localhost:9100', changeOrigin: true },
+  }
+}
 ```
-
-Both take `--port`, `--host`, `--no-browser` and `--db`, and the new one defaults
-to 9100 via `$PORT_QUERY_UI_V2` so the two defaults cannot collide.
-
-### Routes
-
-| Path | Page |
-|---|---|
-| `/` | Public landing page (`landing/`) — financial-intelligence position, hero, navigation |
-| `/app` | The redesigned explorer (`static/`) — the working dashboard, unchanged |
-
-The two static trees have separate allow-lists in `server.py`, so the landing
-page and the studio cannot reach into each other's assets.
-
-### What it adds
-
-| Endpoint | Why |
-|---|---|
-| `GET /api/companies` | Filings, forms and periods per issuer. The old page hard-codes eight Apple questions, which is wrong the moment the graph holds a second issuer; this builds the sample questions from what is actually stored. |
-| `GET /api/route?q=` | Which retrieval route a question would take — `KNOWN`, `COLD_START` or `AMBIGUOUS`. One graph query, no model call. |
-
-That route probe is why the two transports differ. `COLD_START` fetches a filing
-from EDGAR and synthesises it through a generator, so the server emits tokens as
-it goes and the page streams them. `KNOWN` is one blocking call that returns the
-whole answer at once, so the page asks for it in a single request: the old SSE
-handler "streams" that route by splitting the finished string into words, which
-looks like progress and costs a second full request to recover the grading the
-stream never carried.
-
-### Layout
-
-```
-sandbox_engine/ui_next/
-  server.py            the legacy handler, plus static routes and the two endpoints above
-  landing/index.html   the public landing page shell
-  landing/styles.css   landing design system, light and dark
-  landing/app.js       entry: assembles the page, starts the hero graph
-  landing/components.js  reusable pieces: logo, buttons, cards, tickers
-  landing/nav.js       floating navigation: scroll state, mobile panel, anchors
-  landing/hero-graph.js  canvas knowledge-graph hero visual
-  static/index.html    the studio shell
-  static/styles.css    design system, light and dark
-  static/app.js        wiring: panels, keyboard, command palette
-  static/graph.js      D3 force graph
-  static/answer.js     answer, verdict, sources, trace, provenance ledger
-  static/reports.js    canned reports drawer
-  static/api.js        fetch wrappers, JSON and SSE
-  static/store.js      shared state
-  static/util.js       DOM, formatting, markdown, toasts
-```
-
-No build step and no npm: the page is native ES modules, and D3 is the copy
-already vendored at `sandbox_engine/static/d3.v7.min.js`.
-
-### Moving the panels
-
-The entity list and the answer column are separated by a draggable divider, and
-the answer column is the one people resize: a graded answer with a verdict, a
-source list and a provenance ledger does not read well in 440px. Three ways to
-move it, all clamped so the graph keeps a usable share of the window:
-
-- drag the divider, which has a visible grip and a 15px hit area
-- focus it and use `←` / `→`, or `⇧` with them for larger steps; `Home` resets
-- `⌘K` and search for *widen*, *narrow* or *reset* the answer panel
-
-The width is remembered per browser.
-
-### What it does not do
-
-- It never writes. The graph is opened read-only unless you pass `--read-write`.
-- It does not reimplement retrieval. Two front ends sharing one backend is the
-  point; a second copy of the RAG pipeline would drift from the first.
-- `?q=...` re-runs a question on load rather than restoring a stored answer. An
-  answer is only as good as the graph it was graded against, and that changes
-  when the next filing lands, so the link says what the evidence supports today.
 
 ## Ports
 
@@ -226,116 +297,63 @@ The width is remembered per browser.
 | `PORT_QUERY_UI` | `9000` | `python -m sandbox_engine.query_ui` | `--port` |
 | `PORT_QUERY_UI_V2` | `9100` | `python -m sandbox_engine.ui_next` | `--port` |
 | `PORT_GRAPHRAG_UI` | `8765` | `python -m graphrag.cli serve` | `--port` |
+| (Vite) | `5173` | `cd web && npm run dev` | `--port` |
 
-Precedence is `--port`, then the variable, then the default. A value that is not
-an integer in 1–65535 is rejected at start-up with exit code 2. A typo is not
-worth a traceback, and it is not worth being ignored either: `PORT_QUERY_UI=90OO`
-that looked applied while the server quietly listened somewhere else is the same
-failure as no configuration at all.
+Precedence: `--port` > env var > default. Invalid values exit 2. Port in use exits 1 with actionable message.
 
-A port already in use exits 1 and names the two things worth trying:
+## Environment Variables
 
-```
-error: port 9000 on 127.0.0.1 is already in use.
-  Another copy of this server is probably still running: lsof -nP -iTCP:9000 -sTCP:LISTEN
-  Or pick another port: --port <n>, or PORT_QUERY_UI=<n>
-  (The other service here, the graphrag UI, defaults to 8765; set PORT_GRAPHRAG_UI to move it.)
-```
+Read from process env first, `.env` second. `setup.py` writes `.env` (gitignored).
 
 ```bash
-PORT_QUERY_UI=9100 python -m sandbox_engine.query_ui
-PORT_QUERY_UI_V2=9200 python -m sandbox_engine.ui_next
-PORT_GRAPHRAG_UI=9300 python -m graphrag.cli serve
-```
-
-Both read `.env` as well as the process environment, so the variable belongs in
-`.env.example` like everything else.
-
-## Environment variables
-
-Read from the process environment first, `.env` second, so a one-off prefix
-wins over the file:
-
-```bash
-NVIDIA_API_KEY=nvapi-... python -m sandbox_engine.query_ui
-```
-
-`setup.py` writes `.env` for you and is gitignored, so the key is never in the
-repository — every clone asks for its own. Copy the template by hand if you
-prefer:
-
-```bash
-cp .env.example .env          # Windows: Copy-Item .env.example .env
+cp .env.example .env          # or let setup.py create it
 ```
 
 | Variable | Default | Used by | Meaning |
 |---|---|---|---|
-| `PORT_QUERY_UI` | `9000` | `sandbox_engine.query_ui` | Port for the graph explorer |
-| `PORT_GRAPHRAG_UI` | `8765` | `graphrag.cli serve` | Port for the PDF graph viewer |
-| `NVIDIA_API_KEY` | — | both | Hosted model key, from [build.nvidia.com](https://build.nvidia.com) |
-| `RAG_BACKEND` | `auto` | `query_ui` | `auto`, `nvidia` or `ollama`. `ollama` forces the local model even with a key present |
-| `NVIDIA_BASE_URL` | `https://integrate.api.nvidia.com/v1` | `query_ui` | Override only if your endpoint differs |
+| `PORT_QUERY_UI` | `9000` | `sandbox_engine.query_ui` | Original explorer port |
+| `PORT_QUERY_UI_V2` | `9100` | `sandbox_engine.ui_next` | Redesigned explorer port |
+| `PORT_GRAPHRAG_UI` | `8765` | `graphrag.cli serve` | PDF graph viewer port |
+| `NVIDIA_API_KEY` | — | both | Hosted model key from [build.nvidia.com](https://build.nvidia.com) |
+| `RAG_BACKEND` | `auto` | `query_ui` | `auto`, `nvidia`, `ollama` |
+| `NVIDIA_BASE_URL` | `https://integrate.api.nvidia.com/v1` | `query_ui` | Override endpoint |
 | `NVIDIA_MODEL` | `nvidia/nemotron-3-ultra-550b-a55b` | `query_ui` | |
 | `RAG_OLLAMA_BASE_URL` | `http://127.0.0.1:11434/v1` | `query_ui` | Local model server |
 | `RAG_OLLAMA_MODEL` | `llama3.2` | `query_ui` | |
-| `RAG_NUM_CTX` | `16384` | `query_ui` | Context window for the answer |
-| `RAG_TIMEOUT` | `900` | `query_ui` | Seconds. The SDK default is long enough to turn a slow model into a browser-side "Failed to fetch" |
-| `OPENAI_API_KEY` | — | `graphrag` | Also accepted by `query_ui`, after `NVIDIA_API_KEY` |
+| `RAG_NUM_CTX` | `16384` | `query_ui` | Context window |
+| `RAG_TIMEOUT` | `900` | `query_ui` | Seconds |
+| `OPENAI_API_KEY` | — | `graphrag` | Also accepted by `query_ui` |
 | `GRAPHRAG_PROVIDER` | `auto` | `graphrag` | `gemini`, `nvidia`, `openai`, `anthropic`, `ollama`, `heuristic` |
-| `GRAPHRAG_MODEL` | per provider | `graphrag` | Override the provider's model |
-| `GRAPHRAG_ENV_FILE` | `.env` | `graphrag` | Read the file from somewhere else |
-| `GRAPHRAG_TEMPERATURE` | `0.0` | `graphrag` | |
 
-### How the key is read
-
-Ingestion and the benchmarks need no credential. The key is only for the
-question box. You do not have to configure a backend: each service resolves one
-per request and says what it picked, so starting `ollama serve` or entering a
-key takes effect without a restart.
-
-`sandbox_engine/query_ui.py` accepts `NVIDIA_API_KEY` or `OPENAI_API_KEY`, from
-the environment, from `sandbox_engine/.env`, or from the repo-root `.env`.
+### Key Resolution (sandbox_engine)
 
 | Found | Uses |
-| --- | --- |
-| A key in the environment or `.env` | hosted NVIDIA model |
-| No key, Ollama answering on `127.0.0.1:11434` | local `llama3.2` |
-| Neither | the question box asks for a key, or offers the local model |
+|---|---|
+| Key in env or `.env` | Hosted NVIDIA model |
+| No key, Ollama on `127.0.0.1:11434` | Local `llama3.2` |
+| Neither | Question box asks for key or offers local model |
 
-A key the provider refuses with 401 or 403 is set aside rather than offered
-again, and the UI falls back to whatever else is available. You can also paste a
-key into the browser instead of writing a file; it is held in the server's
-memory for the life of the process, never written to disk, logged, or sent back
-to the page.
+A rejected key (401/403) is set aside; UI falls back. You can also paste a key in-browser — held in server memory only.
 
-`graphrag/` resolves once per request from a different set. It reads
-`GEMINI_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` or `NVIDIA_API_KEY`, in
-that order of preference. NVIDIA is last on purpose: it is the only key a
-default checkout has, and being the sole key should not outrank one you supplied
-on purpose. With no key and no local Ollama it answers from a lexical provider —
-a restatement of the retrieved graph, not reasoning. `ingest` prints a note when
-that happens; `serve` does not, so check `python -m graphrag.cli stats` before
-trusting an answer.
+## Query Routing & Tier 1 Ingestion (Cold-Start JIT Graph RAG)
 
-### Query Routing & Tier 1 Ingestion (Cold-Start JIT Graph RAG)
+Natural-language questions evaluated by `sandbox_engine/router.py` before retrieval:
 
-Natural-language questions in `sandbox_engine.query_ui` are evaluated by `sandbox_engine/router.py` before retrieval or calling an LLM:
+- **`KNOWN`**: Entity indexed in KG. Filtered retrieval.
+- **`COLD_START`**: Entity extracted (cashtag `$TICKER`, uppercase token, alias) but not indexed. Returns staging response to trigger JIT pipeline.
+- **`AMBIGUOUS`**: No clear entity. Prompts for ticker clarification.
 
-- **`KNOWN`**: The requested entity is indexed in the knowledge graph. Retrieval executes filtered specifically to that entity rather than scanning all companies.
-- **`COLD_START`**: The entity was extracted (via cashtag `$TICKER`, uppercase token, or alias dictionary) but is not yet indexed. Returns an explicit staging response (`{"status": "cold_start_required", "entity": "...", ...}`) to trigger the JIT pipeline.
-- **`AMBIGUOUS`**: No clear entity was identified. Prompts for ticker clarification without calling the LLM and without silent fallback to AAPL/MSFT.
-
-When cold start triggers:
-- **`sandbox_engine/tier1_fetch.py`**: Fetches the latest filing directly from SEC EDGAR under a strict 2.5s SLA budget (2.0s socket timeout) with zero silent drops, retrying transient HTTP 429s once using `Retry-After` with jitter.
-- **`sandbox_engine/tier1_clean.py`**: Extracts high-signal narrative sections (Item 1 Business for 10-K, Item 2 MD&A for 10-Q) using universal section extractors, strips HTML markup/tables/scripts, and caps output at 6,000 tokens (preserving sentence boundaries).
-- **`sandbox_engine/coldstart_schema.py`**: Enforces strict typed Pydantic taxonomies for financial entities (`Company`, `Executive`, `Supplier`, `Competitor`, `RiskFactor`) and relations (`SOURCES_FROM`, `SERVES_AS`, `COMPETES_WITH`, `EXPOSED_TO`, `LED_DIVISION`), disallowing self-loops and limiting quotes to <= 30 words.
-- **`sandbox_engine/coldstart_extract.py`**: Extracts 15–30 typed triples under a strict 3.5s SLA timeout budget, ranking excess triples by confidence.
-- **`sandbox_engine/stitch.py`**: Maintains an ephemeral `networkx.DiGraph` overlay, normalizes entities via `ConceptRegistry` and `stable_id`, stitches into the read-only LadybugDB backbone, and deduplicates arcs in memory in < 1.0s.
-- **`sandbox_engine/traversal.py`**: Executes hybrid 2-hop graph traversals navigating both ephemeral overlay and persistent LadybugDB nodes, preventing cycles and outputting deterministic provenance ledgers.
-- **`sandbox_engine/coldstart_synthesis.py`**: Formulates structured 5-section financial investment reports and streams incremental tokens.
-- **`sandbox_engine/background.py`**: Non-blocking `BackgroundIngestQueue` using a bounded ThreadPoolExecutor and thread-safe deduplication to stage full historical ingestion atomically without locking LadybugDB.
-- **`sandbox_engine/community.py`**: NetworkX Louvain modularity clustering generating community partitions, hub node centrality rankings, and analytical briefs.
-- **`sandbox_engine/query_ui.py` (SSE Streaming & Retrieval Push-down)**: Emits real-time SSE progress events (`routing`, `fetching`, `stitching`, `token`, `done`), schedules background ingestion, and eliminates O(filings × chunks) scans by pushing down Cypher WHERE filters.
+**Cold-Start Pipeline:**
+1. **`tier1_fetch.py`** — Fetches latest filing from SEC EDGAR (< 2.5s SLA, 2.0s timeout, retry 429 with `Retry-After` + jitter)
+2. **`tier1_clean.py`** — Extracts Item 1 (10-K) / Item 2 (10-Q), strips HTML/tables/scripts, caps 6,000 tokens
+3. **`coldstart_schema.py`** — Pydantic taxonomies: `Company`, `Executive`, `Supplier`, `Competitor`, `RiskFactor`; relations: `SOURCES_FROM`, `SERVES_AS`, `COMPETES_WITH`, `EXPOSED_TO`, `LED_DIVISION`
+4. **`coldstart_extract.py`** — 15–30 typed triples, < 3.5s SLA, confidence-ranked
+5. **`stitch.py`** — Ephemeral `networkx.DiGraph` overlay, `ConceptRegistry` normalization, backbone stitching < 1.0s
+6. **`traversal.py`** — Hybrid 2-hop traversal (overlay + LadybugDB), cycle prevention, provenance ledgers
+7. **`coldstart_synthesis.py`** — 5-section investment report, token streaming
+8. **`background.py`** — Non-blocking `BackgroundIngestQueue`, bounded ThreadPoolExecutor, atomic staging
+9. **`community.py`** — Louvain modularity clustering, hub centrality, analytical briefs
+10. **`query_ui.py`** — SSE events (`routing`, `fetching`, `stitching`, `token`, `done`), Cypher WHERE push-down
 
 ## Tests
 
@@ -344,54 +362,46 @@ python -m unittest discover -s tests -p "test_*.py"          # 698 tests
 python -m unittest discover -s sandbox_engine -p "test_*.py" # 112 tests
 ```
 
-Both suites are offline: no network, no key, no database build.
+Both suites offline: no network, no key, no database build.
 
 | File | Tests | Covers |
 |---|---|---|
-| `tests/test_graphrag.py` | 172 | Providers, `graphrag` package, port and bind behaviour |
+| `tests/test_graphrag.py` | 172 | Providers, `graphrag` package, port/bind |
 | `tests/test_graph_store.py` | 111 | `GraphStore` writes, traversals, buffer pool |
 | `tests/test_entity_resolver.py` | 92 | Canonical entity registry |
-| `tests/test_graph_extractor.py` | 69 | Entity and relation extraction |
+| `tests/test_graph_extractor.py` | 69 | Entity/relation extraction |
 | `tests/test_provenance.py` | 43 | Citation provenance |
 | `tests/test_document_loader.py` | 44 | PDF chunking |
-| `tests/test_router.py` | 15 | Query routing (KNOWN, COLD_START, AMBIGUOUS), entity filtering |
-| `tests/test_coldstart_stitch.py` | 9 | Schema validation, extractor budget/SLA, in-memory backbone stitching |
-| `tests/test_tier1_fetch.py` | 7 | SEC runtime fetching SLA, rate limit backoff, section cleaning & token cap |
-| `tests/test_multi_hop_traversal.py` | 4 | Hybrid 2-hop traversal, cycle prevention, provenance ledger formatting |
-| `tests/test_coldstart_latency.py` | 2 | Traversal budget and interactive pipeline streaming SLA |
-| `tests/test_background_community.py` | 5 | Background queue deduplication, atomic staging writes, Louvain community detection |
-| `tests/test_query_ui_transport.py` | 11 | `query_ui` request transport & SSE streaming events |
+| `tests/test_router.py` | 15 | Query routing (KNOWN/COLD_START/AMBIGUOUS) |
+| `tests/test_coldstart_stitch.py` | 9 | Schema, extractor budget, in-memory stitching |
+| `tests/test_tier1_fetch.py` | 7 | SEC fetching SLA, rate limit, section cleaning |
+| `tests/test_multi_hop_traversal.py` | 4 | 2-hop traversal, cycle prevention, provenance |
+| `tests/test_coldstart_latency.py` | 2 | Traversal budget, streaming SLA |
+| `tests/test_background_community.py` | 5 | Background queue, Louvain community |
+| `tests/test_query_ui_transport.py` | 11 | SSE streaming events |
 | `tests/test_setup.py` | 11 | `setup.py` key handling |
-| `tests/test_ingestion.py` | 4 | Corpus presence — run this first on a new machine |
-| `sandbox_engine/test_entity_resolver.py` | 46 | Sense-opposite label protection |
-| `sandbox_engine/test_rag_backends.py` | 26 | Backend resolution, lazy registry |
-| `sandbox_engine/test_graph_payload.py` | 12 | Graph payload for the browser |
-| `sandbox_engine/test_parser_identity.py` | 9 | Registrant identity from the filing |
+| `tests/test_ingestion.py` | 4 | Corpus presence — run first on new machine |
 
-`tests/test_ingestion.py` is the one to run first on a new machine: it fails
-loudly if `sandbox_engine/data/` did not come down with the clone, which is the
-one fresh-clone failure that is otherwise hard to diagnose.
+Run `tests/test_ingestion.py` first on a new machine: fails loudly if `sandbox_engine/data/` missing.
 
-## What's in the repository
+## Repository Contents
 
 | | |
 |---|---|
-| **Committed** | All source, tests, `requirements.txt`, the UI assets, `samples/`, and the **30 filings** under `sandbox_engine/data/` (39 MB) |
-| **Not committed** | Generated `.lbug` databases, the Parquet spill, `.env` |
+| **Committed** | All source, tests, `requirements.txt`, UI assets, `samples/`, **30 filings** under `sandbox_engine/data/` (39 MB), vendor JS (`d3.v7.min.js`, `gsap.min.js`) |
+| **Not committed** | Generated `.lbug` databases, Parquet spill, `.env`, `node_modules/`, `dist/`, `data/`, `sandbox_engine/_run/`, `server.log`, `cookies.txt` |
 
-The graph databases are build output, so a fresh clone has to run `--reset` once.
-`query_ui` says so explicitly if you skip it.
+Graph databases are build output — fresh clone runs `--reset` once.
 
-The corpus is a directory tree, and the tree *is* the scope — the resolver never
-names a company:
+Corpus is a directory tree; the tree *is* the scope:
 
 ```
 sandbox_engine/data/<company>/<year>/<10k|10q|8k>/<filing>.htm
 ```
 
-To add a company, create its folder and drop filings in. Nothing else to edit.
+Add a company by creating its folder and dropping filings in. Nothing else to edit.
 
-## Layout
+## Key Source Files
 
 | Path | Role |
 |---|---|
@@ -400,82 +410,72 @@ To add a company, create its folder and drop filings in. Nothing else to edit.
 | `sandbox_engine/ufgs_extract.py` | Universal Financial Graph Schema tables |
 | `sandbox_engine/buffer.py` | Node/relationship tables, Arrow batching, Parquet spill |
 | `sandbox_engine/loader.py` | Idempotent load into LadybugDB (lookup-before-insert) |
-| `sandbox_engine/benchmarks.py` | The five graph integrity benchmarks (B1–B5) |
-| `sandbox_engine/query_ui.py` | HTTP server, `/api/ask`, graph payload for the UI |
-| `sandbox_engine/ui_next/` | Redesigned front end over the same graph; imports the backend, adds two read-only endpoints |
+| `sandbox_engine/benchmarks.py` | Five graph integrity benchmarks (B1–B5) |
+| `sandbox_engine/query_ui.py` | HTTP server, `/api/ask`, graph payload for UI |
+| `sandbox_engine/ui_next/` | Vanilla JS redesigned front end |
 | `sandbox_engine/router.py` | Discriminated query router (KNOWN, COLD_START, AMBIGUOUS) |
-| `sandbox_engine/tier1_fetch.py` | Runtime SEC EDGAR filing fetcher (< 2.5s SLA budget) |
-| `sandbox_engine/tier1_clean.py` | High-signal section slicing (Item 1/2) and token capping |
-| `sandbox_engine/coldstart_schema.py` | Pydantic schema validation for entities and relations |
-| `sandbox_engine/coldstart_extract.py` | Fast LLM triple extraction (15–30 triples, < 3.5s SLA) |
-| `sandbox_engine/stitch.py` | In-memory overlay graph & backbone stitching (< 1.0s) |
-| `sandbox_engine/traversal.py` | Hybrid 2-hop graph traverser & provenance ledger |
-| `sandbox_engine/coldstart_synthesis.py` | 5-section investment analysis & token streaming |
-| `sandbox_engine/background.py` | Non-blocking background ingestion queue manager |
-| `sandbox_engine/community.py` | Graph Louvain community clustering & brief generator |
+| `sandbox_engine/tier1_fetch.py` | Runtime SEC EDGAR fetcher (< 2.5s SLA) |
+| `sandbox_engine/tier1_clean.py` | High-signal section slicing, token capping |
+| `sandbox_engine/coldstart_schema.py` | Pydantic schema for entities/relations |
+| `sandbox_engine/coldstart_extract.py` | Fast LLM triple extraction (15–30, < 3.5s) |
+| `sandbox_engine/stitch.py` | In-memory overlay & backbone stitching (< 1.0s) |
+| `sandbox_engine/traversal.py` | Hybrid 2-hop traverser & provenance ledger |
+| `sandbox_engine/coldstart_synthesis.py` | 5-section investment analysis & streaming |
+| `sandbox_engine/background.py` | Background ingestion queue manager |
+| `sandbox_engine/community.py` | Louvain community clustering & briefs |
 | `sandbox_engine/cli.py` | Typer entry point |
-| `sandbox_engine/EVAL_SET.md` | 30-question eval set and the live defect register |
-| `sandbox_engine/eval_set.py` | EVAL_SET.md as runnable questions; `provenance_match_rate` |
-| `graphrag/` | Older GraphRAG package, kept for the legacy `financial_graphrag.py` path |
+| `sandbox_engine/EVAL_SET.md` | 30-question eval set + live defect register |
+| `sandbox_engine/eval_set.py` | EVAL_SET as runnable questions; `provenance_match_rate` |
+| `web/src/` | React GraphRAG Workspace (see structure above) |
+| `graphrag/` | Older GraphRAG package for legacy path |
 
 ## Correctness
 
-Three defects found by `EVAL_SET.md` are fixed and covered by the benchmark
-suite; the register in that file tracks what is still open.
+Three defects from `EVAL_SET.md` fixed and covered by benchmarks; register tracks open items.
 
-- **Company identity is the CIK, not the ticker.** SEC filenames for 8-Ks carry
-  a hash, so a ticker read from the filename alone split Microsoft into `MSFT`
-  and `UNKNOWN`. The ticker is read from `dei:TradingSymbol` on the cover.
-- **Periods are read from the filing, not inferred.** A 10-Q's own period end
-  comes from its cover; the fiscal year comes from the issuer's
-  `dei:CurrentFiscalYearEndDate` combined with that date, because a column
-  header prints a *calendar* year and most quarters are not in the fiscal year
-  their calendar year suggests.
-- **A metric's period is its end date** (`3M-2026-03-28`), not a fiscal year. A
-  fiscal year holds four quarters, so `3M-FY2026` named three different
-  quarters at once and the three filings that reported them attached three
-  values to one node. B2 now fails if a single period carries two values.
+- **Company identity = CIK, not ticker.** SEC 8-K filenames carry hash; ticker read from `dei:TradingSymbol`.
+- **Periods from filing, not inferred.** 10-Q period end from cover; fiscal year from issuer's `dei:CurrentFiscalYearEndDate` + that date.
+- **Metric period = end date** (`3M-2026-03-28`), not fiscal year. Fiscal year holds 4 quarters; `3M-FY2026` named 3 different quarters.
 
-Entity identity is always the id — ticker, accession number, or a
-content-addressed `stable_id` — never the display name. Two issuers can share a
-legal name, so merging by name would silently destroy data; the UI breaks label
-collisions in the *label* and leaves the nodes distinct. The registry also
-treats "gross"/"net" and "beginning"/"ending" as opposite-sense labels that must
-never be fuzzy-merged.
+Entity identity = id (ticker, accession, `stable_id`), never display name. Two issuers can share legal name; merging by name destroys data. Registry treats "gross"/"net" and "beginning"/"ending" as opposite-sense labels never fuzzy-merged.
 
-### What the answer panel is allowed to say
+### Answer Grading
 
-Every sentence the model writes is graded by rule against the cited evidence,
-and the answer is then reduced to one of three states:
+Every model sentence graded against cited evidence → answer reduced to one of three states:
 
 | Verdict | Means |
 |---|---|
-| **supported** | every sentence rests on a fact in the evidence it cited |
-| **qualified** | nothing failed, but part of it is hedged or reaches past the filings |
-| **refused** | at least one sentence is not supported by what it cited |
+| **supported** | Every sentence rests on a fact in the evidence it cited |
+| **qualified** | Nothing failed, but part hedged or reaches past filings |
+| **refused** | At least one sentence not supported by what it cited |
 
-Refusal dominates: an answer of nine `STATED` sentences and one `GAP` sentence
-is refused, not qualified, because a reader takes the nine and misses the one.
-
-The **Provenance** tab shows every sentence with the rule that judged it, the
-figures it asserts, and the citations that support it — clicking a citation
-highlights the node in the graph, as in the answer itself. A red banner above
-the answer lists anything the grader refused, and screen readers are told the
-verdict when an answer arrives.
-
-The chip is the grader's verdict, not whether the model cited something. Those
-are different questions, and only one of them means anything: a model that
-invents a figure and cites a real entity satisfies the second and fails the
-first.
+Refusal dominates: 9 `STATED` + 1 `GAP` = refused. Provenance tab shows every sentence with rule, figures, citations (click → highlights graph node). Red banner lists refused items. Chip = grader's verdict, not whether model cited something.
 
 ## Dependencies
 
-Pinned in `requirements.txt`: `ladybug`, `pandas`, `lxml`, `beautifulsoup4`,
-`pyarrow`, `pypdf`, `openai`, `typer`, `pydantic`, `networkx`. All have wheels for 3.13 on macOS, Linux
-and Windows, so `pip install -r requirements.txt` needs no compiler.
+Pinned in `requirements.txt`: `ladybug`, `pandas`, `lxml`, `beautifulsoup4`, `pyarrow`, `pypdf`, `openai`, `typer`, `pydantic`, `networkx`. All have wheels for 3.13 on macOS, Linux, Windows — `pip install` needs no compiler.
 
-`pypdf` is pinned rather than optional because `graphrag/document.py` imports
-`PdfReader` at module scope — a missing pypdf breaks `import graphrag`
-entirely, taking both services down. `document_loader.py` prefers `pdfplumber`
-for table recovery but degrades to pypdf-only without it, so that one is left
-unpinned.
+`pypdf` pinned (not optional) because `graphrag/document.py` imports `PdfReader` at module scope — missing pypdf breaks `import graphrag` entirely. `document_loader.py` prefers `pdfplumber` for tables but degrades to pypdf-only.
+
+Frontend deps in `web/package.json`: `react`, `react-dom`, `react-router-dom`, `swr`, `d3`, `motion`, `lucide-react`, `clsx`, `tailwind-merge`, `typescript`, `vite`, `@types/*`.
+
+## Development
+
+```bash
+# Backend tests
+python -m unittest discover -s tests -p "test_*.py"
+
+# Frontend typecheck + build
+cd web && npm run build
+
+# Frontend dev (with hot reload)
+cd web && npm run dev
+
+# Run both services
+python -m sandbox_engine.ui_next --port 9100 --no-browser  # Terminal 1
+cd web && npm run dev                                     # Terminal 2
+```
+
+## License
+
+MIT
