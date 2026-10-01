@@ -37,3 +37,7 @@ venv/
 
 # Vite
 web/.vite/
+
+# Runtime data
+data/
+sandbox_engine/_run/
