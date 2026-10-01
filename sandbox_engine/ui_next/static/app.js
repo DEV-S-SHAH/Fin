@@ -254,25 +254,29 @@ class App {
       : `Type to search ${fmtNumber(state.stats?.nodes ?? 0)} entities`;
 
     if (!rows.length) {
-      host.append(el("li", {}, el("div", { class: "empty", text: term ? "No matching entities." : " " })));
+      host.append(el("li", {}, el("div", { class: "empty", text: term
+        ? "No matching entities — try a different term"
+        : `Type to search ${fmtNumber(state.stats?.nodes ?? 0)} entities (companies, filings, segments, metrics, events)` })));
       return;
     }
 
     const fragment = document.createDocumentFragment();
     for (const entity of rows) {
       const type = entity.entity_type || "";
+      const isSelected = state.selected === entity.id;
+      const labelHint = entity.label_hint ? ` · ${entity.label_hint}` : "";
       const item = el("li", {}, el("button", {
         class: "entity",
         type: "button",
         role: "option",
-        "aria-selected": state.selected === entity.id ? "true" : "false",
-        "aria-current": state.selected === entity.id ? "true" : "false",
+        "aria-selected": isSelected ? "true" : "false",
+        "aria-current": isSelected ? "true" : "false",
         title: entity.description || entity.name,
         onclick: () => this.#chooseEntity(entity.id),
       }, [
         el("span", { class: "entity__dot", style: `background:${typeColor(type)}` }),
         el("span", { class: "entity__name", html: highlightTerm(entity.name, term) }),
-        el("span", { class: "entity__type", text: prettyType(type) }),
+        el("span", { class: "entity__type", text: prettyType(type) + labelHint }),
       ]));
       fragment.append(item);
     }
@@ -681,9 +685,13 @@ class App {
     /* One search box, over the graph it searches. It is the only place an entity
      * is named now, so there is no second input to keep in step with it. */
     const input = $("entity-search");
-    const search = debounce((term) => {
+    const loadingEl = $("entity-search-loading");
+
+    const search = debounce(async (term) => {
       this.entityTerm = term;
-      this.loadEntities();
+      loadingEl.hidden = false;
+      await this.loadEntities();
+      loadingEl.hidden = true;
     }, 180);
 
     input.addEventListener("focus", () => this.openSearch());
@@ -851,11 +859,22 @@ class App {
     }
 
     $("palette-btn").addEventListener("click", () => this.palette.open());
+
+    /* Global shortcut: "/" focuses the entity search (when not typing in an input) */
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "/" && event.target.tagName !== "INPUT" && event.target.tagName !== "TEXTAREA" && !event.metaKey && !event.ctrlKey) {
+        event.preventDefault();
+        this.setView("graph");
+        input.focus();
+        input.select();
+      }
+    });
   }
 
   #clearFilter() {
     $("entity-search").value = "";
     this.entityTerm = "";
+    $("entity-search-loading").hidden = true;
     this.loadEntities();
   }
 

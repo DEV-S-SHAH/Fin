@@ -122,14 +122,18 @@
            reader and the thing they just asked for. -->
       <div class="graph-search" id="graph-search">
         <div class="search">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5" stroke-linecap="round"/></svg>
-          <input id="entity-search" class="input" type="search" placeholder="Find an entity" autocomplete="off"
+          <svg class="search__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5" stroke-linecap="round"/></svg>
+          <input id="entity-search" class="input" type="search" placeholder="Search entities… (press / to focus)" autocomplete="off"
             aria-label="Find an entity in the graph" role="combobox" aria-expanded="false"
             aria-controls="entity-list" aria-autocomplete="list">
+          <span id="entity-search-loading" class="search__loading" hidden aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="10" stroke-dasharray="31.4 31.4" stroke-dashoffset="31.4"/></svg>
+          </span>
           <button id="entity-clear" class="search__clear" hidden title="Clear">
             <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke-linecap="round"/></svg>
             <span class="sr-only">Clear the search</span>
           </button>
+          <kbd class="search__kbd" aria-hidden="true">/</kbd>
         </div>
 
         <div class="graph-search__panel" id="entity-results" hidden>

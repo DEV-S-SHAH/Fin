@@ -627,7 +627,7 @@ svg { display: block; }
   top: var(--sp-3);
   left: var(--sp-3);
   z-index: 6;
-  width: min(280px, 58%);
+  width: min(320px, 64%);
   display: flex;
   flex-direction: column;
   border-radius: var(--r-md);
@@ -637,13 +637,20 @@ svg { display: block; }
   border: 1px solid var(--border);
   box-shadow: var(--shadow-2);
 }
-.graph-search .search { padding: var(--sp-1); }
+.graph-search .search { position: relative; padding: var(--sp-1); }
 .graph-search .input {
   background: transparent;
   border-color: transparent;
   box-shadow: none;
+  padding-right: calc(var(--sp-2) + 1.5em);
 }
 .graph-search .input:focus { border-color: var(--border-strong); }
+.search__icon { position: absolute; left: var(--sp-2); top: 50%; transform: translateY(-50%); width: 16px; height: 16px; color: var(--text-faint); pointer-events: none; }
+.graph-search .input { padding-left: calc(var(--sp-2) + 18px); }
+.search__loading { position: absolute; right: 36px; top: 50%; transform: translateY(-50%); width: 16px; height: 16px; color: var(--accent); animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: translateY(-50%) rotate(360deg); } }
+.search__clear { position: absolute; right: 32px; top: 50%; transform: translateY(-50%); padding: 2px; }
+.search__kbd { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); font-size: var(--text-xs); color: var(--text-faint); background: var(--surface-2); padding: 1px 5px; border-radius: var(--r-xs); border: 1px solid var(--border); font-family: inherit; font-weight: 500; pointer-events: none; }
 
 /* The matches hang over the canvas rather than growing the box, so the box
    stays one row tall and never pushes the toolbar below it out of reach. */
@@ -721,6 +728,14 @@ mark.hit {
   color: var(--accent);
   border-radius: 2px;
   padding: 0 1px;
+}
+
+.entity-list .empty {
+  padding: var(--sp-4) var(--sp-3);
+  text-align: center;
+  color: var(--text-faint);
+  font-size: var(--text-sm);
+  line-height: 1.5;
 }
 
 /* --- graph ---------------------------------------------------------------- */

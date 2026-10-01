@@ -117,7 +117,6 @@ export class AnswerView {
     if (!body) return;
     body.innerHTML = md(text);
     body.append(el("span", { class: "caret", text: "▍" }));
-    this.panels.answer.parentElement?.scrollTo({ top: this.panels.answer.parentElement.scrollHeight });
   }
 
   /* ── the real thing ──────────────────────────────────────────────────── */

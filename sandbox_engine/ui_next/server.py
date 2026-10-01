@@ -93,6 +93,12 @@ _LANDING_ASSETS: dict[str, str] = {
     "markets.js": "text/javascript; charset=utf-8",
 }
 
+_COMPANY_ASSETS: dict[str, str] = {
+    "index.html": "text/html; charset=utf-8",
+    "styles.css": "text/css; charset=utf-8",
+    "app.js": "text/javascript; charset=utf-8",
+}
+
 _ASSETS: dict[str, str] = {
     "index.html": "text/html; charset=utf-8",
     "styles.css": "text/css; charset=utf-8",
@@ -111,6 +117,11 @@ _AUTH_ASSETS: dict[str, str] = {
     "styles.css": "text/css; charset=utf-8",
     "app.js": "text/javascript; charset=utf-8",
     "callback.html": "text/html; charset=utf-8",
+}
+
+_VENDOR_ASSETS: dict[str, str] = {
+    "gsap.min.js": "text/javascript; charset=utf-8",
+    "d3.v7.min.js": "text/javascript; charset=utf-8",
 }
 
 
@@ -248,6 +259,510 @@ def markets() -> list[dict[str, Any]]:
     return rows
 
 
+# ── company detail data ────────────────────────────────────────────────────────
+
+#: Cache for company detail data (TTL: 5 minutes for detail, 1 minute for quotes)
+_COMPANY_DETAIL_TTL = 300.0
+_COMPANY_QUOTE_TTL = 60.0
+
+_company_detail_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+_company_quote_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+
+
+def _fetch_company_quote(ticker: str) -> dict[str, Any] | None:
+    """Fetch basic quote data from Yahoo Finance chart API."""
+    import requests
+
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1d&range=1d"
+    try:
+        resp = requests.get(url, timeout=10, headers=_YAHOO_HEADERS)
+        resp.raise_for_status()
+        data = resp.json()
+        result = data.get("chart", {}).get("result")
+        if not result:
+            return None
+        meta = result[0].get("meta", {})
+        price = meta.get("regularMarketPrice")
+        if price is None:
+            return None
+        prev_close = meta.get("chartPreviousClose")
+        change = (price - prev_close) if prev_close else None
+        pct = (change / prev_close * 100) if (change is not None and prev_close) else None
+        return {
+            "ticker": ticker,
+            "price": round(float(price), 2),
+            "change": round(float(change), 2) if change is not None else None,
+            "pct": round(float(pct), 2) if pct is not None else None,
+            "currency": meta.get("currency", "USD"),
+            "exchange": meta.get("exchangeName", ""),
+            "market_state": meta.get("marketState", ""),
+        }
+    except Exception as exc:
+        log.warning("company quote fetch failed for %s: %s", ticker, exc)
+        return None
+
+
+def _serialize_for_json(obj: Any) -> Any:
+    """Recursively convert date/datetime/decimal objects to JSON-serializable types."""
+    if obj is None or isinstance(obj, (str, int, float, bool)):
+        return obj
+    if hasattr(obj, 'isoformat'):  # date, datetime
+        return obj.isoformat()
+    if isinstance(obj, dict):
+        return {k: _serialize_for_json(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_serialize_for_json(v) for v in obj]
+    # Fallback: convert to string
+    return str(obj)
+
+
+def _fetch_with_retry(url: str, max_retries: int = 3, base_delay: float = 1.0):
+    """Fetch URL with exponential backoff retry."""
+    import requests
+    import time
+
+    for attempt in range(max_retries):
+        try:
+            resp = requests.get(url, timeout=15, headers=_YAHOO_HEADERS)
+            if resp.status_code == 429:
+                if attempt < max_retries - 1:
+                    delay = base_delay * (2 ** attempt)
+                    log.warning("Rate limited (429), retrying in %.1fs (attempt %d/%d)", delay, attempt + 1, max_retries)
+                    time.sleep(delay)
+                    continue
+            resp.raise_for_status()
+            return resp
+        except requests.RequestException as exc:
+            if attempt == max_retries - 1:
+                log.warning("Request failed after %d attempts: %s", max_retries, exc)
+                return None
+            delay = base_delay * (2 ** attempt)
+            time.sleep(delay)
+    return None
+
+
+# Common headers for Yahoo Finance requests
+_YAHOO_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Origin": "https://finance.yahoo.com",
+    "Referer": "https://finance.yahoo.com/",
+    "Connection": "keep-alive",
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-site",
+}
+
+
+def _fetch_company_detail(ticker: str) -> dict[str, Any] | None:
+    """Fetch detailed company data from Yahoo Finance quote summary API."""
+    import requests
+
+    # Use modules parameter to get all needed data in one request
+    modules = [
+        "summaryDetail",      # Market cap, P/E, beta, 52wk high/low, dividend yield
+        "financialData",      # Revenue, earnings, profit margins
+        "defaultKeyStatistics", # More valuation metrics
+        "calendarEvents",     # Earnings dates
+        "assetProfile",       # Company description, sector, employees
+        "quoteType",          # Quote type info
+    ]
+    modules_str = ",".join(modules)
+    url = f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{ticker}?modules={modules_str}"
+
+    try:
+        resp = _fetch_with_retry(url)
+        if resp is None:
+            return None
+        data = resp.json()
+        result = data.get("quoteSummary", {}).get("result")
+        if not result:
+            return None
+        return _serialize_for_json(result[0])
+    except Exception as exc:
+        log.warning("company detail fetch failed for %s: %s", ticker, exc)
+        return None
+
+
+def _fetch_chart_data(ticker: str, range_: str = "1mo", interval: str = "1d") -> dict[str, Any] | None:
+    """Fetch chart data for price history."""
+    import requests
+
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval={interval}&range={range_}"
+    try:
+        resp = _fetch_with_retry(url)
+        if resp is None:
+            return None
+        data = resp.json()
+        result = data.get("chart", {}).get("result")
+        if not result:
+            return None
+        return _serialize_for_json(result[0])
+    except Exception as exc:
+        log.warning("chart data fetch failed for %s: %s", ticker, exc)
+        return None
+
+
+def _fetch_news(ticker: str) -> list[dict[str, Any]]:
+    """Fetch recent news for a ticker."""
+    import requests
+
+    url = f"https://query1.finance.yahoo.com/v1/finance/search?q={ticker}&quotesCount=0&newsCount=10"
+    try:
+        resp = _fetch_with_retry(url)
+        if resp is None:
+            return []
+        data = resp.json()
+        news = data.get("news", [])
+        # Normalize news items
+        normalized = []
+        for item in news[:8]:
+            normalized.append({
+                "title": item.get("title", ""),
+                "publisher": item.get("publisher", ""),
+                "link": item.get("link", ""),
+                "thumbnail": item.get("thumbnail", {}).get("resolutions", [{}])[0].get("url", "") if item.get("thumbnail") else "",
+                "provider_publish_time": item.get("providerPublishTime", 0),
+                "uuid": item.get("uuid", ""),
+            })
+        return normalized
+    except Exception as exc:
+        log.warning("news fetch failed for %s: %s", ticker, exc)
+        return []
+        data = resp.json()
+        news = data.get("news", [])
+        # Normalize news items
+        normalized = []
+        for item in news[:8]:
+            normalized.append({
+                "title": item.get("title", ""),
+                "publisher": item.get("publisher", ""),
+                "link": item.get("link", ""),
+                "thumbnail": item.get("thumbnail", {}).get("resolutions", [{}])[0].get("url", "") if item.get("thumbnail") else "",
+                "provider_publish_time": item.get("providerPublishTime", 0),
+                "uuid": item.get("uuid", ""),
+            })
+        return normalized
+    except Exception as exc:
+        log.warning("news fetch failed for %s: %s", ticker, exc)
+        return []
+
+
+def _compute_technicals(chart_data: dict[str, Any]) -> dict[str, Any]:
+    """Compute technical indicators from chart data."""
+    if not chart_data:
+        return {}
+
+    timestamps = chart_data.get("timestamp", [])
+    closes = chart_data.get("indicators", {}).get("quote", [{}])[0].get("close", [])
+    highs = chart_data.get("indicators", {}).get("quote", [{}])[0].get("high", [])
+    lows = chart_data.get("indicators", {}).get("quote", [{}])[0].get("low", [])
+    volumes = chart_data.get("indicators", {}).get("quote", [{}])[0].get("volume", [])
+
+    if not timestamps or not closes:
+        return {}
+
+    # Filter out None values
+    valid_data = [(t, c, h, l, v) for t, c, h, l, v in zip(timestamps, closes, highs, lows, volumes)
+                  if c is not None and h is not None and l is not None]
+    if len(valid_data) < 2:
+        return {}
+
+    timestamps, closes, highs, lows, volumes = zip(*valid_data)
+    closes = list(closes)
+    highs = list(highs)
+    lows = list(lows)
+    volumes = list(volumes)
+
+    # Simple Moving Averages
+    def sma(data: list[float], period: int) -> float | None:
+        if len(data) < period:
+            return None
+        return sum(data[-period:]) / period
+
+    sma_20 = sma(closes, 20)
+    sma_50 = sma(closes, 50)
+    sma_200 = sma(closes, 200)
+
+    # RSI (14-period)
+    def rsi(data: list[float], period: int = 14) -> float | None:
+        if len(data) < period + 1:
+            return None
+        gains = []
+        losses = []
+        for i in range(-period, 0):
+            change = data[i] - data[i - 1]
+            if change > 0:
+                gains.append(change)
+                losses.append(0)
+            else:
+                gains.append(0)
+                losses.append(abs(change))
+        avg_gain = sum(gains) / period
+        avg_loss = sum(losses) / period
+        if avg_loss == 0:
+            return 100.0
+        rs = avg_gain / avg_loss
+        return 100 - (100 / (1 + rs))
+
+    rsi_14 = rsi(closes)
+
+    # MACD (12, 26, 9)
+    def ema(data: list[float], period: int) -> list[float]:
+        if len(data) < period:
+            return []
+        k = 2 / (period + 1)
+        ema_values = [sum(data[:period]) / period]
+        for price in data[period:]:
+            ema_values.append(price * k + ema_values[-1] * (1 - k))
+        return ema_values
+
+    ema_12 = ema(closes, 12)
+    ema_26 = ema(closes, 26)
+    macd_line = None
+    signal_line = None
+    histogram = None
+    if ema_12 and ema_26 and len(ema_12) == len(ema_26):
+        macd_values = [a - b for a, b in zip(ema_12, ema_26)]
+        if len(macd_values) >= 9:
+            signal_values = ema(macd_values, 9)
+            if signal_values:
+                macd_line = macd_values[-1]
+                signal_line = signal_values[-1]
+                histogram = macd_line - signal_line
+
+    # Bollinger Bands (20, 2)
+    bb_upper = None
+    bb_middle = None
+    bb_lower = None
+    if len(closes) >= 20:
+        recent = closes[-20:]
+        middle = sum(recent) / 20
+        std = (sum((x - middle) ** 2 for x in recent) / 20) ** 0.5
+        bb_middle = middle
+        bb_upper = middle + 2 * std
+        bb_lower = middle - 2 * std
+
+    # ATR (14)
+    atr_14 = None
+    if len(highs) >= 14 and len(lows) >= 14 and len(closes) >= 15:
+        tr_values = []
+        for i in range(-14, 0):
+            tr = max(
+                highs[i] - lows[i],
+                abs(highs[i] - closes[i - 1]),
+                abs(lows[i] - closes[i - 1])
+            )
+            tr_values.append(tr)
+        atr_14 = sum(tr_values) / 14
+
+    current_price = closes[-1]
+    return {
+        "sma_20": round(sma_20, 2) if sma_20 else None,
+        "sma_50": round(sma_50, 2) if sma_50 else None,
+        "sma_200": round(sma_200, 2) if sma_200 else None,
+        "rsi_14": round(rsi_14, 1) if rsi_14 else None,
+        "macd": round(macd_line, 4) if macd_line else None,
+        "macd_signal": round(signal_line, 4) if signal_line else None,
+        "macd_histogram": round(histogram, 4) if histogram else None,
+        "bb_upper": round(bb_upper, 2) if bb_upper else None,
+        "bb_middle": round(bb_middle, 2) if bb_middle else None,
+        "bb_lower": round(bb_lower, 2) if bb_lower else None,
+        "atr_14": round(atr_14, 2) if atr_14 else None,
+        "current_price": round(current_price, 2),
+        "price_vs_sma20": round((current_price - sma_20) / sma_20 * 100, 2) if sma_20 else None,
+        "price_vs_sma50": round((current_price - sma_50) / sma_50 * 100, 2) if sma_50 else None,
+        "price_vs_sma200": round((current_price - sma_200) / sma_200 * 100, 2) if sma_200 else None,
+    }
+
+
+def _extract_fundamentals(detail: dict[str, Any]) -> dict[str, Any]:
+    """Extract fundamental data from quote summary."""
+    if not detail:
+        return {}
+
+    summary = detail.get("summaryDetail", {})
+    financial = detail.get("financialData", {})
+    key_stats = detail.get("defaultKeyStatistics", {})
+    profile = detail.get("assetProfile", {})
+
+    def get_val(obj: dict, key: str):
+        val = obj.get(key, {})
+        if isinstance(val, dict):
+            return val.get("raw", val.get("fmt", None))
+        return val
+
+    def serialize_val(val):
+        """Convert date/datetime objects to ISO format strings."""
+        if hasattr(val, 'isoformat'):
+            return val.isoformat()
+        if isinstance(val, (list, tuple)):
+            return [serialize_val(v) for v in val]
+        if isinstance(val, dict):
+            return {k: serialize_val(v) for k, v in val.items()}
+        return val
+
+    def fmt_large(num):
+        if num is None:
+            return None
+        num = float(num)
+        if num >= 1e12:
+            return f"${num/1e12:.2f}T"
+        elif num >= 1e9:
+            return f"${num/1e9:.2f}B"
+        elif num >= 1e6:
+            return f"${num/1e6:.2f}M"
+        elif num >= 1e3:
+            return f"${num/1e3:.2f}K"
+        return f"${num:.2f}"
+
+    return {
+        "market_cap": fmt_large(get_val(summary, "marketCap")),
+        "market_cap_raw": get_val(summary, "marketCap"),
+        "pe_ratio": get_val(summary, "trailingPE"),
+        "forward_pe": get_val(summary, "forwardPE"),
+        "peg_ratio": get_val(summary, "pegRatio"),
+        "price_to_book": get_val(summary, "priceToBook"),
+        "enterprise_value": fmt_large(get_val(summary, "enterpriseValue")),
+        "beta": get_val(summary, "beta"),
+        "dividend_yield": get_val(summary, "dividendYield"),
+        "dividend_rate": get_val(summary, "dividendRate"),
+        "ex_dividend_date": serialize_val(get_val(summary, "exDividendDate")),
+        "payout_ratio": get_val(summary, "payoutRatio"),
+        "52wk_high": get_val(summary, "fiftyTwoWeekHigh"),
+        "52wk_low": get_val(summary, "fiftyTwoWeekLow"),
+        "50d_avg": get_val(summary, "fiftyDayAverage"),
+        "200d_avg": get_val(summary, "twoHundredDayAverage"),
+        "avg_volume": get_val(summary, "averageVolume"),
+        "avg_volume_10d": get_val(summary, "averageDailyVolume10Day"),
+        "shares_outstanding": fmt_large(get_val(key_stats, "sharesOutstanding")),
+        "float_shares": fmt_large(get_val(key_stats, "floatShares")),
+        "held_by_insiders": get_val(key_stats, "heldPercentInsiders"),
+        "held_by_institutions": get_val(key_stats, "heldPercentInstitutions"),
+        "short_ratio": get_val(key_stats, "shortRatio"),
+        "short_percent": get_val(key_stats, "shortPercentOfFloat"),
+        "revenue": fmt_large(get_val(financial, "totalRevenue")),
+        "revenue_raw": get_val(financial, "totalRevenue"),
+        "revenue_per_share": get_val(financial, "revenuePerShare"),
+        "gross_profit": fmt_large(get_val(financial, "grossProfits")),
+        "ebitda": fmt_large(get_val(financial, "ebitda")),
+        "net_income": fmt_large(get_val(financial, "netIncomeToCommon")),
+        "diluted_eps": get_val(financial, "trailingEps"),
+        "forward_eps": get_val(financial, "forwardEps"),
+        "profit_margin": get_val(financial, "profitMargins"),
+        "operating_margin": get_val(financial, "operatingMargins"),
+        "return_on_equity": get_val(financial, "returnOnEquity"),
+        "return_on_assets": get_val(financial, "returnOnAssets"),
+        "debt_to_equity": get_val(financial, "debtToEquity"),
+        "current_ratio": get_val(financial, "currentRatio"),
+        "quick_ratio": get_val(financial, "quickRatio"),
+        "total_cash": fmt_large(get_val(financial, "totalCash")),
+        "total_debt": fmt_large(get_val(financial, "totalDebt")),
+        "free_cash_flow": fmt_large(get_val(financial, "freeCashflow")),
+        "operating_cash_flow": fmt_large(get_val(financial, "operatingCashflow")),
+        "sector": profile.get("sector", ""),
+        "industry": profile.get("industry", ""),
+        "employees": profile.get("fullTimeEmployees", None),
+        "description": profile.get("longBusinessSummary", ""),
+        "website": profile.get("website", ""),
+        "country": profile.get("country", ""),
+    }
+
+
+def company_detail(ticker: str) -> dict[str, Any] | None:
+    """Get comprehensive company data with caching."""
+    global _company_detail_cache, _company_quote_cache
+
+    ticker = ticker.upper().strip()
+    now = time.monotonic()
+
+    # Check quote cache (short TTL)
+    quote = None
+    if ticker in _company_quote_cache:
+        cached_time, cached_data = _company_quote_cache[ticker]
+        if now - cached_time < _COMPANY_QUOTE_TTL:
+            quote = cached_data
+
+    if quote is None:
+        quote = _fetch_company_quote(ticker)
+        if quote:
+            _company_quote_cache[ticker] = (now, quote)
+
+    # Check detail cache (longer TTL)
+    detail_cached = None
+    if ticker in _company_detail_cache:
+        cached_time, cached_data = _company_detail_cache[ticker]
+        if now - cached_time < _COMPANY_DETAIL_TTL:
+            detail_cached = cached_data
+
+    if detail_cached is None:
+        detail_raw = _fetch_company_detail(ticker)
+        if detail_raw:
+            fundamentals = _extract_fundamentals(detail_raw)
+            detail_cached = {"fundamentals": fundamentals, "raw": detail_raw}
+            _company_detail_cache[ticker] = (now, detail_cached)
+
+    # Fetch chart data for technicals (1mo, 1d interval)
+    chart_1mo = _fetch_chart_data(ticker, "1mo", "1d")
+    chart_3mo = _fetch_chart_data(ticker, "3mo", "1d")
+    chart_1y = _fetch_chart_data(ticker, "1y", "1d")
+
+    technicals = _compute_technicals(chart_1mo) if chart_1mo else {}
+
+    # Also get longer-term SMAs from 1y chart
+    if chart_1y:
+        tech_1y = _compute_technicals(chart_1y)
+        if tech_1y.get("sma_200"):
+            technicals["sma_200"] = tech_1y["sma_200"]
+            technicals["price_vs_sma200"] = tech_1y["price_vs_sma200"]
+        if tech_1y.get("sma_50"):
+            technicals["sma_50"] = tech_1y["sma_50"]
+            technicals["price_vs_sma50"] = tech_1y["price_vs_sma50"]
+
+    # Fetch news
+    news = _fetch_news(ticker)
+
+    # Get company info from graph if available
+    graph_info = None
+    try:
+        from ..query_ui import KnowledgeGraph, resolve_db_path
+        kg = KnowledgeGraph(resolve_db_path(), read_only=True)
+        rows = kg.execute(
+            "MATCH (c:Company {ticker: $ticker})-[:SUBMITTED]->(f:Filing) "
+            "RETURN f.form_type, f.fiscal_year, f.fiscal_period, f.period_end_date "
+            "ORDER BY f.fiscal_year DESC, f.fiscal_period DESC LIMIT 10",
+            {"ticker": ticker}
+        )
+        filings = []
+        for form, fy, fp, pe in rows:
+            filings.append({"form": form, "fiscal_year": fy, "period": fp, "period_end": pe})
+        kg.close()
+        if filings:
+            graph_info = {"filings": filings, "in_graph": True}
+        else:
+            graph_info = {"in_graph": False}
+    except Exception:
+        graph_info = {"in_graph": False}
+
+    # Build response and serialize everything for JSON
+    response = {
+        "ticker": ticker,
+        "quote": quote,
+        "fundamentals": detail_cached.get("fundamentals", {}) if detail_cached else {},
+        "technicals": technicals,
+        "chart_1mo": chart_1mo,
+        "chart_3mo": chart_3mo,
+        "chart_1y": chart_1y,
+        "news": news,
+        "graph_info": graph_info,
+        "cached_at": int(now),
+    }
+
+    return _serialize_for_json(response)
+
+
 # ── authentication ───────────────────────────────────────────────────────────
 
 #: OAuth client IDs, one env var per provider. Empty string means "not
@@ -335,6 +850,16 @@ class _NextHandler(_legacy._Handler):
 
     server_version = "graphrag-ui-next"
 
+    # CORS configuration
+    _CORS_ORIGIN = os.environ.get("FINGRAPH_CORS_ORIGIN", "http://localhost:5173").strip()
+    _CORS_ALLOW_CREDENTIALS = "true"
+
+    def _send_cors_headers(self) -> None:
+        self.send_header("Access-Control-Allow-Origin", self._CORS_ORIGIN)
+        self.send_header("Access-Control-Allow-Credentials", self._CORS_ALLOW_CREDENTIALS)
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Accept")
+
     def _send(self, status: int, body: bytes, ct: str, etag: str | None = None) -> None:
         self.send_response(status)
         self.send_header("Content-Type", ct)
@@ -344,9 +869,34 @@ class _NextHandler(_legacy._Handler):
             self.send_header("ETag", etag)
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
+        self._send_cors_headers()
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(body)
+
+    def _err(self, status: int, message: str) -> bool:
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self._send_cors_headers()
+        self.end_headers()
+        self.wfile.write(json.dumps({"error": message}).encode("utf-8"))
+        return True
+
+    def _json(self, data: Any) -> bool:
+        body = json.dumps(data).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self._send_cors_headers()
+        self.end_headers()
+        self.wfile.write(body)
+        return True
+
+    def do_OPTIONS(self) -> None:
+        self.send_response(204)
+        self._send_cors_headers()
+        self.send_header("Access-Control-Max-Age", "86400")
+        self.end_headers()
 
     # -- static ---------------------------------------------------------------
 
@@ -358,6 +908,16 @@ class _NextHandler(_legacy._Handler):
 
     def _serve_auth(self, name: str) -> bool:
         return self._serve_file(name, _AUTH, _AUTH_ASSETS)
+
+    def _serve_company(self, ticker: str, name: str = "index.html") -> bool:
+        """Serve the company overview page or its assets for a ticker."""
+        company_dir = _LANDING / "company"
+        if not company_dir.exists():
+            return self._err(404, "company page not found")
+        return self._serve_file(name, company_dir, _COMPANY_ASSETS)
+
+    def _serve_vendor(self, name: str) -> bool:
+        return self._serve_file(name, _STATIC, _VENDOR_ASSETS)
 
     def _serve_file(self, name: str, root: Path, assets: dict[str, str]) -> bool:
         ct = assets.get(name)
@@ -398,6 +958,8 @@ class _NextHandler(_legacy._Handler):
             return self._serve_asset("index.html")
         if p.startswith("/static/"):
             return self._serve_asset(p[len("/static/"):])
+        if p.startswith("/vendor/"):
+            return self._serve_vendor(p[len("/vendor/"):])
         if p in ("/favicon.svg", "/favicon.ico"):
             # Inline SVG, so the browser stops asking for a file that is not here
             # and no binary asset has to be checked in beside the source.
@@ -426,6 +988,25 @@ class _NextHandler(_legacy._Handler):
             self.send_header("Content-Length", "0")
             self.end_headers()
             return None
+        # Company overview page
+        if p == "/company" or p == "/company/":
+            # Redirect to landing page markets section
+            self.send_response(302)
+            self.send_header("Location", "/#markets")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return None
+        if p.startswith("/company/"):
+            # Handle /company/{ticker} and /company/{ticker}/{asset}
+            # Path format: /company/AAPL or /company/AAPL/styles.css
+            remainder = p[len("/company/"):].split("?")[0]
+            if "/" in remainder:
+                ticker, asset_name = remainder.split("/", 1)
+            else:
+                ticker, asset_name = remainder, "index.html"
+            ticker = ticker.upper()
+            if ticker and ticker.isalpha():
+                return self._serve_company(ticker, asset_name)
         if p == "/api/auth/config":
             # Which providers have a client ID configured. The IDs themselves
             # never leave the server; the page only learns which buttons to show.
@@ -447,8 +1028,20 @@ class _NextHandler(_legacy._Handler):
                 "route": routing.route.name,
                 "ticker": routing.ticker,
             })
-        # Everything else -- /api/stats, /api/entities, /api/graph, /api/rag,
-        # /api/reports, /vendor/* -- is the old router, unchanged.
+        if p.startswith("/api/company/"):
+            ticker = p.split("/api/company/")[1].split("/")[0].split("?")[0].upper()
+            if ticker and ticker.isalpha():
+                detail = company_detail(ticker)
+                if detail is None:
+                    return self._err(404, f"company not found: {ticker}")
+                return self._json(detail)
+        # Protected API endpoints require authentication
+        # Exploration endpoints (/api/graph, /api/entities, /api/stats) are public like the legacy UI
+        # Only write endpoints and reports require auth
+        if p.startswith("/api/reports") or p.startswith("/api/ingestion"):
+            if self._require_auth() is None:
+                return True
+        # Everything else -- /api/rag, /vendor/* -- is the old router, unchanged.
         return super()._get()
 
     # -- cookies ---------------------------------------------------------------
@@ -461,6 +1054,19 @@ class _NextHandler(_legacy._Handler):
                 return value.strip()
         return None
 
+    def _require_auth(self) -> str | None:
+        """Check for valid session cookie. Returns provider name if authenticated, None otherwise."""
+        token = self._cookie_value()
+        provider = _session_provider(token)
+        if provider is None:
+            self.send_response(401)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self._send_cors_headers()
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": "Unauthorized"}).encode("utf-8"))
+            return None
+        return provider
+
     # -- auth POST -------------------------------------------------------------
 
     def _post(self) -> None:
@@ -471,6 +1077,10 @@ class _NextHandler(_legacy._Handler):
             return self._api_auth_session()
         if p == "/api/auth/logout":
             return self._api_auth_logout()
+        # Protected POST endpoints (only ingestion and rag config management)
+        if p.startswith("/api/ingestion") or (p == "/api/rag" and self.command == "POST"):
+            if self._require_auth() is None:
+                return
         return super()._post()
 
     def _api_auth_session(self) -> None:
@@ -500,6 +1110,7 @@ class _NextHandler(_legacy._Handler):
         self.send_header("Set-Cookie", _cookie_header(_session_token(provider), SESSION_TTL))
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
+        self._send_cors_headers()
         self.end_headers()
 
     def _api_auth_logout(self) -> None:
@@ -509,6 +1120,7 @@ class _NextHandler(_legacy._Handler):
         self.send_header("Set-Cookie", _cookie_header("", 0))
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
+        self._send_cors_headers()
         self.end_headers()
 
 

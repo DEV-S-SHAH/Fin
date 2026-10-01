@@ -11,4 +11,33 @@ export default defineConfig({
       "@": path.resolve(path.dirname(fileURLToPath(import.meta.url)), "./src"),
     },
   },
+  server: {
+    port: 5173,
+    proxy: {
+      "/api": {
+        target: "http://localhost:9100",
+        changeOrigin: true,
+      },
+      "/auth": {
+        target: "http://localhost:9100",
+        changeOrigin: true,
+      },
+      "/static": {
+        target: "http://localhost:9100",
+        changeOrigin: true,
+      },
+      "/landing": {
+        target: "http://localhost:9100",
+        changeOrigin: true,
+      },
+      "/favicon.svg": {
+        target: "http://localhost:9100",
+        changeOrigin: true,
+      },
+      "/vendor": {
+        target: "http://localhost:9100",
+        changeOrigin: true,
+      },
+    },
+  },
 });

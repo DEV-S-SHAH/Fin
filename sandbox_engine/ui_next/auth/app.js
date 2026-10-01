@@ -116,7 +116,7 @@ function showNotice(message) {
 /* ------------------------------ provider config ----------------------------- */
 async function loadConfig() {
   try {
-    const res = await fetch("/api/auth/config", { headers: { accept: "application/json" } });
+    const res = await fetch("/api/auth/config", { credentials: "include", headers: { accept: "application/json" } });
     if (!res.ok) return {};
     return await res.json();
   } catch {
@@ -142,6 +142,7 @@ async function signInLocally() {
   try {
     const res = await fetch("/api/auth/session", {
       method: "POST",
+      credentials: "include",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ provider: "dev", token: "local" }),
     });

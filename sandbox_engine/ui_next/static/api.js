@@ -10,12 +10,13 @@
  */
 
 export async function get(path, opts = {}) {
-  return unwrap(path, { method: "GET", ...opts });
+  return unwrap(path, { method: "GET", credentials: "include", ...opts });
 }
 
 export async function post(path, body) {
   return unwrap(path, {
     method: "POST",
+    credentials: "include",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body ?? {}),
   });
@@ -24,7 +25,7 @@ export async function post(path, body) {
 async function unwrap(path, init) {
   let response;
   try {
-    response = await fetch(path, { cache: "no-store", ...init });
+    response = await fetch(path, { cache: "no-store", credentials: "include", ...init });
   } catch (cause) {
     /* An abort is a decision rather than a failure -- the reader cancelled, or
      * a caller set a deadline on purpose -- and there is nothing to diagnose.
@@ -54,7 +55,7 @@ async function describeTransportFailure(path) {
   try {
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), 3000);
-    const probe = await fetch("/api/stats", { signal: ctl.signal, cache: "no-store" });
+    const probe = await fetch("/api/stats", { signal: ctl.signal, cache: "no-store", credentials: "include" });
     clearTimeout(timer);
     alive = probe.ok;
   } catch { alive = false; }
@@ -116,6 +117,7 @@ export const askJson = (question) => post("/api/ask", { question });
 export async function askStream(question, onEvent, opts = {}) {
   const response = await fetch("/api/ask?stream=true", {
     method: "POST",
+    credentials: "include",
     headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
     body: JSON.stringify({ question, stream: true }),
     signal: opts.signal,
