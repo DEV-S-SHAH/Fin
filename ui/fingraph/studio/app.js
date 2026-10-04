@@ -808,7 +808,7 @@ this.answer.pending(question);
     const chip = $("wait-timer");
     chip.hidden = false;
     this.timerStarted = Date.now();
-    this.phaseMessage = "retrieving";
+    this.phaseMessage = "Composing";
     clearInterval(this.timer);
     this.timer = setInterval(() => this.#tickTimer(), 1000);
     this.#tickTimer();
@@ -825,7 +825,8 @@ this.answer.pending(question);
    *  sees which stage is slow instead of guessing. The elapsed count survives:
    *  a stage change is not a restart. */
   #setTimerLabel(message) {
-    this.phaseMessage = String(message || "working").replace(/…$/, "");
+    const base = message || "Composing";
+    this.phaseMessage = String(base).replace(/…$/, "");
     this.#tickTimer();
   }
 

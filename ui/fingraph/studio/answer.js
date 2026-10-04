@@ -88,12 +88,10 @@ export class AnswerView {
 
   /** The loading state. `streamed` is the partial text, if any has arrived. */
   pending(question, streamed = "") {
-    this.#showPipeline();
+    this.#hidePipeline();
     const body = el("div", { class: "prose", html: streamed ? md(streamed) : "" });
     if (streamed) body.append(el("span", { class: "caret", text: "▍" }));
     clear(this.panels.answer).append(body);
-    // Re-append pipeline at the top so it stays visible during loading
-    if (this.pipelineEl) this.panels.answer.prepend(this.pipelineEl);
   }
 
   error(message) {

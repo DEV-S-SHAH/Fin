@@ -1855,19 +1855,34 @@ mark.hit {
 }
 .pipeline.is-failed .proc__fill { background: var(--red); }
 
-/* tabs */
+/* tabs - grouped layout: tabs on left, status+copy on right */
 .tabs {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--sp-1);
+  gap: var(--sp-2);
+  justify-content: space-between;
   flex: 0 0 auto;
-  padding: var(--sp-1) var(--sp-3) var(--sp-2);
+  padding: var(--sp-1) var(--sp-3) var(--sp-1);
   border-bottom: 1px solid var(--border);
+}
+.tabs__group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1);
+}
+.tabs__group--tabs {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.tabs__group--actions {
+  flex: 0 0 auto;
+  margin-left: var(--sp-3);
 }
 .tab {
   position: relative;
-  padding: var(--sp-1) var(--sp-3);
+  padding: var(--sp-1) var(--sp-2);
   border-radius: var(--r-sm);
   color: var(--text-muted);
   font-size: var(--text-sm);
@@ -1886,6 +1901,63 @@ mark.hit {
   font-size: var(--text-xs);
   color: var(--text-faint);
   font-variant-numeric: tabular-nums;
+}
+
+/* Status chip - compact inline status */
+.status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: var(--r-sm);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  color: var(--text-2);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+.status-chip::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--primary);
+  animation: status-pulse 1.5s ease-in-out infinite;
+}
+@keyframes status-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* Copy button - compact icon-only */
+.tabs__group--actions .btn--sm {
+  padding: var(--sp-1);
+  min-width: 32px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.tabs__group--actions .btn--sm svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* Responsive: on very small screens, stack the groups */
+@media (max-width: 520px) {
+  .tabs {
+    justify-content: center;
+    gap: var(--sp-1);
+  }
+  .tabs__group--actions {
+    margin-left: 0;
+    width: 100%;
+    justify-content: center;
+  }
+  .tabs__group--tabs {
+    justify-content: center;
+  }
 }
 
 /* Answer area - fills remaining space, scrolls internally */

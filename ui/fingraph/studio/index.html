@@ -253,13 +253,18 @@
 
       <!-- Tabs between question and answer -->
       <div class="tabs" role="tablist" aria-label="Answer detail">
-        <button class="tab" role="tab" id="tab-btn-answer" aria-selected="true" aria-controls="tab-answer" data-tab="answer">Answer</button>
-        <button class="tab" role="tab" id="tab-btn-sources" aria-selected="false" aria-controls="tab-sources" data-tab="sources">Sources<span class="tab__n" id="tab-n-sources"></span></button>
-        <button class="tab" role="tab" id="tab-btn-trace" aria-selected="false" aria-controls="tab-trace" data-tab="trace">Trace</button>
-        <button class="tab" role="tab" id="tab-btn-provenance" aria-selected="false" aria-controls="tab-provenance" data-tab="provenance">Provenance<span class="tab__n" id="tab-n-provenance"></span></button>
-        <div class="topbar__spacer"></div>
-        <span class="chip" id="wait-timer" hidden></span>
-        <button type="button" id="copy-answer" class="btn btn--ghost btn--sm" title="Copy the answer text">Copy</button>
+        <div class="tabs__group tabs__group--tabs">
+          <button class="tab" role="tab" id="tab-btn-answer" aria-selected="true" aria-controls="tab-answer" data-tab="answer">Answer</button>
+          <button class="tab" role="tab" id="tab-btn-sources" aria-selected="false" aria-controls="tab-sources" data-tab="sources">Sources<span class="tab__n" id="tab-n-sources"></span></button>
+          <button class="tab" role="tab" id="tab-btn-trace" aria-selected="false" aria-controls="tab-trace" data-tab="trace">Trace</button>
+          <button class="tab" role="tab" id="tab-btn-provenance" aria-selected="false" aria-controls="tab-provenance" data-tab="provenance">Provenance<span class="tab__n" id="tab-n-provenance"></span></button>
+        </div>
+        <div class="tabs__group tabs__group--actions">
+          <span class="status-chip" id="wait-timer" hidden></span>
+          <button type="button" id="copy-answer" class="btn btn--ghost btn--sm" title="Copy the answer text">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" style="width: 14px; height: 14px;"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+        </div>
       </div>
 
       <!-- Answer area - flexes to fill remaining space, scrolls internally -->
