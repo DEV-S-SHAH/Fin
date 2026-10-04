@@ -67,6 +67,33 @@ function initBillingToggle() {
   apply(false);
 }
 
+/* ── navbar scroll effect ───────────────────────────────────────────────────── */
+function initNavScroll() {
+  const navWrap = document.querySelector(".nav-wrap");
+  if (!navWrap) return;
+
+  let ticking = false;
+  const threshold = 40;
+
+  function onScroll() {
+    const scrolled = window.scrollY > threshold;
+    navWrap.classList.toggle("nav-wrap--scrolled", scrolled);
+  }
+
+  function requestTick() {
+    if (!ticking) {
+      requestAnimationFrame(() => {
+        onScroll();
+        ticking = false;
+      });
+      ticking = true;
+    }
+  }
+
+  window.addEventListener("scroll", requestTick, { passive: true });
+  onScroll(); // initial check
+}
+
 /* ── first-paint polish: only under reduced-motion nothing animates ────────── */
 function start() {
   stampLogos();
@@ -76,6 +103,7 @@ function start() {
     const hero = document.getElementById("hero");
     if (hero) hero.classList.add("hero--ready");
   }
+  initNavScroll();
   initGradientBars();
   initMarkets();
   initBillingToggle();
