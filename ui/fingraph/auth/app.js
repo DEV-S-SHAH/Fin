@@ -6,8 +6,6 @@
    redirects back to /auth/callback, which trades the returned token for a
    local session cookie and lands on the app. */
 
-import { stampLogos } from "../landing/components.js";
-
 const REDIRECT_URI = `${location.origin}/auth/callback`;
 const STATE_KEY = "fin.auth.state";
 
@@ -165,7 +163,6 @@ async function signInLocally() {
 
 /* ----------------------------------- start ----------------------------------- */
 async function start() {
-  stampLogos();
   initStars();
 
   const config = await loadConfig();

@@ -19,7 +19,7 @@
 <main class="auth__main">
   <div class="auth__card" id="callback-card">
     <div class="auth__brand">
-      <span class="logo" data-logo></span>
+      <img class="logo" src="/landing/fingraph-logo.png" alt="FinGraph" width="30" height="30" style="border-radius: 6px;">
       <span class="auth__brand-name">FinGraph</span>
     </div>
     <h1 class="auth__title" id="callback-title">Signing you in…</h1>
@@ -33,7 +33,6 @@
      flow) or the query string. Hand it to the server, which verifies the
      state parameter and sets the session cookie, then send the browser on to
      the app. */
-  import { stampLogos } from "../landing/components.js";
 
   const STATE_KEY = "fin.auth.state";
 
@@ -63,7 +62,6 @@
   }
 
   async function main() {
-    stampLogos();
     const p = params();
     const provider = (p.get("provider") || "").trim();
     const token = (p.get("access_token") || p.get("id_token") || p.get("code") || "").trim();
