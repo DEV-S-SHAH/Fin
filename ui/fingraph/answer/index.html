@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<meta name="description" content="FinGraph — GraphRAG Answer. Ask a financial question and get a grounded answer with full provenance.">
+<title>FinGraph — GraphRAG Answer</title>
+
+<link rel="icon" href="/favicon.png" type="image/png">
+<link rel="stylesheet" href="/static/styles.css">
+<link rel="stylesheet" href="/static/runDetails.css">
+
+<script>
+  try {
+    var saved = localStorage.getItem("ui2.theme");
+    if (saved === "light" || saved === "dark") {
+      document.documentElement.dataset.theme = saved;
+    } else if (window.matchMedia("(prefers-color-scheme: light)").matches) {
+      document.documentElement.dataset.theme = "light";
+    }
+  } catch (e) { }
+</script>
+</head>
+
+<body>
+<a class="skip-link" href="#qa-input">Skip to the question box</a>
+
+<div class="app" id="app" data-view="graph">
+
+  <!-- ── topbar ────────────────────────────────────────────────────────── -->
+  <header class="topbar">
+    <div class="brand">
+      <img class="brand__mark" aria-hidden="true" data-logo src="/static/fingraph-logo.png" alt="FinGraph" width="30" height="30" style="border-radius: 6px;">
+      <span class="brand__name">FinGraph</span>
+      <span class="brand__env" id="schema-chip" hidden></span>
+    </div>
+
+    <div class="topbar__stats" id="topbar-stats" aria-live="off">
+      <span><b id="stat-nodes">—</b> entities</span>
+      <span class="dot" aria-hidden="true"></span>
+      <span><b id="stat-edges">—</b> relationships</span>
+      <span class="dot" aria-hidden="true"></span>
+      <span><b id="stat-issuers">—</b> issuers</span>
+    </div>
+
+    <div class="topbar__spacer"></div>
+
+    <div class="topbar__actions">
+      <a href="/" class="btn btn--ghost btn--sm" title="Back to landing">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M19 12H5M12 19l-7-7 7-7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span class="btn__label">Home</span>
+      </a>
+
+      <button id="palette-btn" class="btn btn--ghost" title="Command palette">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5" stroke-linecap="round"/></svg>
+        <span class="btn__kbd">⌘K</span>
+        <span class="sr-only">Open the command palette</span>
+      </button>
+
+      <label class="sr-only" for="hops">Traversal depth</label>
+      <select id="hops" class="select" style="width: auto" title="Traversal depth in hops">
+        <option value="1">1 hop</option>
+        <option value="2" selected>2 hops</option>
+        <option value="3">3 hops</option>
+      </select>
+
+      <button id="reports-btn" class="btn btn--ghost btn--icon" title="Canned reports">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 20V10m5 10V4m5 16v-7m5 7V8" stroke-linecap="round"/></svg>
+        <span class="sr-only">Canned reports</span>
+      </button>
+
+      <button id="theme-btn" class="btn btn--ghost btn--icon" title="Toggle light and dark">
+        <svg id="theme-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M20 13.5A8 8 0 0 1 10.5 4a8.2 8.2 0 1 0 9.5 9.5Z" stroke-linejoin="round"/></svg>
+        <span class="sr-only">Toggle light and dark theme</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- ── workspace ─────────────────────────────────────────────────────── -->
+  <main class="workspace" id="workspace">
+
+    <!-- centre: graph -->
+    <section class="panel panel--graph graph-panel" id="graph-panel" aria-label="Knowledge graph">
+      <svg id="graph-canvas" role="img" aria-label="Force-directed graph of the retrieved entities"></svg>
+
+      <div id="legend" hidden></div>
+      <p class="graph-hint" id="graph-hint">Drag a node to move it · click to focus · scroll to zoom · drag the background to pan</p>
+      <span class="chip chip--primary chip--dot graph-cited" id="graph-cited" hidden
+        title="Only these entities glow, and only these relationships are drawn solid — everything else has receded to context.">cited by this answer</span>
+      <span class="chip graph-count" id="graph-count">0 nodes</span>
+      <div class="graph-tooltip" id="graph-tooltip" role="presentation"></div>
+
+      <!-- Floating Node Details Inspector -->
+      <div class="graph-inspector" id="graph-inspector" hidden></div>
+
+      <!-- Right-Side Floating Filter & Control Panel with Integrated Search -->
+      <aside class="graph-side-panel" id="graph-side-panel" aria-label="Graph filters and controls">
+        <div class="side-panel-head">
+          <div class="side-panel-title">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 6h16M7 12h10M10 18h4"/></svg>
+            <span>Graph Filters & Search</span>
+          </div>
+          <button class="btn btn--ghost btn--icon side-panel-minimize" id="side-panel-collapse-btn" title="Close filters (Esc)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+          </button>
+        </div>
+
+        <div class="side-panel-body">
+          <!-- Search & Focus Section inside Filters Panel -->
+          <div class="side-panel-section side-panel-search" id="side-panel-search">
+            <div class="side-panel-section-title">Search Entities</div>
+            <div class="search search--compact side-search-wrap">
+              <svg class="search__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5" stroke-linecap="round"/></svg>
+              <input id="entity-search" class="input" type="search" placeholder="Search entities… (press / to focus)" autocomplete="off"
+                aria-label="Find an entity in the graph" role="combobox" aria-expanded="false"
+                aria-controls="entity-list" aria-autocomplete="list">
+              <span id="entity-search-loading" class="search__loading" hidden aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="10" stroke-dasharray="31.4 31.4" stroke-dashoffset="31.4"/></svg>
+              </span>
+              <kbd class="search__kbd" aria-hidden="true">/</kbd>
+            </div>
+
+            <!-- Search suggestions / dropdown inside the same Filters box -->
+            <div class="side-search__panel" id="entity-results" hidden>
+              <p class="side-search__count" id="entity-count" aria-live="polite"></p>
+              <ul class="entity-list side-entity-list" id="entity-list" role="listbox" aria-label="Matching entities"></ul>
+              <div class="side-search__foot">
+                <button id="show-all" class="btn btn--ghost btn--sm" title="Show the whole graph again">Whole graph</button>
+                <label class="field__label side-search__label" for="graph-limit">Nodes</label>
+                <select id="graph-limit" class="select select--sm" style="width: auto">
+                  <option value="60">60</option>
+                  <option value="150" selected>150</option>
+                  <option value="300">300</option>
+                  <option value="500">500</option>
+                </select>
+                <button id="clear-focus" class="btn btn--ghost btn--sm" hidden
+                  title="Stop glowing the cited entities and show the whole neighbourhood">Clear focus</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Company Clusters -->
+          <div class="side-panel-section">
+            <div class="side-panel-section-title">Company Clusters</div>
+            <select id="side-company-select" class="select select--sm">
+              <option value="ALL" selected>All Companies (Separate Clusters)</option>
+            </select>
+          </div>
+
+          <!-- Node Types -->
+          <div class="side-panel-section">
+            <div class="side-panel-section-title">Node Types</div>
+            <div class="side-panel-checks" id="side-type-checks"></div>
+          </div>
+
+          <!-- Relationships -->
+          <div class="side-panel-section">
+            <div class="side-panel-section-title">Relationships</div>
+            <div class="side-panel-checks" id="side-rel-checks"></div>
+          </div>
+
+          <!-- Display Settings -->
+          <div class="side-panel-section">
+            <div class="side-panel-section-title">Display Settings</div>
+            
+            <div class="side-slider-row">
+              <span>Node Scale</span>
+              <input type="range" id="side-node-size" min="0.7" max="1.4" step="0.1" value="1">
+            </div>
+
+            <div class="side-slider-row">
+              <span>Link Scale</span>
+              <input type="range" id="side-link-size" min="0.5" max="2.0" step="0.2" value="1">
+            </div>
+
+            <div class="side-slider-row">
+              <span>Labels</span>
+              <select id="side-labels-mode" class="select select--sm">
+                <option value="smart" selected>Smart</option>
+                <option value="all">All</option>
+                <option value="none">Hover Only</option>
+              </select>
+            </div>
+
+            <label class="side-panel-check mt-1">
+              <input type="checkbox" id="side-arrows-toggle" checked>
+              <span class="side-panel-label">Directional Arrows</span>
+            </label>
+          </div>
+
+          <!-- Actions -->
+          <div class="side-panel-section">
+            <div class="side-panel-actions">
+              <button class="btn btn--ghost btn--sm" id="side-fit-btn">Fit to View</button>
+              <button class="btn btn--ghost btn--sm" id="side-relayout-btn">Re-Layout</button>
+              <button class="btn btn--ghost btn--sm" id="side-reset-btn">Reset</button>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      <!-- Persistent Re-open Filters Button (shown when side panel is closed) -->
+      <button class="graph-filter-fab" id="graph-filter-fab" type="button" title="Open graph filters & controls" hidden>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 6h16M7 12h10M10 18h4"/></svg>
+        <span>Filters</span>
+      </button>
+    </section>
+
+    <div class="splitter splitter--right" id="split-right" role="separator" aria-orientation="vertical" aria-label="Resize the answer panel" tabindex="0"></div>
+
+    <!-- right: question + answer -->
+    <section class="panel panel--qa" id="qa" aria-label="Ask the graph">
+      <!-- Fixed question section at top -->
+      <form class="qa-header" id="composer">
+        <label class="field__label" for="qa-input">Ask the graph</label>
+        <div class="qa-header__box">
+          <div class="qa-header__input-wrap">
+            <textarea class="qa-header__input" id="qa-input" rows="3"
+              placeholder="e.g. What was Apple's total net sales in fiscal 2025, and how much came from the Americas segment?"
+              autocomplete="off"></textarea>
+          </div>
+          <div class="qa-header__bar">
+            <span class="chip chip--dot" id="model-chip-inline" title="Answering model">…</span>
+            <button type="button" id="samples-btn" class="btn btn--ghost btn--sm" aria-pressed="false" title="Sample questions">Samples</button>
+            <button type="submit" id="ask-btn" class="btn btn--primary">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M5 12h13M13 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              <span id="ask-label">Ask</span>
+            </button>
+          </div>
+        </div>
+      </form>
+
+      <!-- Expandable sections (samples, keypanel) - below fixed header -->
+      <div class="qa-expand" id="qa-expand">
+        <div class="samples" id="samples" hidden></div>
+        <div class="keypanel" id="keypanel" hidden>
+          <p class="notice" id="key-note"></p>
+          <div class="row">
+            <input id="key-input" class="input" type="password" placeholder="nvapi-…" autocomplete="off" spellcheck="false" aria-label="NVIDIA API key" style="flex: 1">
+            <button type="button" id="key-save" class="btn btn--primary">Use key</button>
+          </div>
+          <div class="row">
+            <button type="button" id="key-forget" class="btn btn--ghost btn--sm" hidden>Forget key</button>
+            <button type="button" id="use-local" class="btn btn--ghost btn--sm" hidden>Use local model</button>
+            <span class="panel__sub">Held in this process only — never written to disk.</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tabs between question and answer -->
+      <div class="tabs" role="tablist" aria-label="Answer detail">
+        <div class="tabs__group tabs__group--tabs">
+          <button class="tab" role="tab" id="tab-btn-answer" aria-selected="true" aria-controls="tab-answer" data-tab="answer">Answer</button>
+          <button class="tab" role="tab" id="tab-btn-sources" aria-selected="false" aria-controls="tab-sources" data-tab="sources">Sources<span class="tab__n" id="tab-n-sources"></span></button>
+          <button class="tab" role="tab" id="tab-btn-trace" aria-selected="false" aria-controls="tab-trace" data-tab="trace">Trace</button>
+          <button class="tab" role="tab" id="tab-btn-provenance" aria-selected="false" aria-controls="tab-provenance" data-tab="provenance">Provenance<span class="tab__n" id="tab-n-provenance"></span></button>
+        </div>
+        <div class="tabs__group tabs__group--actions">
+          <span class="status-chip" id="wait-timer" hidden></span>
+          <button type="button" id="copy-answer" class="btn btn--ghost btn--sm" title="Copy the answer text">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" style="width: 14px; height: 14px;"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <!-- Answer area - flexes to fill remaining space, scrolls internally -->
+      <div class="tabpanels" id="tabpanels">
+        <div class="tabpanel" id="tab-answer" role="tabpanel" aria-labelledby="tab-btn-answer" tabindex="0">
+        </div>
+        <div class="tabpanel" id="tab-sources" role="tabpanel" aria-labelledby="tab-btn-sources" tabindex="0" hidden></div>
+        <div class="tabpanel" id="tab-trace" role="tabpanel" aria-labelledby="tab-btn-trace" tabindex="0" hidden></div>
+        <div class="tabpanel" id="tab-provenance" role="tabpanel" aria-labelledby="tab-btn-provenance" tabindex="0" hidden></div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ── mobile nav ────────────────────────────────────────────────────── -->
+  <nav class="mobile-nav" id="mobile-nav" role="tablist" aria-label="Views">
+    <button role="tab" data-view="graph" aria-selected="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="6" r="2.5"/><circle cx="6" cy="17" r="2.5"/><circle cx="18" cy="17" r="2.5"/><path d="M12 8.5 6 14.5M12 8.5l6 6M8.5 17h7"/></svg>
+      Graph
+    </button>
+    <button role="tab" data-view="ask" aria-selected="false">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M20 12a7.5 7.5 0 0 1-11 6.6L4 20l1.4-4.6A7.5 7.5 0 1 1 20 12Z" stroke-linejoin="round"/></svg>
+      Ask
+    </button>
+  </nav>
+</div>
+
+<!-- ── reports drawer ───────────────────────────────────────────────────── -->
+<div class="scrim" id="scrim" hidden></div>
+<aside class="drawer" id="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title" hidden>
+  <div class="drawer__head">
+    <h2 id="drawer-title">Canned reports</h2>
+    <span class="chip">Zero-LLM · pure Cypher</span>
+    <div class="topbar__spacer"></div>
+    <div class="search" style="width: min(34vw, 240px)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5" stroke-linecap="round"/></svg>
+      <input id="report-filter" class="input" type="search" placeholder="Filter rows" autocomplete="off" aria-label="Filter report rows">
+    </div>
+    <button type="button" id="csv-btn" class="btn btn--sm" title="Download the current result as CSV">CSV</button>
+    <button type="button" id="drawer-close" class="btn btn--ghost btn--icon" title="Close (Esc)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" stroke-linecap="round"/></svg>
+      <span class="sr-only">Close the reports panel</span>
+    </button>
+  </div>
+  <div class="drawer__nav" id="report-tabs" role="tablist" aria-label="Reports"></div>
+  <div class="drawer__body" id="report-body"></div>
+</aside>
+
+<!-- ── command palette ──────────────────────────────────────────────────── -->
+<div class="scrim" id="palette-scrim" hidden></div>
+<div class="palette" id="palette" role="dialog" aria-modal="true" aria-label="Command palette" hidden>
+  <input class="palette__input" id="palette-input" placeholder="Jump to…" autocomplete="off" spellcheck="false" aria-label="Command palette input" role="combobox" aria-expanded="true" aria-controls="palette-list">
+  <ul class="palette__list" id="palette-list" role="listbox" aria-label="Commands"></ul>
+  <div class="palette__foot">
+    <span><kbd class="kbd">↑</kbd><kbd class="kbd">↓</kbd> navigate</span>
+    <span><kbd class="kbd">↵</kbd> run</span>
+    <span><kbd class="kbd">esc</kbd> close</span>
+  </div>
+</div>
+
+<div class="toasts" id="toasts" aria-live="polite"></div>
+<p class="sr-only" id="announcer" role="status" aria-live="polite"></p>
+
+<!-- D3 comes from the copy already vendored for the old page. It is a classic
+     script, not a module, because graph.js reads the global `d3` it installs.
+     GSAP drives the process strip for the same reason: it installs globals, and
+     process.js falls back to a shim if it is ever absent, so a missing vendor
+     file costs the animation and nothing else. -->
+<script src="/vendor/d3.v7.min.js"></script>
+<script src="/vendor/gsap.min.js"></script>
+<script type="module" src="/answer/app.js"></script>
+</body>
+</html>

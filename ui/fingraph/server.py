@@ -183,6 +183,10 @@ _AUTH = _HERE / "auth"
 _VENDOR = _HERE / "vendor"
 _ANIMATION = _HERE / "animation"
 _IMAGES = Path(__file__).resolve().parents[2] / "images"
+_ANSWER = _HERE / "answer"
+_GRAPH = _HERE / "graph"
+_PROVENANCE = _HERE / "provenance"
+_COMPARE = _HERE / "compare"
 
 UI_PORT_ENV = "PORT_QUERY_UI_V2"
 DEFAULT_UI_PORT = 9100
@@ -253,6 +257,12 @@ _ANIMATION_ASSETS: dict[str, str] = {
 _IMAGES_ASSETS: dict[str, str] = {
     "fingraph-logo.png": "image/png",
 }
+
+# New dedicated view assets (reuse studio static assets)
+_ANSWER_ASSETS: dict[str, str] = _ASSETS.copy()
+_GRAPH_ASSETS: dict[str, str] = _ASSETS.copy()
+_PROVENANCE_ASSETS: dict[str, str] = _ASSETS.copy()
+_COMPARE_ASSETS: dict[str, str] = _ASSETS.copy()
 
 
 def resolve_within(root: Path, name: str) -> Path | None:
@@ -1287,6 +1297,18 @@ class _NextHandler(_legacy._Handler):
     def _serve_animation(self, name: str) -> bool:
         return self._serve_file(name, _ANIMATION, _ANIMATION_ASSETS)
 
+    def _serve_answer(self, name: str) -> bool:
+        return self._serve_file(name, _ANSWER, _ANSWER_ASSETS)
+
+    def _serve_graph(self, name: str) -> bool:
+        return self._serve_file(name, _GRAPH, _GRAPH_ASSETS)
+
+    def _serve_provenance(self, name: str) -> bool:
+        return self._serve_file(name, _PROVENANCE, _PROVENANCE_ASSETS)
+
+    def _serve_compare(self, name: str) -> bool:
+        return self._serve_file(name, _COMPARE, _COMPARE_ASSETS)
+
     def _serve_images(self, name: str) -> bool:
         return self._serve_file(name, _IMAGES, _IMAGES_ASSETS)
 
@@ -1365,6 +1387,31 @@ class _NextHandler(_legacy._Handler):
             return self._serve_animation("index.html")
         if p.startswith("/animation/"):
             return self._serve_animation(p[len("/animation/"):])
+        
+        # Answer view - dedicated GraphRAG answer experience
+        if p in ("/answer", "/answer/", "/answer/index.html"):
+            return self._serve_answer("index.html")
+        if p.startswith("/answer/"):
+            return self._serve_answer(p[len("/answer/"):])
+        
+        # Graph view - dedicated Knowledge Graph exploration
+        if p in ("/graph", "/graph/", "/graph/index.html"):
+            return self._serve_graph("index.html")
+        if p.startswith("/graph/"):
+            return self._serve_graph(p[len("/graph/"):])
+        
+        # Provenance view - dedicated Provenance & Grading experience
+        if p in ("/provenance", "/provenance/", "/provenance/index.html"):
+            return self._serve_provenance("index.html")
+        if p.startswith("/provenance/"):
+            return self._serve_provenance(p[len("/provenance/"):])
+        
+        # Compare view - dedicated Multi-Issuer Compare experience
+        if p in ("/compare", "/compare/", "/compare/index.html"):
+            return self._serve_compare("index.html")
+        if p.startswith("/compare/"):
+            return self._serve_compare(p[len("/compare/"):])
+        
         # Root images directory
         if p.startswith("/images/"):
             return self._serve_images(p[len("/images/"):])
