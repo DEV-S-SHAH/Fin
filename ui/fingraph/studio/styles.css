@@ -994,91 +994,87 @@ mark.hit {
   transition: stroke var(--dur) var(--ease), stroke-width var(--dur) var(--ease),
               opacity var(--dur) var(--ease);
 }
-/* Connected subgraph: subtle highlight when connection is built/cited - Grey */
+/* Connected subgraph: highlight answer/provenance path in FinGraph red/orange */
 .g-edge.is-answer-path {
-  stroke: #9ca3af !important;
-  stroke-width: 2.2px !important;
-  opacity: 0.9 !important;
-  filter: drop-shadow(0 0 3px rgba(156, 163, 175, 0.4)) !important;
+  stroke: #FF3C00 !important;
+  stroke-width: 2.6px !important;
+  opacity: 0.95 !important;
+  filter: drop-shadow(0 0 4px rgba(255, 60, 0, 0.5)) !important;
 }
 .g-edge.is-cited,
 .g-edge.is-incident,
 .g-edge.is-hop1 {
-  stroke: #6b7280;
-  stroke-width: 1px;
-  opacity: 0.55;
+  stroke: #d14d00;
+  stroke-width: 1.3px;
+  opacity: 0.65;
 }
-/* Unrelated: grey with visible but muted connections */
+/* Unrelated/dimmed: visible subtle grey connections */
 .g-edge.is-hop1to2,
 .g-edge.is-hop2,
 .g-edge.is-hop2to3,
 .g-edge.is-hop3 {
-  stroke: #4a5060;
-  stroke-width: 0.7px;
-  opacity: 0.25;
+  stroke: #5a6070;
+  stroke-width: 1px;
+  opacity: 0.45;
 }
 .g-edge.is-dim,
-.g-edge.is-unrelated { stroke: #3a3f4d !important; stroke-width: 0.7px !important; opacity: 0.35 !important; }
-.g-edge.is-hot { stroke: var(--text-muted); stroke-width: 1px; opacity: 0.6; }
+.g-edge.is-unrelated { stroke: #4a5060 !important; stroke-width: 1px !important; opacity: 0.5 !important; }
+.g-edge.is-hot { stroke: var(--text-muted); stroke-width: 1.2px; opacity: 0.7; }
 
 @keyframes edge-flow { to { stroke-dashoffset: -20; } }
 
-/* --- graph: the dots that run along a new answer's edges -------------------
- * A zero-length dash with a round cap paints as a circle, so a stream of dots
- * is just a dash pattern on a duplicate of the edge's own path — no element per
- * dot, and nothing to reposition when the force simulation moves the edge. The
- * pattern travels by animating stroke-dashoffset, which the browser re-applies
- * along whatever `d` currently is, mid-animation included.
- *
- * Lighter amber flowing particles on connected edges, continuously looping.
+/* --- graph: the dots that run along answer path edges -------------------
+ * Smooth flowing particles on answer path edges, continuously looping.
+ * Red/orange for answer path, subtle grey for context edges.
  */
 
 .g-edge-flow {
   fill: none;
-  stroke: var(--primary-3);
-  stroke-width: 1.2px;
+  stroke: #FF3C00;
+  stroke-width: 1.4px;
   stroke-linecap: round;
-  stroke-dasharray: 0.1 20;
+  stroke-dasharray: 0.1 24;
   pointer-events: none;
   opacity: 0;
-  filter: blur(0.3px);
-  animation: edge-dots 3s linear var(--flow-delay, 0ms) infinite;
+  filter: blur(0.2px);
+  animation: edge-dots 4s linear var(--flow-delay, 0ms) infinite;
 }
-/* Show flow continuously on connected subgraph edges (grey) */
+/* Show flow continuously on answer path edges (red/orange) */
 .g-edge-flow.is-answer-path {
-  opacity: 0.9;
-  stroke: #9ca3af;
-  stroke-width: 1.8px;
+  opacity: 0.95;
+  stroke: #FF3C00;
+  stroke-width: 2px;
   display: block;
 }
 .g-edge-flow.is-cited,
 .g-edge-flow.is-incident,
 .g-edge-flow.is-hop1 {
-  opacity: 0.6;
+  opacity: 0.55;
+  stroke: #d14d00;
   stroke-width: 1px;
 }
 
-/* Show flow continuously on unconnected subgraph edges (grey) */
+/* Show flow on context edges (subtle grey) */
 .g-edge-flow.is-hop1to2,
 .g-edge-flow.is-hop2,
 .g-edge-flow.is-hop2to3,
 .g-edge-flow.is-hop3 {
-  opacity: 0.35;
-  stroke: #4a5060;
-  stroke-width: 0.7px;
+  opacity: 0.3;
+  stroke: #5a6070;
+  stroke-width: 0.8px;
   display: block;
 }
 .g-edge-flow.is-dim,
 .g-edge-flow.is-unrelated {
-  opacity: 0.25 !important;
-  stroke: #3a3f4d !important;
-  stroke-width: 0.6px !important;
+  opacity: 0.22 !important;
+  stroke: #4a5060 !important;
+  stroke-width: 0.7px !important;
   display: block !important;
 }
 @keyframes edge-dots {
-  0%   { stroke-dashoffset: 0px;     opacity: 0.3; }
-  50%  { opacity: 0.7; }
-  100% { stroke-dashoffset: -60px; opacity: 0.3; }
+  0%   { stroke-dashoffset: 0px;     opacity: 0.25; }
+  50%  { opacity: 0.8; }
+  100% { stroke-dashoffset: -80px; opacity: 0.25; }
 }
 
 .g-edge-flows { pointer-events: none; }
@@ -1102,16 +1098,17 @@ mark.hit {
   opacity: 0.7;
 }
 .g-edge-label.is-answer-path {
-  fill: #9ca3af !important;
-  font-weight: 600 !important;
-  opacity: 0.9 !important;
+  fill: #FF3C00 !important;
+  font-weight: 700 !important;
+  opacity: 0.95 !important;
+  text-shadow: 0 0 3px rgba(255, 60, 0, 0.4);
 }
 .g-edge-label.is-hop1to2,
 .g-edge-label.is-hop2,
-.g-edge-label.is-hop3 { opacity: 0.35; fill: #4a5060; }
+.g-edge-label.is-hop3 { opacity: 0.45; fill: #7a8090; }
 .g-edge-label.is-hot { fill: var(--text); opacity: 1; }
 .g-edge-label.is-dim,
-.g-edge-label.is-unrelated { opacity: 0.3 !important; fill: #6b7280 !important; display: block !important; }
+.g-edge-label.is-unrelated { opacity: 0.4 !important; fill: #8a92a0 !important; display: block !important; }
 
 .g-node { cursor: pointer; }
 .g-node circle {
@@ -1130,47 +1127,49 @@ mark.hit {
 .g-node .halo { fill: none; stroke-width: 2px; opacity: 0; transform-box: fill-box; transform-origin: center; transition: opacity var(--dur) var(--ease), stroke-width var(--dur) var(--ease), stroke var(--dur) var(--ease); }
 
 /* --- Answer Path Highlight (Company → Filing → Metric → Evidence) --------- */
-/* Grey highlight for answer path - visible but muted */
+/* FinGraph red/orange highlight for answer path */
 .g-node.is-answer-path .core {
-  stroke: #9ca3af !important;
-  stroke-width: 2.2px !important;
+  stroke: #FF3C00 !important;
+  stroke-width: 2.6px !important;
   opacity: 1 !important;
-  fill: #374151 !important;
+  fill: #1a1a1a !important;
 }
 .g-node.is-answer-path .halo {
-  opacity: 0.85 !important;
-  stroke: #9ca3af !important;
-  stroke-width: 2.5px !important;
-  filter: drop-shadow(0 0 6px rgba(156, 163, 175, 0.4)) !important;
+  opacity: 0.9 !important;
+  stroke: #FF3C00 !important;
+  stroke-width: 3px !important;
+  filter: drop-shadow(0 0 8px rgba(255, 60, 0, 0.6)) !important;
   animation: halo-breathe 3s var(--ease) infinite;
 }
 .g-node.is-answer-path .bloom {
-  fill: #9ca3af !important;
-  opacity: 0.35 !important;
+  fill: #FF3C00 !important;
+  opacity: 0.4 !important;
 }
 .g-node.is-answer-path text.g-node-label {
-  fill: #d1d5db !important;
-  font-weight: 600 !important;
+  fill: #FFD6CC !important;
+  font-weight: 700 !important;
   opacity: 1 !important;
   display: block !important;
+  text-shadow: 0 0 4px rgba(255, 60, 0, 0.3);
 }
 
-.g-node.is-seed .bloom { fill: #9ca3af; opacity: 0.25; }
-.g-node.is-seed .halo { opacity: 0.7; stroke: #9ca3af; stroke-width: 2px; }
+/* Seed nodes (entry points) - subtle orange */
+.g-node.is-seed .bloom { fill: #FF3C00; opacity: 0.2; }
+.g-node.is-seed .halo { opacity: 0.7; stroke: #FF3C00; stroke-width: 2px; }
 
-/* Dominant Company nodes - Grey */
+/* Dominant Company nodes - red accent for company type */
 .g-node.is-root .bloom,
-.g-node.type-company .bloom { fill: #9ca3af; opacity: 0.3; }
+.g-node.type-company .bloom { fill: #FF3C00; opacity: 0.25; }
 .g-node.is-root .halo,
 .g-node.type-company .halo {
   opacity: 0.85;
-  stroke: #9ca3af;
+  stroke: #FF3C00;
   stroke-width: 2.5px;
 }
 .g-node.is-root .core,
 .g-node.type-company .core {
-  stroke: var(--primary);
-  stroke-width: 2px;
+  stroke: #FF3C00;
+  stroke-width: 2.5px;
 }
 .g-node.type-company text {
   fill: var(--text);
@@ -1178,78 +1177,78 @@ mark.hit {
   font-size: 12px;
 }
 
-/* Selected state - Grey */
-.g-node.is-selected .bloom { opacity: 0.5; fill: #9ca3af; }
+/* Selected state - red accent */
+.g-node.is-selected .bloom { opacity: 0.5; fill: #FF3C00; }
 .g-node.is-selected .halo {
   opacity: 0.95;
-  stroke: #9ca3af;
+  stroke: #FF3C00;
   stroke-width: 3px;
-  filter: drop-shadow(0 0 6px rgba(156, 163, 175, 0.5));
+  filter: drop-shadow(0 0 8px rgba(255, 60, 0, 0.5));
 }
-.g-node.is-selected .core { stroke: #fff; stroke-width: 2px; }
-.g-node.is-selected text { fill: #d1d5db; font-weight: 700; }
+.g-node.is-selected .core { stroke: #fff; stroke-width: 2.5px; }
+.g-node.is-selected text { fill: #FFD6CC; font-weight: 700; }
 
-/* Cited state - Grey */
-.g-node.is-cited .bloom { fill: #9ca3af; opacity: 0.3; }
+/* Cited state - red accent */
+.g-node.is-cited .bloom { fill: #FF3C00; opacity: 0.25; }
 .g-node.is-cited .halo {
   opacity: 0.8;
-  stroke: #9ca3af;
+  stroke: #FF3C00;
   stroke-width: 2px;
   animation: halo-breathe 4s var(--ease) infinite;
 }
-.g-node.is-cited .core { stroke: #9ca3af; stroke-width: 2px; }
-.g-node.is-cited text { fill: #d1d5db; font-weight: 600; }
+.g-node.is-cited .core { stroke: #FF3C00; stroke-width: 2px; }
+.g-node.is-cited text { fill: #FFD6CC; font-weight: 600; }
 @keyframes halo-breathe {
-  0%, 100% { opacity: 0.6; transform: scale(1); stroke-width: 2px; stroke: #9ca3af; }
-  50%      { opacity: 0.3; transform: scale(1.1); stroke-width: 2.5px; stroke: #9ca3af; }
+  0%, 100% { opacity: 0.6; transform: scale(1); stroke-width: 2px; stroke: #FF3C00; }
+  50%      { opacity: 0.3; transform: scale(1.1); stroke-width: 2.8px; stroke: #FF3C00; }
 }
 
-/* One-shot, when the answer first lands. - Grey */
-.g-node.is-fresh .bloom { opacity: 0.5; fill: #9ca3af; }
+/* One-shot, when the answer first lands - red/orange */
+.g-node.is-fresh .bloom { opacity: 0.5; fill: #FF3C00; }
 .g-node.is-fresh .halo { animation: cite-flare 1.5s var(--ease-out) 1; }
 @keyframes cite-flare {
   0%   { opacity: 0;   transform: scale(0.2); stroke-width: 1px; }
-  40%  { opacity: 0.5; transform: scale(1.3); stroke-width: 3px; stroke: #9ca3af; }
-  100% { opacity: 0.35; transform: scale(1); stroke-width: 2px; stroke: #9ca3af; }
+  40%  { opacity: 0.5; transform: scale(1.3); stroke-width: 3px; stroke: #FF3C00; }
+  100% { opacity: 0.35; transform: scale(1); stroke-width: 2px; stroke: #FF3C00; }
 }
 
-/* Hover state - Grey */
+/* Hover state - red accent */
 .g-node.is-hovered .halo,
-.g-node.is-hot .halo { opacity: 0.8; stroke: #9ca3af; stroke-width: 2px; }
+.g-node.is-hot .halo { opacity: 0.8; stroke: #FF3C00; stroke-width: 2.5px; }
 .g-node.is-hovered .core,
-.g-node.is-hot .core { stroke: #d1d5db; stroke-width: 1.5px; }
+.g-node.is-hot .core { stroke: #FFD6CC; stroke-width: 1.5px; }
 .g-node.is-hovered text,
-.g-node.is-hot text { fill: #d1d5db; opacity: 1; }
+.g-node.is-hot text { fill: #FFD6CC; opacity: 1; }
 
-/* Dimmed / Unrelated nodes: muted dark grey - stronger dimming */
+/* Dimmed / Unrelated nodes: muted but clearly visible */
 .g-node.is-dim,
 .g-node.is-unrelated {
-  opacity: 0.35 !important;
+  opacity: 0.6 !important;
 }
 .g-node.is-dim .core,
 .g-node.is-unrelated .core {
-  fill: #2a2f3a !important;
-  stroke: #3a3f4d !important;
-  stroke-width: 1.2px !important;
+  fill: #252932 !important;
+  stroke: #4a5060 !important;
+  stroke-width: 1px !important;
 }
 .g-node.is-dim .halo,
 .g-node.is-unrelated .halo,
 .g-node.is-dim .bloom,
 .g-node.is-unrelated .bloom {
-  opacity: 0.08 !important;
+  opacity: 0.12 !important;
   display: block !important;
 }
 .g-node.is-dim text,
 .g-node.is-unrelated text {
-  opacity: 0.45 !important;
+  opacity: 0.65 !important;
   display: block !important;
-  fill: #6b7280 !important;
+  fill: #8a92a0 !important;
 }
 
 /* Selected state for unrelated / muted nodes */
 .g-node.is-dim.is-selected,
 .g-node.is-unrelated.is-selected {
-  opacity: 0.95 !important;
+  opacity: 0.98 !important;
 }
 .g-node.is-dim.is-selected .core,
 .g-node.is-unrelated.is-selected .core {

@@ -934,14 +934,14 @@ export class GraphView {
       .force(
         "clusterX",
         d3.forceX((d) => d.clusterX ?? (this.#size().width / 2))
-          .strength((d) => (d.type === "Company" ? 0.30 : 0.08))
+          .strength((d) => (d.type === "Company" ? 0.25 : 0.06))
       )
       .force(
         "clusterY",
         d3.forceY((d) => d.clusterY ?? (this.#size().height / 2))
-          .strength((d) => (d.type === "Company" ? 0.30 : 0.08))
+          .strength((d) => (d.type === "Company" ? 0.25 : 0.06))
       )
-      // Generous Hierarchical Link Distances: Company -> Filing (145px), Filing -> Metric (88px)
+      // Generous Hierarchical Link Distances: Company -> Filing (150px), Filing -> Metric (95px)
       .force(
         "link",
         d3.forceLink(this.links)
@@ -949,13 +949,16 @@ export class GraphView {
           .distance((l) => {
             const isAnswerEdge = this.answerPathEdges?.has(EDGE_KEY(l));
             const r = l.relation;
-            let dist = 95;
-            if (r === "SUBMITTED" || r === "FILED") dist = 145;
-            else if (r === "REPORTS_METRIC" || r === "CONTAINS_CHUNK") dist = 88;
-            else if (r === "DISAGGREGATED_BY") dist = 78;
-            return isAnswerEdge ? dist * 1.25 : dist;
+            let dist = 100;
+            if (r === "SUBMITTED" || r === "FILED") dist = 150;
+            else if (r === "REPORTS_METRIC" || r === "CONTAINS_CHUNK") dist = 95;
+            else if (r === "DISAGGREGATED_BY") dist = 82;
+            return isAnswerEdge ? dist * 1.3 : dist;
           })
-          .strength(0.55)
+          .strength((l) => {
+            const isAnswerEdge = this.answerPathEdges?.has(EDGE_KEY(l));
+            return isAnswerEdge ? 0.7 : 0.5;
+          })
       )
       // Charge Repulsion: Company anchors repel strongly; leaves stay properly spaced
       .force(
@@ -963,27 +966,31 @@ export class GraphView {
         d3.forceManyBody()
           .strength((d) => {
             const isAnswerNode = this.answerPathNodes?.has(d.id);
-            const boost = isAnswerNode ? 1.35 : 1.0;
-            if (d.type === "Company") return -950 * boost;
-            if (d.type === "Filing" || d.type === "Document") return -280 * boost;
-            return -90 * boost;
+            const boost = isAnswerNode ? 1.4 : 1.0;
+            if (d.type === "Company") return -1000 * boost;
+            if (d.type === "Filing" || d.type === "Document") return -300 * boost;
+            return -100 * boost;
           })
-          .distanceMax(650)
+          .distanceMax(700)
       )
-      // Strong collision avoidance to guarantee zero node overlap
+      // Strong collision avoidance to guarantee zero node/label overlap
       .force(
         "collide",
         d3.forceCollide()
           .radius((d) => {
             const isAnswerNode = this.answerPathNodes?.has(d.id);
-            const pad = isAnswerNode ? 18 : 15;
+            const pad = isAnswerNode ? 22 : 18;
             return (d.r || 8) + pad;
           })
-          .iterations(4)
+          .iterations(6)
+          .strength(0.85)
       )
-      .alphaDecay(0.024);
+      // Smooth velocity decay for fluid dragging
+      .force("center", null)
+      .alphaDecay(0.018)
+      .velocityDecay(0.35);
 
-    this.simulation.alpha(0.7);
+    this.simulation.alpha(0.8);
   }
 
   #run() {
