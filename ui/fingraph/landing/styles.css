@@ -37,7 +37,7 @@
   --r-lg: 24px;
   --r-pill: 999px;
 
-  --wrap: 1160px;
+  --wrap: 960px;
   --nav-h: 60px;
   --gap: 24px;
 
@@ -278,9 +278,9 @@ img, svg, canvas { display: block; }
 }
 
 .nav-wrap--scrolled .nav {
-  background: linear-gradient(90deg, rgba(3, 3, 3, 0.85), rgba(8, 8, 8, 0.7), rgba(3, 3, 3, 0.85));
-  border-color: rgba(255, 60, 0, 0.15);
-  box-shadow: 0 8px 32px -8px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(255, 60, 0, 0.08) inset;
+  background: linear-gradient(90deg, rgba(3, 3, 3, 0.9), rgba(8, 8, 8, 0.8), rgba(3, 3, 3, 0.9));
+  border-color: rgba(255, 255, 255, 0.06);
+  box-shadow: 0 8px 32px -8px rgba(0, 0, 0, 0.8);
 }
 
 .nav__brand {
