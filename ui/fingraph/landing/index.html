@@ -79,7 +79,7 @@
     </div>
   </header>
 
-  <main id="top">
+<main id="top">
 
     <!-- ── hero ──────────────────────────────────────────────────────────── -->
     <section class="hero" id="hero" aria-labelledby="hero-title">
@@ -106,7 +106,7 @@
             <span class="btn__label">Explore FinGraph</span>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M5 12h13M13 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>
           </a>
-          <a class="btn btn--ghost btn--lg" href="#intro" data-scroll>
+          <a class="btn btn--ghost btn--lg" href="#how-it-works" data-scroll>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M8 5l10 7-10 7V5Z" stroke-linejoin="round"/></svg>
             <span class="btn__label">See how it works</span>
           </a>
@@ -114,45 +114,214 @@
       </div>
     </section>
 
-    <!-- ── intro statement ───────────────────────────────────────────────── -->
-    <section class="intro" id="intro" aria-labelledby="intro-title">
+    <!-- ── about ───────────────────────────────────────────────────────────── -->
+    <section class="about" id="about" aria-labelledby="about-title">
       <div class="section-head">
-        <h2 class="section-head__title" id="intro-title">
-          Financial data is connected.<br>
-          Your analysis should be too.
+        <h2 class="section-head__title" id="about-title">
+          Why FinGraph<br>exists.
         </h2>
         <p class="section-head__sub">
-          FinGraph connects financial metrics, company relationships, filings,
-          events, and market data into one explorable intelligence layer.
+          Financial data is deeply connected — but the tools analysts use are not.
         </p>
       </div>
 
-      <div class="intro__cards">
-        <article class="num-card">
-          <span class="num-card__index" aria-hidden="true">01</span>
-          <h3 class="num-card__title">Connected data</h3>
-          <p class="num-card__body">
-            Metrics, relationships and filings live in one graph that keeps
-            every connection explicit.
-          </p>
+      <div class="about__grid" aria-hidden="false">
+        <article class="about__card">
+          <div class="about__icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+          </div>
+          <h3 class="about__card-title">Fragmented sources</h3>
+          <p class="about__card-body">Filings, metrics, news, and relationships live in separate silos. Connecting them takes hours of manual work.</p>
+        </article>
+        <article class="about__card">
+          <div class="about__icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+          </div>
+          <h3 class="about__card-title">Opaque answers</h3>
+          <p class="about__card-body">LLM answers sound confident but hide their sources. You can't verify what you can't trace.</p>
+        </article>
+        <article class="about__card">
+          <div class="about__icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+          </div>
+          <h3 class="about__card-title">Static screens</h3>
+          <p class="about__card-body">Dashboards show snapshots. They don't reveal how a metric flows from a segment to a filing to a company.</p>
+        </article>
+      </div>
+
+      <div class="about__mission">
+        <p class="about__mission-text">
+          FinGraph was built to replace that friction with a single intelligence layer:
+          a knowledge graph that connects every metric, relationship, filing, and event —
+          then surfaces exactly what the evidence supports, with the full provenance path visible.
+        </p>
+      </div>
+    </section>
+
+    <!-- ── features ────────────────────────────────────────────────────────── -->
+    <section class="features" id="features" aria-labelledby="features-title">
+      <div class="section-head">
+        <h2 class="section-head__title" id="features-title">
+          Built for how<br>analysts think.
+        </h2>
+        <p class="section-head__sub">
+          Every feature serves the workflow: question → evidence → answer → insight.
+        </p>
+      </div>
+
+      <div class="features__grid">
+        <article class="feature">
+          <div class="feature__icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+          </div>
+          <h3 class="feature__title">GraphRAG answers</h3>
+          <p class="feature__desc">Ask in natural language. Get answers grounded in SEC filings, with every sentence traced to its source document and figure.</p>
+          <a href="/app" class="feature__link" data-scroll>Try in Studio →</a>
         </article>
 
-        <article class="num-card">
-          <span class="num-card__index" aria-hidden="true">02</span>
-          <h3 class="num-card__title">Evidence-ground answers</h3>
-          <p class="num-card__body">
-            Answers are traced back to the filings and figures they draw on,
-            with the path shown, not hidden.
-          </p>
+        <article class="feature">
+          <div class="feature__icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+          </div>
+          <h3 class="feature__title">Knowledge graph</h3>
+          <p class="feature__desc">Explore 48K+ entities and 57K+ relationships — companies, filings, metrics, segments, events — all connected by real SEC data.</p>
+          <a href="/app" class="feature__link" data-scroll>Explore graph →</a>
         </article>
 
-        <article class="num-card">
-          <span class="num-card__index" aria-hidden="true">03</span>
-          <h3 class="num-card__title">Relationship-based insights</h3>
-          <p class="num-card__body">
-            Understand how a company, its segments, its geography and its
-            reporting fit together — as a shape, not a spreadsheet.
-          </p>
+        <article class="feature">
+          <div class="feature__icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+          </div>
+          <h3 class="feature__title">Provenance & grading</h3>
+          <p class="feature__desc">Every answer is graded sentence-by-sentence: Supported, Qualified, or Refused. See the exact rule that judged each claim.</p>
+          <a href="/app" class="feature__link" data-scroll>See grading →</a>
+        </article>
+
+        <article class="feature">
+          <div class="feature__icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+          </div>
+          <h3 class="feature__title">Live market data</h3>
+          <p class="feature__desc">Real-time quotes from Yahoo Finance for 18+ major tickers. The same prices FinGraph grounds its answers in.</p>
+          <a href="#markets" class="feature__link" data-scroll>View markets →</a>
+        </article>
+
+        <article class="feature">
+          <div class="feature__icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+          </div>
+          <h3 class="feature__title">Company deep-dives</h3>
+          <p class="feature__desc">Dedicated pages per issuer: technicals, fundamentals, news, filings, and the entity graph — all in one view.</p>
+          <a href="/company/AAPL" class="feature__link">Open AAPL →</a>
+        </article>
+
+        <article class="feature">
+          <div class="feature__icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+          </div>
+          <h3 class="feature__title">Multi-issuer compare</h3>
+          <p class="feature__desc">Compare AAPL vs MSFT vs NVDA across metrics, segments, and filings side-by-side in the graph.</p>
+          <a href="/app" class="feature__link" data-scroll>Compare →</a>
+        </article>
+      </div>
+    </section>
+
+    <!-- ── how it works ────────────────────────────────────────────────────── -->
+    <section class="how-it-works" id="how-it-works" aria-labelledby="how-title">
+      <div class="section-head">
+        <h2 class="section-head__title" id="how-title">
+          How it works<br>in three steps.
+        </h2>
+        <p class="section-head__sub">
+          From question to verified insight — no black boxes.
+        </p>
+      </div>
+
+      <ol class="steps">
+        <li class="step">
+          <span class="step__number" aria-hidden="true">01</span>
+          <div class="step__content">
+            <h3 class="step__title">Ask</h3>
+            <p class="step__desc">Type any financial question — <em>"What was Apple's Services revenue in FY25?"</em> or <em>"Compare NVDA vs AMD gross margins."</em> The router classifies intent and identifies the relevant issuer(s).</p>
+          </div>
+        </li>
+        <li class="step">
+          <span class="step__number" aria-hidden="true">02</span>
+          <div class="step__content">
+            <h3 class="step__title">Retrieve</h3>
+            <p class="step__desc">The graph engine traverses the knowledge graph: Company → Filings → Metrics → Segments → Evidence chunks. Only real relationships from SEC filings are used — no hallucinated connections.</p>
+          </div>
+        </li>
+        <li class="step">
+          <span class="step__number" aria-hidden="true">03</span>
+          <div class="step__content">
+            <h3 class="step__title">Verify</h3>
+            <p class="step__desc">The grader checks every sentence against the retrieved evidence. Each claim gets a verdict: <strong>Supported</strong>, <strong>Qualified</strong>, or <strong>Refused</strong>. The full provenance trail — tags, rules, figures — is always visible.</p>
+          </div>
+        </li>
+      </ol>
+
+      <div class="how__cta">
+        <a class="btn btn--primary btn--lg" href="/auth">
+          <span class="btn__label">Try it now</span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M5 12h13M13 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </a>
+      </div>
+    </section>
+
+    <!-- ── insights ────────────────────────────────────────────────────────── -->
+    <section class="insights" id="insights" aria-labelledby="insights-title">
+      <div class="section-head">
+        <h2 class="section-head__title" id="insights-title">
+          Insights you<br>can act on.
+        </h2>
+        <p class="section-head__sub">
+          The graph reveals patterns that spreadsheets hide — segment concentration,
+          geographic exposure, filing inconsistencies, and more.
+        </p>
+      </div>
+
+      <div class="insights__grid">
+        <article class="insight-card">
+          <div class="insight-card__tag">Segment analysis</div>
+          <h3 class="insight-card__title">Revenue concentration risk</h3>
+          <p class="insight-card__desc">Instantly see what % of revenue comes from iPhone vs Services vs Wearables — and how that mix shifts quarter-over-quarter.</p>
+          <a href="/app" class="insight-card__link" data-scroll>Explore →</a>
+        </article>
+
+        <article class="insight-card">
+          <div class="insight-card__tag">Geographic exposure</div>
+          <h3 class="insight-card__title">Geographic revenue mix</h3>
+          <p class="insight-card__desc">Map revenue across Americas, Europe, Greater China, Japan, and Rest of Asia — with YoY growth rates per region.</p>
+          <a href="/app" class="insight-card__link" data-scroll>Explore →</a>
+        </article>
+
+        <article class="insight-card">
+          <div class="insight-card__tag">Filing intelligence</div>
+          <h3 class="insight-card__title">Filing-to-filing changes</h3>
+          <p class="insight-card__desc">Detect when language shifts in Risk Factors, MD&A, or Business sections — flagging new risks or strategy changes.</p>
+          <a href="/app" class="insight-card__link" data-scroll>Explore →</a>
+        </article>
+
+        <article class="insight-card">
+          <div class="insight-card__tag">Metric lineage</div>
+          <h3 class="insight-card__title">Trace any metric to source</h3>
+          <p class="insight-card__desc">Click any figure — Net Sales, Operating Income, R&D — and follow the exact path: Filing → Table → Row → Graph node.</p>
+          <a href="/app" class="insight-card__link" data-scroll>Explore →</a>
+        </article>
+
+        <article class="insight-card">
+          <div class="insight-card__tag">Event signals</div>
+          <h3 class="insight-card__title">Earnings & guidance tracking</h3>
+          <p class="insight-card__desc">Surface earnings dates, guidance revisions, and disclosure events — linked to the filing paragraphs that announced them.</p>
+          <a href="/app" class="insight-card__link" data-scroll>Explore →</a>
+        </article>
+
+        <article class="insight-card">
+          <div class="insight-card__tag">Cross-issuer</div>
+          <h3 class="insight-card__title">Peer comparison, automated</h3>
+          <p class="insight-card__desc">Select multiple issuers. FinGraph aligns their metrics, segments, and periods — no manual normalization required.</p>
+          <a href="/app" class="insight-card__link" data-scroll>Explore →</a>
         </article>
       </div>
     </section>
@@ -246,8 +415,8 @@
           <ul class="plan__features">
             <li>Unlimited questions</li>
             <li>Multi-issuer comparison</li>
-            <li>Live market data &amp; signals</li>
-            <li>Full filing history &amp; traces</li>
+            <li>Live market data & signals</li>
+            <li>Full filing history & traces</li>
             <li>Priority support</li>
           </ul>
 
@@ -269,9 +438,9 @@
           <ul class="plan__features">
             <li>Everything in Pro</li>
             <li>Private graph deployment</li>
-            <li>SSO &amp; audit logs</li>
+            <li>SSO & audit logs</li>
             <li>Dedicated data pipeline</li>
-            <li>Custom integrations &amp; SLA</li>
+            <li>Custom integrations & SLA</li>
           </ul>
 
           <a class="btn btn--ghost plan__cta" href="/auth">Contact Sales</a>
@@ -299,15 +468,22 @@
             <p class="footer__tag">Financial intelligence, connected.</p>
           </div>
 
-          <nav class="footer__nav" aria-label="Footer">
+          <nav class="footer__nav" aria-label="Product">
             <a href="#about">About</a>
             <a href="#features">Features</a>
+            <a href="#how-it-works">How it works</a>
             <a href="#insights">Insights</a>
+            <a href="#markets">Markets</a>
             <a href="#pricing">Pricing</a>
           </nav>
         </div>
 
         <div class="footer__right">
+          <nav class="footer__nav-legal" aria-label="Legal & Company">
+            <a href="#privacy">Privacy</a>
+            <a href="#terms">Terms</a>
+            <a href="#disclaimer">Disclaimer</a>
+          </nav>
           <div class="footer__social">
             <a href="#" aria-label="X">
               <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M4 4l7.2 9.3L4.4 20h2.5l5.4-5.4L16.8 20H20l-7.5-9.7L18.9 4h-2.5l-4.8 4.9L8.2 4H4z"/></svg>

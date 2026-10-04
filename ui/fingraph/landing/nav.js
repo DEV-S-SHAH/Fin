@@ -40,6 +40,15 @@ export function initNavAnchors() {
       history.replaceState(null, "", hash);
     });
   });
+
+  /* Logo click → scroll to top */
+  document.querySelectorAll(".nav__brand[href='#top']").forEach((link) => {
+    link.addEventListener("click", (event) => {
+      event.preventDefault();
+      window.scrollTo({ top: 0, behavior: prefersReduced() ? "auto" : "smooth" });
+      history.replaceState(null, "", "/");
+    });
+  });
 }
 
 function prefersReduced() {
