@@ -53,4 +53,4 @@ sandbox_engine/_run/staging/
 *.lbug
 !sandbox_engine/_run/sandbox.lbug
 *.lbug.wal
-*.lbug.tmp
+*.lbug.tmp.github/
