@@ -39,7 +39,14 @@ from graphrag.extract import (  # noqa: E402
 from graphrag.ingest import IngestReport, _quality_warnings  # noqa: E402
 from graphrag.llm import resolve_client  # noqa: E402
 from graphrag.store import GraphStore  # noqa: E402
-from tools.sec_fetch import to_document  # noqa: E402
+from tools.sec_fetch import (  # noqa: E402
+    Filing,
+    build_manifest,
+    download_filings,
+    to_document_with_metadata,
+    _expand_forms,
+    ALL_SEC_FORMS,
+)
 
 log = logging.getLogger("sec_ingest")
 CACHE_VERSION = 1
@@ -94,21 +101,102 @@ def _store_cached(path: Path, result: Any) -> None:
     tmp.replace(path)
 
 
-def _plan(corpus: Path, config: GraphRAGConfig) -> list[tuple[Path, int, Any]]:
-    """Chunk every filing up front so work can be scheduled and cached."""
-    plan: list[tuple[Path, int, Any]] = []
+def _build_manifest_from_local_files(corpus: Path, cik: str) -> dict[Path, Filing]:
+    """Build a manifest by matching local files to EDGAR index entries.
+
+    Returns a mapping from local file path to Filing metadata.
+    """
+    # Build the full manifest from EDGAR for the date range covering all files
+    manifest = build_manifest(
+        cik=cik,
+        forms=_expand_forms(["all"]),
+        start="2020-01-01",
+        end="2026-12-31",
+    )
+
+    # Create a lookup by (form, filing_date, primary_document_stem)
+    manifest_lookup = {}
+    for filing in manifest:
+        safe_primary = filing.primary_document.replace("/", "_")
+        key = (filing.form, filing.filing_date, safe_primary)
+        manifest_lookup[key] = filing
+
+    # Match local files to manifest entries
+    file_to_filing = {}
     for path in sorted(corpus.rglob("*.htm*")):
-        document = to_document(path)
+        # Parse the filename: FORM_DATE_PRIMARY_DOCUMENT
+        # e.g., 10-K_2021-02-08_tsla-10k_20201231.htm
+        # or 8-K_2024-06-14_tm2413800d31_8k.htm
+        name = path.name
+        parts = name.split("_", 2)
+        if len(parts) >= 3:
+            form = parts[0]  # Keep as-is (e.g., "8-K", "10-K", "DEF 14A")
+            filing_date = parts[1]
+            primary_doc = parts[2]  # Keep full primary document including extension
+            key = (form, filing_date, primary_doc)
+            if key in manifest_lookup:
+                file_to_filing[path] = manifest_lookup[key]
+                continue
+
+        # Fallback: try matching by form and date only
+        parts2 = name.split("_", 1)
+        if len(parts2) >= 2:
+            form = parts2[0]
+            filing_date = parts2[1].split("_")[0]
+            # Find any matching filing
+            for mf in manifest:
+                if mf.form == form and mf.filing_date == filing_date:
+                    file_to_filing[path] = mf
+                    break
+
+    return file_to_filing
+
+
+def _plan(
+    corpus: Path,
+    config: GraphRAGConfig,
+    cik: str = "0001318605",
+) -> list[tuple[Path, int, Any]]:
+    """Chunk every filing up front so work can be scheduled and cached."""
+    file_to_filing = _build_manifest_from_local_files(corpus, cik)
+    plan: list[tuple[Path, int, Any]] = []
+
+    for path in sorted(corpus.rglob("*.htm*")):
+        filing = file_to_filing.get(path)
+        if filing:
+            document, _ = to_document_with_metadata(path, filing)
+        else:
+            log.warning(f"No manifest entry for {path}, using basic document")
+            from tools.sec_fetch import to_document
+            document = to_document(path)
+
         for chunk in chunk_document(document, config.chunk_tokens, config.chunk_overlap_tokens):
             plan.append((path, chunk.index, chunk))
     return plan
 
 
+def _cleanup_pdf_source(html_path: Path) -> None:
+    """Delete temporary PDF source file after successful validation.
+
+    The HTML file remains as the canonical document artifact.
+    The PDF was only used for ingestion and is no longer needed.
+    """
+    # Look for corresponding PDF file (same stem, .pdf extension)
+    pdf_path = html_path.with_suffix(".pdf")
+    if pdf_path.exists():
+        try:
+            pdf_path.unlink()
+            log.info(f"Cleaned up temporary PDF: {pdf_path}")
+        except OSError as e:
+            log.warning(f"Failed to delete PDF {pdf_path}: {e}")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--corpus", type=Path, default=Path("data/aapl-sec"))
-    parser.add_argument("--db", type=Path, default=Path("data/aapl.lbug"))
-    parser.add_argument("--cache", type=Path, default=Path("data/aapl-cache"))
+    parser.add_argument("--corpus", type=Path, default=Path("data/tsla-sec"))
+    parser.add_argument("--cik", type=str, default="0001318605")
+    parser.add_argument("--db", type=Path, default=Path("sandbox_engine/_run/sandbox.lbug"))
+    parser.add_argument("--cache", type=Path, default=Path("data/tsla-cache"))
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--provider", default="openai")
     parser.add_argument("--model", default="openai/gpt-oss-20b")
@@ -120,7 +208,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     config = GraphRAGConfig()
-    plan = _plan(args.corpus, config)
+    plan = _plan(args.corpus, config, args.cik)
     if args.limit:
         plan = plan[: args.limit]
     print(f"planned {len(plan)} chunks across the corpus (workers={args.workers})")
@@ -210,7 +298,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 edges_upserted += 1
 
     nodes_after, edges_after = store.counts()
-    report = IngestReport(document="aapl-sec", pages=0, chunks=len(plan))
+    report = IngestReport(document="tsla-sec", pages=0, chunks=len(plan))
     report.entities_seen = entities_seen
     report.relationships_seen = relationships_seen
     report.rejected = rejected
@@ -240,6 +328,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         for line in failures[:20]:
             print(f"  {line}")
     store.close()
+
+    # Cleanup temporary PDF files after successful validation
+    for path in sorted(args.corpus.rglob("*.htm*")):
+        _cleanup_pdf_source(path)
+
     return 0
 
 

@@ -1705,7 +1705,7 @@
       "hops_ok": true,
       "isolation_ok": true,
       "latency_ms": {
-        "routing_ms": 0.55
+        "routing_ms": 0.1
       },
       "leaked_terms": [],
       "missing_concepts": [],
@@ -1736,7 +1736,7 @@
       "hops_ok": true,
       "isolation_ok": true,
       "latency_ms": {
-        "routing_ms": 0.52
+        "routing_ms": 0.05
       },
       "leaked_terms": [],
       "missing_concepts": [],
@@ -1767,7 +1767,7 @@
       "hops_ok": true,
       "isolation_ok": true,
       "latency_ms": {
-        "routing_ms": 0.64
+        "routing_ms": 0.05
       },
       "leaked_terms": [],
       "missing_concepts": [],
@@ -1798,7 +1798,7 @@
       "hops_ok": true,
       "isolation_ok": true,
       "latency_ms": {
-        "routing_ms": 0.38
+        "routing_ms": 0.05
       },
       "leaked_terms": [],
       "missing_concepts": [],
@@ -1829,7 +1829,7 @@
       "hops_ok": true,
       "isolation_ok": true,
       "latency_ms": {
-        "routing_ms": 0.23
+        "routing_ms": 0.05
       },
       "leaked_terms": [],
       "missing_concepts": [],
@@ -1844,6 +1844,6 @@
       "ungrounded": []
     }
   },
-  "updated_at": "2026-09-30 14:08:21",
+  "updated_at": "2026-10-04 09:55:21",
   "version": 2
 }

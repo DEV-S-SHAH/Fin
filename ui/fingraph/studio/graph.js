@@ -749,6 +749,11 @@ export class GraphView {
     this.answerPathEdges = null;
     this.answerCompanyId = null;
     this.cited.clear();
+    this.selected = null;
+    this.searchPathNodes = null;
+    this.searchPathEdges = null;
+    this.searchPathTargetId = null;
+    if (this.inspectorEl) this.inspectorEl.hidden = true;
     this.#stopFlow();
     this.#draw();
     this.fit();
@@ -1066,16 +1071,16 @@ export class GraphView {
     this.#applyView();
     this.#drawFlow();
 
-    // Active Highlight Set (Search Path > Answer Path > Selection > Hover)
+    // Active Highlight Set (Answer Path > Search Path > Selection > Hover)
     let highlightedNodes = null;
     let highlightedEdges = null;
 
-    if (this.searchPathNodes) {
-      highlightedNodes = this.searchPathNodes;
-      highlightedEdges = this.searchPathEdges;
-    } else if (this.answerPathNodes && this.answerPathNodes.size > 0) {
+    if (this.answerPathNodes && this.answerPathNodes.size > 0) {
       highlightedNodes = this.answerPathNodes;
       highlightedEdges = this.answerPathEdges;
+    } else if (this.searchPathNodes) {
+      highlightedNodes = this.searchPathNodes;
+      highlightedEdges = this.searchPathEdges;
     } else {
       const activeId = this.hovered || this.selected;
       if (activeId) {
@@ -1258,6 +1263,9 @@ export class GraphView {
       .attr("r", (d) => d.r || 8)
       .attr("fill", (d) => {
         const isConnected = hasFocus ? highlightedNodes.has(d.id) : true;
+        if (this.selected === d.id && !isConnected) {
+          return "#2b303e";
+        }
         if (hasFocus && !isConnected) {
           return "#1d212c";
         }
@@ -1270,6 +1278,9 @@ export class GraphView {
       })
       .attr("stroke", (d) => {
         const isConnected = hasFocus ? highlightedNodes.has(d.id) : true;
+        if (this.selected === d.id) {
+          return "#ffffff";
+        }
         if (hasFocus && !isConnected) {
           return "#2b303e";
         }
@@ -1359,10 +1370,13 @@ export class GraphView {
       const isAnswerNode = this.answerPathNodes?.has(d.id);
 
       if (this.answerPathNodes && this.answerPathNodes.size > 0) {
-        // When answer is focused, SHOW ONLY highlighted/relevant nodes!
-        if (isAnswerNode) {
+        // When answer is focused: show highlighted/relevant nodes or currently selected/hovered node
+        if (d.id === activeId) {
           mustShow = true;
-          rank = (d.type === "Company") ? 1 : 2;
+          rank = 1;
+        } else if (isAnswerNode) {
+          mustShow = true;
+          rank = (d.type === "Company") ? 2 : 3;
         } else {
           // Hide unrelated labels completely to eliminate clutter!
           d.labelVisible = false;
@@ -1712,11 +1726,10 @@ export class GraphView {
     this.searchPathNodes = null;
     this.searchPathEdges = null;
     this.searchPathTargetId = null;
-    this.answerPathNodes = null;
-    this.answerPathEdges = null;
-    this.answerCompanyId = null;
-    this.cited = new Set();
-    this.#stopFlow();
+    if (!this.answerPathNodes || this.answerPathNodes.size === 0) {
+      this.cited = new Set();
+      this.#stopFlow();
+    }
     if (this.inspectorEl) this.inspectorEl.hidden = true;
     this.#draw();
     this.handlers.onSelect?.(null);
@@ -1726,7 +1739,10 @@ export class GraphView {
 
   selectNode(nodeOrId) {
     if (!nodeOrId) {
-      this.clearSelection();
+      this.selected = null;
+      if (this.inspectorEl) this.inspectorEl.hidden = true;
+      this.#draw();
+      this.handlers.onSelect?.(null);
       return;
     }
 
@@ -1734,6 +1750,17 @@ export class GraphView {
     const node = this.byId.get(String(id));
     if (!node) return;
 
+    // If answer focus is currently active, preserve the answer graph completely:
+    // Select the node, display its metadata in the inspector, and redraw.
+    if (this.answerPathNodes && this.answerPathNodes.size > 0) {
+      this.selected = node.id;
+      this.#showDetailPanel(node);
+      this.#draw();
+      this.handlers.onSelect?.(node);
+      return;
+    }
+
+    // Default graph state: trace and highlight search/selection branch
     this.highlightSearchPath(node);
     this.handlers.onSelect?.(node);
   }
@@ -2022,7 +2049,21 @@ export class GraphView {
   }
 
   focus(id) {
-    return this.highlightSearchPath(id);
+    const node = this.byId.get(String(id));
+    if (!node) return false;
+
+    if (this.answerPathNodes && this.answerPathNodes.size > 0) {
+      this.selected = node.id;
+      const { width, height } = this.#size();
+      const targetK = Math.max(0.75, Math.min(1.4, this.view.k));
+      this.#setView(width / 2 - (node.x || 0) * targetK, height / 2 - (node.y || 0) * targetK, targetK);
+      this.#showDetailPanel(node);
+      this.#draw();
+      this.handlers.onSelect?.(node);
+      return true;
+    }
+
+    return this.highlightSearchPath(node);
   }
 
   fit() {

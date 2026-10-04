@@ -1237,6 +1237,30 @@ mark.hit {
   display: none !important;
 }
 
+/* Selected state for unrelated / muted nodes */
+.g-node.is-dim.is-selected,
+.g-node.is-unrelated.is-selected {
+  opacity: 0.95 !important;
+}
+.g-node.is-dim.is-selected .core,
+.g-node.is-unrelated.is-selected .core {
+  fill: #2b303e !important;
+  stroke: #ffffff !important;
+  stroke-width: 2px !important;
+}
+.g-node.is-dim.is-selected .halo,
+.g-node.is-unrelated.is-selected .halo {
+  opacity: 0.8 !important;
+  display: block !important;
+  stroke: #ffffff !important;
+}
+.g-node.is-dim.is-selected text,
+.g-node.is-unrelated.is-selected text {
+  opacity: 1 !important;
+  display: block !important;
+  fill: #ffffff !important;
+}
+
 .g-node text,
 .g-node text.g-node-label {
   font-size: 10.5px;

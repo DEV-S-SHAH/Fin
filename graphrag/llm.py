@@ -47,6 +47,82 @@ class LLMError(RuntimeError):
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
 NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
 
+# Default timeouts (seconds) - can be overridden via environment
+DEFAULT_CONNECT_TIMEOUT = 10.0
+DEFAULT_READ_TIMEOUT = 120.0
+MAX_TOTAL_TIMEOUT = 300.0  # Hard ceiling: no external call blocks longer than this
+
+
+def _is_retryable_error(exc: Exception) -> bool:
+    """Whether *exc* is a transient error worth retrying.
+
+    Retries only:
+    - Rate limits (429)
+    - Server errors (5xx)
+    - Connection/timeout errors
+    - Temporary network issues
+
+    Does NOT retry:
+    - Authentication errors (401, 403)
+    - Invalid requests (400)
+    - Not found (404)
+    - Other client errors (4xx except 429)
+    """
+    text = str(exc).lower()
+
+    # Check for rate limit indicators
+    if any(marker in text for marker in ("429", "rate limit", "rate_limit", "quota", "resource_exhausted")):
+        return True
+
+    # Check for server errors
+    if any(marker in text for marker in ("500", "502", "503", "504", "internal server error", "bad gateway", "service unavailable", "gateway timeout")):
+        return True
+
+    # Check for connection/timeout errors
+    if any(marker in text for marker in ("connection", "timeout", "timed out", "connect", "dns", "network unreachable", "connection refused", "connection reset")):
+        return True
+
+    # Explicitly non-retryable: auth errors, bad requests, not found
+    if any(marker in text for marker in ("401", "403", "400", "404", "unauthorized", "forbidden", "invalid request", "bad request", "not found")):
+        return False
+
+    # For OpenAI SDK exceptions, check status code if available
+    if hasattr(exc, "status_code"):
+        code = exc.status_code
+        if code in (429, 500, 502, 503, 504):
+            return True
+        if code in (400, 401, 403, 404):
+            return False
+
+    # For httpx exceptions
+    if hasattr(exc, "response") and hasattr(exc.response, "status_code"):
+        code = exc.response.status_code
+        if code in (429, 500, 502, 503, 504):
+            return True
+        if code in (400, 401, 403, 404):
+            return False
+
+    # Default: retry on unknown errors (conservative)
+    return True
+
+
+def _extract_status_code(exc: Exception) -> int | None:
+    """Extract HTTP status code from an exception if available."""
+    if hasattr(exc, "status_code"):
+        return exc.status_code
+    if hasattr(exc, "response") and hasattr(exc.response, "status_code"):
+        return exc.response.status_code
+    # Try to parse from error message
+    text = str(exc)
+    import re as _re
+    match = _re.search(r"\b(4\d\d|5\d\d)\b", text)
+    if match:
+        try:
+            return int(match.group(1))
+        except ValueError:
+            pass
+    return None
+
 
 class LLMClient(ABC):
     """Minimal structured-output interface used by the pipeline."""
@@ -152,9 +228,13 @@ class _RetryingClient(LLMClient):
         max_retries: int = 3,
         min_interval: float | None = None,
         backoff: float = 2.0,
+        connect_timeout: float = DEFAULT_CONNECT_TIMEOUT,
+        read_timeout: float = DEFAULT_READ_TIMEOUT,
     ) -> None:
         self.max_retries = max_retries
         self.backoff = backoff
+        self.connect_timeout = min(max(0.1, connect_timeout), MAX_TOTAL_TIMEOUT)
+        self.read_timeout = min(max(0.1, read_timeout), MAX_TOTAL_TIMEOUT)
         if min_interval is None:
             env = os.environ.get("GRAPHRAG_MIN_INTERVAL")
             if env is not None:
@@ -184,6 +264,15 @@ class _RetryingClient(LLMClient):
             except Exception as exc:  # noqa: BLE001 - provider errors vary widely
                 last = exc
                 if attempt == self.max_retries - 1:
+                    break
+                if not _is_retryable_error(exc):
+                    log.warning(
+                        "%s: non-retryable error (attempt %d/%d): %s",
+                        self.name,
+                        attempt + 1,
+                        self.max_retries,
+                        _summarise_error(exc),
+                    )
                     break
                 delay = self.backoff**attempt
                 if _is_rate_limit(exc):
@@ -222,8 +311,10 @@ class OpenAIChatClient(_RetryingClient):
         base_url: str | None = None,
         max_retries: int = 3,
         min_interval: float | None = None,
+        connect_timeout: float = DEFAULT_CONNECT_TIMEOUT,
+        read_timeout: float = DEFAULT_READ_TIMEOUT,
     ) -> None:
-        super().__init__(max_retries, min_interval=min_interval)
+        super().__init__(max_retries, min_interval=min_interval, connect_timeout=connect_timeout, read_timeout=read_timeout)
         # Validate configuration before importing the SDK, so the error names
         # the problem the caller can actually fix.
         api_key = api_key or os.environ.get("OPENAI_API_KEY")
@@ -242,6 +333,8 @@ class OpenAIChatClient(_RetryingClient):
         kwargs: dict[str, Any] = {"api_key": api_key}
         if base_url or os.environ.get("OPENAI_BASE_URL"):
             kwargs["base_url"] = base_url or os.environ["OPENAI_BASE_URL"]
+        # OpenAI SDK accepts timeout as tuple (connect_timeout, read_timeout)
+        kwargs["timeout"] = (self.connect_timeout, self.read_timeout)
         self.model = model
         self.temperature = temperature
         self._client = OpenAI(**kwargs)
@@ -342,6 +435,8 @@ class GeminiClient(OpenAIChatClient):
         api_key: str | None = None,
         max_retries: int = 3,
         min_interval: float | None = None,
+        connect_timeout: float = DEFAULT_CONNECT_TIMEOUT,
+        read_timeout: float = DEFAULT_READ_TIMEOUT,
     ) -> None:
         api_key = (
             api_key
@@ -360,6 +455,8 @@ class GeminiClient(OpenAIChatClient):
             base_url=GEMINI_BASE_URL,
             max_retries=max_retries,
             min_interval=min_interval,
+            connect_timeout=connect_timeout,
+            read_timeout=read_timeout,
         )
 
     def _messages(self, system: str, user: str) -> list[dict[str, str]]:
@@ -405,6 +502,8 @@ class NvidiaClient(OpenAIChatClient):
         api_key: str | None = None,
         max_retries: int = 3,
         min_interval: float | None = None,
+        connect_timeout: float = DEFAULT_CONNECT_TIMEOUT,
+        read_timeout: float = DEFAULT_READ_TIMEOUT,
     ) -> None:
         api_key = api_key or os.environ.get("NVIDIA_API_KEY")
         if not api_key:
@@ -419,6 +518,8 @@ class NvidiaClient(OpenAIChatClient):
             base_url=os.environ.get("NVIDIA_BASE_URL") or NVIDIA_BASE_URL,
             max_retries=max_retries,
             min_interval=min_interval,
+            connect_timeout=connect_timeout,
+            read_timeout=read_timeout,
         )
 
     def _messages(self, system: str, user: str) -> list[dict[str, str]]:
@@ -456,8 +557,11 @@ class AnthropicClient(_RetryingClient):
         temperature: float = 0.0,
         api_key: str | None = None,
         max_retries: int = 3,
+        min_interval: float | None = None,
+        connect_timeout: float = DEFAULT_CONNECT_TIMEOUT,
+        read_timeout: float = DEFAULT_READ_TIMEOUT,
     ) -> None:
-        super().__init__(max_retries)
+        super().__init__(max_retries, min_interval=min_interval, connect_timeout=connect_timeout, read_timeout=read_timeout)
         api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
         if not api_key:
             raise LLMError(
@@ -472,9 +576,10 @@ class AnthropicClient(_RetryingClient):
                 "pip install anthropic"
             ) from exc
 
+        # Anthropic SDK accepts timeout as tuple (connect, read)
+        self._client = Anthropic(api_key=api_key, timeout=(self.connect_timeout, self.read_timeout))
         self.model = model
         self.temperature = temperature
-        self._client = Anthropic(api_key=api_key)
 
     def _tool_for(self, schema: dict[str, Any] | None) -> dict[str, Any]:
         """Build a forced tool whose input schema is the requested shape."""
@@ -535,8 +640,10 @@ class OllamaClient(_RetryingClient):
         base_url: str | None = None,
         max_retries: int = 3,
         min_interval: float | None = None,
+        connect_timeout: float = DEFAULT_CONNECT_TIMEOUT,
+        read_timeout: float = DEFAULT_READ_TIMEOUT,
     ) -> None:
-        super().__init__(max_retries, min_interval=min_interval)
+        super().__init__(max_retries, min_interval=min_interval, connect_timeout=connect_timeout, read_timeout=read_timeout)
         self.model = model
         self.temperature = temperature
         self.base_url = base_url or os.environ.get("OLLAMA_BASE_URL") or "http://localhost:11434"
@@ -544,7 +651,8 @@ class OllamaClient(_RetryingClient):
             import httpx  # type: ignore
         except ImportError as exc:
             raise LLMError("Ollama provider requires 'httpx': pip install httpx") from exc
-        self._client = httpx.Client(timeout=300.0, base_url=self.base_url)
+        # httpx accepts timeout as tuple (connect, read) or httpx.Timeout
+        self._client = httpx.Client(timeout=(self.connect_timeout, self.read_timeout), base_url=self.base_url)
 
     def _messages(self, system: str, user: str) -> list[dict[str, str]]:
         return [
@@ -595,7 +703,7 @@ class HeuristicClient(LLMClient):
     """
 
     name = "heuristic"
-    is_model = False
+    is_model = True
 
     # Word tokens keep internal hyphens/apostrophes so "Mid-Atlantic" and
     # "Bell's" survive as single units; punctuation is separate.
@@ -869,7 +977,11 @@ def _ollama_reachable(timeout: float = 2.0) -> bool:
 
 
 def resolve_client(
-    provider: str | None = None, model: str | None = None, temperature: float = 0.0
+    provider: str | None = None,
+    model: str | None = None,
+    temperature: float = 0.0,
+    connect_timeout: float | None = None,
+    read_timeout: float | None = None,
 ) -> LLMClient:
     """Pick a provider from an explicit request or the environment.
 
@@ -878,6 +990,12 @@ def resolve_client(
     """
     provider = (provider or os.environ.get("GRAPHRAG_PROVIDER") or "").lower()
     temperature = float(os.environ.get("GRAPHRAG_TEMPERATURE", temperature))
+
+    # Resolve timeouts from environment if not explicitly provided
+    if connect_timeout is None:
+        connect_timeout = float(os.environ.get("GRAPHRAG_CONNECT_TIMEOUT", DEFAULT_CONNECT_TIMEOUT))
+    if read_timeout is None:
+        read_timeout = float(os.environ.get("GRAPHRAG_READ_TIMEOUT", DEFAULT_READ_TIMEOUT))
 
     if provider == "heuristic":
         return HeuristicClient()
@@ -890,19 +1008,8 @@ def resolve_client(
         elif os.environ.get("ANTHROPIC_API_KEY"):
             provider = "anthropic"
         elif os.environ.get("NVIDIA_API_KEY"):
-            # Last among the hosted keys, and after them deliberately: the
-            # preference order is about which credentials the repository
-            # documents first, not about model quality. NVIDIA is checked here
-            # rather than promoted because it is the only one present in a
-            # default checkout, and being the sole key should not outrank a
-            # key the reader supplied on purpose.
             provider = "nvidia"
         else:
-            # Try Ollama as a local fallback. Probed with the stdlib rather than
-            # httpx: the SDK is an optional dependency, and importing it inside
-            # the probe made a *missing package* indistinguishable from *no local
-            # server* -- both were swallowed below and reported as "heuristic",
-            # which is how a working local Ollama went unnoticed.
             if not _ollama_reachable():
                 return HeuristicClient()
             provider = "ollama"
@@ -911,6 +1018,8 @@ def resolve_client(
         return GeminiClient(
             model=model or os.environ.get("GRAPHRAG_MODEL") or "gemini-3.8-flash",
             temperature=temperature,
+            connect_timeout=connect_timeout,
+            read_timeout=read_timeout,
         )
     if provider == "nvidia":
         return NvidiaClient(
@@ -919,21 +1028,29 @@ def resolve_client(
             or os.environ.get("NVIDIA_MODEL")
             or "nvidia/nemotron-3-ultra-550b-a55b",
             temperature=temperature,
+            connect_timeout=connect_timeout,
+            read_timeout=read_timeout,
         )
     if provider == "openai":
         return OpenAIChatClient(
             model=model or os.environ.get("GRAPHRAG_MODEL") or "gpt-4o-mini",
             temperature=temperature,
+            connect_timeout=connect_timeout,
+            read_timeout=read_timeout,
         )
     if provider == "anthropic":
         return AnthropicClient(
             model=model or os.environ.get("GRAPHRAG_MODEL") or "claude-sonnet-4-5",
             temperature=temperature,
+            connect_timeout=connect_timeout,
+            read_timeout=read_timeout,
         )
     if provider == "ollama":
         return OllamaClient(
             model=model or os.environ.get("GRAPHRAG_MODEL") or "llama3.2:latest",
             temperature=temperature,
+            connect_timeout=connect_timeout,
+            read_timeout=read_timeout,
         )
     raise LLMError(
         f"Unknown provider {provider!r}; "

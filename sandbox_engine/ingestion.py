@@ -103,7 +103,7 @@ class ParseReport:
     result: ExtractionResult | None = None
 
 
-def parse_all(paths: list[Path], parser: FilingParser | None = None) -> ParseReport:
+def parse_all(paths: list[Path], parser: FilingParser | None = None) -> tuple[ParseReport, list[ExtractionResult]]:
     """Parse all filings in ``paths`` and return a combined report.
 
     Args:
@@ -112,12 +112,13 @@ def parse_all(paths: list[Path], parser: FilingParser | None = None) -> ParseRep
             a new one is created with default settings.
 
     Returns:
-        ``ParseReport`` with per-filing breakdown and concatenated
-        ``ExtractionResult`` containing all nodes and edges.
+        Tuple of ``ParseReport`` with per-filing breakdown and a list of
+        individual ``ExtractionResult`` objects for each filing.
     """
     t0 = time.perf_counter()
     parser = parser or FilingParser()
     combined = None
+    individual_results: list[ExtractionResult] = []
     filing_reports: list[dict[str, Any]] = []
 
     for path in paths:
@@ -150,6 +151,7 @@ def parse_all(paths: list[Path], parser: FilingParser | None = None) -> ParseRep
                 "elapsed_sec": elapsed_sec,
             }
         )
+        individual_results.append(result)
         if combined is None:
             combined = result
         else:
@@ -158,7 +160,7 @@ def parse_all(paths: list[Path], parser: FilingParser | None = None) -> ParseRep
     total_elapsed = time.perf_counter() - t0
     counts = combined.counts() if combined else {}
 
-    return ParseReport(
+    report = ParseReport(
         filings=filing_reports,
         total_metrics=counts.get("metrics", 0),
         total_segments=counts.get("segments", 0),
@@ -175,6 +177,8 @@ def parse_all(paths: list[Path], parser: FilingParser | None = None) -> ParseRep
         elapsed_sec=total_elapsed,
         result=combined,
     )
+
+    return report, individual_results
 
 
 def apply_ufgs(result: ExtractionResult, path: Path) -> ExtractionResult:
@@ -265,23 +269,23 @@ def apply_ufgs(result: ExtractionResult, path: Path) -> ExtractionResult:
 # ---------------------------------------------------------------------------
 
 def buffer_all(
-    result: ExtractionResult,
+    results: list[ExtractionResult],
     staging_dir: Path,
     batch_rows: int = 50000,
-) -> BufferReport:
-    """Buffer extraction result to Parquet files in ``staging_dir``.
+) -> StageBuffer:
+    """Buffer extraction results to Parquet files in ``staging_dir``.
 
     Args:
-        result: The ``ExtractionResult`` from ``parse_all``.
+        results: List of ``ExtractionResult`` from individual filings.
         staging_dir: Directory to write Parquet parts to.
         batch_rows: Maximum rows per RecordBatch before flushing to disk.
 
     Returns:
-        ``BufferReport`` with per-table row counts, bytes written,
-        batch counts, and sentinel fiscal year count.
+        ``StageBuffer`` containing the staged data and report.
     """
     stage = StageBuffer(staging_dir, batch_rows=batch_rows)
-    stage.add_result(result)
+    for result in results:
+        stage.add_result(result)
     stage.spill()
     return stage
 
@@ -383,7 +387,7 @@ def run_pipeline(
     if not load_only:
         # Stage 2: Parse all filings
         log.info("Stage 2: Parsing %d filing(s)...", len(paths))
-        report.parse = parse_all(paths)
+        report.parse, individual_results = parse_all(paths)
         log.info(
             "Parse complete: %d metrics, %d segments, %d events, %d chunks, %d executives (%.2fs)",
             report.parse.total_metrics,
@@ -396,7 +400,7 @@ def run_pipeline(
 
         # Stage 3: Buffer to Parquet
         log.info("Stage 3: Buffering to Parquet at %s...", staging_dir)
-        buffer = buffer_all(report.parse.result, staging_dir, batch_rows=batch_rows)
+        buffer = buffer_all(individual_results, staging_dir, batch_rows=batch_rows)
         report.buffer = buffer.report
         log.info(
             "Buffer complete: %d tables, %d batches, %.2f MB (%.2fs)",

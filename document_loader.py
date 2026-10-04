@@ -51,6 +51,7 @@ lazily, so a text-only caller needs none of them.
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import re
 import statistics
@@ -69,7 +70,157 @@ __all__ = [
     "load_directory",
     "count_tokens",
     "tokenize",
+    "extract_sec_metadata",
+    "SECFilingMetadata",
 ]
+
+# --------------------------------------------------------------------------
+# SEC Filing Metadata
+# --------------------------------------------------------------------------
+
+
+@dataclass
+class SECFilingMetadata:
+    """Normalized metadata for SEC filings."""
+
+    company: str = ""
+    ticker: str = ""
+    cik: str = ""
+    form_type: str = ""
+    document_type: str = ""
+    accession_number: str = ""
+    filing_date: str = ""
+    period_of_report: str = ""
+    document_title: str = ""
+    document_url: str = ""
+    source: str = "SEC"
+    source_authority: str = "EDGAR"
+    filing_status: str = ""
+    fiscal_period: str = ""
+    fiscal_year: str = ""
+    is_amended: bool = False
+    amendment_type: str = ""
+    exhibit_type: str = ""
+    content_hash: str = ""
+    retrieved_at: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "company": self.company,
+            "ticker": self.ticker,
+            "cik": self.cik,
+            "form_type": self.form_type,
+            "document_type": self.document_type,
+            "accession_number": self.accession_number,
+            "filing_date": self.filing_date,
+            "period_of_report": self.period_of_report,
+            "document_title": self.document_title,
+            "document_url": self.document_url,
+            "source": self.source,
+            "source_authority": self.source_authority,
+            "filing_status": self.filing_status,
+            "fiscal_period": self.fiscal_period,
+            "fiscal_year": self.fiscal_year,
+            "is_amended": self.is_amended,
+            "amendment_type": self.amendment_type,
+            "exhibit_type": self.exhibit_type,
+            "content_hash": self.content_hash,
+            "retrieved_at": self.retrieved_at,
+        }
+
+
+def extract_sec_metadata(html_content: str, filing: Any = None) -> SECFilingMetadata:
+    """Extract SEC filing metadata from HTML content.
+
+    Parses the SEC EDGAR HTML header and filing metadata tags.
+    """
+    import datetime
+
+    metadata = SECFilingMetadata()
+
+    # Try to extract from HTML meta tags and known patterns
+    # SEC filings have specific patterns in the HTML
+
+    # Extract CIK from pattern like "CIK=0000320193"
+    cik_match = re.search(r"CIK[=:]\s*(\d{10})", html_content)
+    if cik_match:
+        metadata.cik = cik_match.group(1)
+
+    # Extract accession number
+    accession_match = re.search(r"accession[=:]\s*([\d-]+)", html_content, re.IGNORECASE)
+    if accession_match:
+        metadata.accession_number = accession_match.group(1)
+
+    # Extract form type from header
+    form_match = re.search(r"<form[^>]*>([^<]+)</form>", html_content, re.IGNORECASE)
+    if not form_match:
+        form_match = re.search(r"Form\s+(10-K|10-Q|8-K|DEF 14A|3|4|5|13F-HR|SC 13D|SC 13G|S-3|S-8|424B[0-9]*|ARS|SD|11-K)", html_content, re.IGNORECASE)
+    if form_match:
+        metadata.form_type = form_match.group(1).strip().upper()
+
+    # Extract filing date
+    date_match = re.search(r"filing[ _]date[=:]\s*(\d{4}-\d{2}-\d{2})", html_content, re.IGNORECASE)
+    if not date_match:
+        date_match = re.search(r"Filed[^:]*:\s*(\d{4}-\d{2}-\d{2})", html_content)
+    if date_match:
+        metadata.filing_date = date_match.group(1)
+
+    # Extract period of report
+    period_match = re.search(r"period[ _]of[ _]report[=:]\s*(\d{4}-\d{2}-\d{2})", html_content, re.IGNORECASE)
+    if not period_match:
+        period_match = re.search(r"For the (?:fiscal year|quarter) ended\s+([A-Za-z]+ \d{1,2}, \d{4})", html_content)
+    if period_match:
+        metadata.period_of_report = period_match.group(1)
+
+    # Extract company name
+    company_match = re.search(r"company[ _]name[=:]\s*([^<\n]+)", html_content, re.IGNORECASE)
+    if not company_match:
+        company_match = re.search(r"<title>([^<]+)</title>", html_content, re.IGNORECASE)
+    if company_match:
+        metadata.company = company_match.group(1).strip()
+
+    # If filing object provided, use its metadata
+    if filing is not None:
+        if hasattr(filing, "cik") and filing.cik:
+            metadata.cik = str(filing.cik).zfill(10)
+        if hasattr(filing, "accession") and filing.accession:
+            metadata.accession_number = filing.accession
+        if hasattr(filing, "form") and filing.form:
+            metadata.form_type = filing.form
+        if hasattr(filing, "filing_date") and filing.filing_date:
+            metadata.filing_date = filing.filing_date
+        if hasattr(filing, "report_date") and filing.report_date:
+            metadata.period_of_report = filing.report_date
+        if hasattr(filing, "document_title") and filing.document_title:
+            metadata.document_title = filing.document_title
+        if hasattr(filing, "document_url") and filing.document_url:
+            metadata.document_url = filing.document_url
+        if hasattr(filing, "source") and filing.source:
+            metadata.source = filing.source
+        if hasattr(filing, "source_authority") and filing.source_authority:
+            metadata.source_authority = filing.source_authority
+        if hasattr(filing, "filing_status") and filing.filing_status:
+            metadata.filing_status = filing.filing_status
+        if hasattr(filing, "fiscal_period") and filing.fiscal_period:
+            metadata.fiscal_period = filing.fiscal_period
+        if hasattr(filing, "fiscal_year") and filing.fiscal_year:
+            metadata.fiscal_year = filing.fiscal_year
+        if hasattr(filing, "is_amended"):
+            metadata.is_amended = filing.is_amended
+        if hasattr(filing, "amendment_type") and filing.amendment_type:
+            metadata.amendment_type = filing.amendment_type
+        if hasattr(filing, "exhibit_type") and filing.exhibit_type:
+            metadata.exhibit_type = filing.exhibit_type
+        if hasattr(filing, "content_hash") and filing.content_hash:
+            metadata.content_hash = filing.content_hash
+
+    metadata.retrieved_at = datetime.datetime.utcnow().isoformat() + "Z"
+    return metadata
+
+
+def compute_content_hash(content: bytes) -> str:
+    """Compute SHA256 hash of document content for deduplication."""
+    return hashlib.sha256(content).hexdigest()
 
 # --------------------------------------------------------------------------
 # Configuration
@@ -640,7 +791,12 @@ def _load_html(path: Path, kind: str) -> tuple[str, dict[str, Any]]:
         if soup_content and (not content or len(soup_content) > len(content)):
             content, extractor = soup_content, "beautifulsoup4"
 
-    return _normalise_markdown(content or ""), {"extractor": extractor}
+    # Extract SEC metadata from raw HTML
+    sec_metadata = extract_sec_metadata(raw)
+    metadata = {"extractor": extractor}
+    metadata.update(sec_metadata.to_dict())
+
+    return _normalise_markdown(content or ""), metadata
 
 
 def _trafilatura_markdown(raw: str) -> str:

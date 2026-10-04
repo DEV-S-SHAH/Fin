@@ -33,7 +33,9 @@ import urllib.error
 import urllib.request
 import webbrowser
 from collections import Counter
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from dataclasses import replace
+from functools import lru_cache
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any, Callable, Sequence
 from urllib.parse import parse_qs, urlparse
@@ -41,6 +43,7 @@ from urllib.parse import parse_qs, urlparse
 import ladybug as lb
 
 from .buffer import NODE_TABLES, REL_TABLES
+from .config import FINGRAPH_DATA_DIR
 from .provenance import (
     REFUSED,
     _Alias,
@@ -53,6 +56,11 @@ from .provenance import (
     serialise_evidence,
 )
 from .router import EntityRoute, route_query
+from .http_limits import (
+    BoundedThreadingHTTPServer,
+    ConnectionCounter,
+    Limits,
+)
 from .tier1_fetch import SECRuntimeFetcher
 from .tier1_clean import clean_and_truncate_section
 from .coldstart_extract import ColdStartExtractor
@@ -60,6 +68,33 @@ from .stitch import InMemoryOverlayGraph, stitch_coldstart_payload
 from .traversal import HybridGraphTraverser
 from .coldstart_synthesis import ColdStartSynthesizer
 from .background import BackgroundIngestQueue
+from .shutdown import (
+    DatabaseSealed,
+    ShutdownCoordinator,
+    ShutdownStarted,
+    install_signal_handlers,
+    is_mutation,
+    restore_signal_handlers,
+    serve_until_signalled,
+)
+from .ssrf import DEFAULT_CONFIG, validate_url
+from .observability import (
+    StageTimer,
+    generate_request_id,
+    get_request_id,
+    set_request_id,
+    clear_request_id,
+    record_request,
+    record_rate_limit_rejection,
+    record_retry,
+    record_llm_failure,
+    record_external_api_failure,
+    record_sec_fetch,
+    record_ollama_probe,
+    record_ingestion_job,
+    new_span_id,
+    configure_structured_logging,
+)
 
 background_queue = BackgroundIngestQueue()
 
@@ -161,12 +196,12 @@ _HERE = Path(__file__).resolve().parent
 # the database turns out to be the engine schema, so the two differ in
 # vocabulary but not in meaning.
 #
-# A single explicit path, not a list of hopeful candidates. An earlier version
-# listed a ``_run2/blueprint.lbug`` first; nothing in this repository builds
-# that file, so the entry only ever missed and the search fell through to the
-# line below -- which meant the server started on a different schema than the
-# one it was written against without saying so.
-_DB_CANDIDATES = (_HERE / "_run" / "sandbox.lbug",)
+# Priority order: persistent data dir (survives restarts) first, then the
+# legacy _run location. The persistent path is the authoritative location.
+_DB_CANDIDATES = (
+    FINGRAPH_DATA_DIR / "sandbox.lbug",
+    _HERE / "_run" / "sandbox.lbug",
+)
 
 #: Environment variable that overrides the UI port, and the port used when it
 #: is unset. The 8765 graphrag UI is a separate service; keeping the two
@@ -332,6 +367,11 @@ def detect_schema(kg_execute) -> str:
 
 def resolve_db_path() -> Path | None:
     """First candidate database that exists on disk.
+
+    Priority order:
+    1. Persistent data directory (FINGRAPH_DATA_DIR/sandbox.lbug) -- the
+       authoritative LadybugDB that survives restarts.
+    2. Legacy _run/sandbox.lbug -- for backwards compatibility.
 
     The databases are build artefacts and are not in version control, so on a
     fresh clone none of them exist yet and a hard-coded path would abort the
@@ -534,6 +574,58 @@ RAG_BACKEND = _setting("RAG_BACKEND", "auto").lower()
 #: still running.
 RAG_TIMEOUT = float(_setting("RAG_TIMEOUT", "900"))
 
+#: How long a drain may wait before it stops waiting and closes anyway.
+#: Read through ``_setting`` like every other runtime knob, so ``.env`` works.
+#:
+#: Sized against the two deadlines in play. A graph query here is sub-second,
+#: but ``RAG_TIMEOUT`` above is 900s and an SSE answer holds its thread for all
+#: of it, so the drain cannot promise to carry every answer to the end -- it
+#: promises to carry the ones that finish inside this budget. Thirty seconds
+#: clears the queries and the file writes, and fits inside the ~30s a supervisor
+#: waits before SIGKILL, so the common case never reaches the hard kill at all.
+#: Raise it only alongside the supervisor's own timeout, or the process is
+#: SIGKILLed mid-drain and the careful ordering below is worth nothing.
+SHUTDOWN_TIMEOUT = float(_setting("SHUTDOWN_TIMEOUT", "30"))
+
+#: HTTP resource ceilings, applied to every listener built by ``_listeners``.
+#:
+#: ``ThreadingHTTPServer`` makes no limit on connections and its handler sets no
+#: socket timeout, so an idle keep-alive connection costs a thread forever.
+#: Measured on this machine before these ceilings existed: 200 idle connections
+#: held 219 threads indefinitely, and 100 stalled sockets held 100 more. These
+#: four numbers bound that cost; see ``sandbox_engine/http_limits.py`` for the
+#: measurements and for why the stream ceiling is separate from the rest.
+#:
+#: Read through ``_setting`` like every other runtime knob, so ``.env`` works.
+#:
+#: ``REQUEST_TIMEOUT`` must exceed the slowest legitimate non-streaming
+#: response. It bounds the *socket*, per read and per write, not the total
+#: request: a stream that writes continuously is not cut off by it. Raising it
+#: weakens the slow-client and idle-connection protections; lowering it below
+#: a real answer time will break normal requests.
+REQUEST_TIMEOUT = float(_setting("REQUEST_TIMEOUT", "30"))
+
+#: Simultaneous open connections per listener. At ~200 the measured thread cost
+#: of an idle connection is 200 threads' worth of address space, so the default
+#: is generous for a single-user UI and still finite.
+MAX_CONNECTIONS = int(_setting("MAX_CONNECTIONS", "256"))
+
+#: Simultaneous SSE streams. Deliberately below ``MAX_CONNECTIONS``: a stream
+#: pins its thread for as long as the model takes, so if streams could take the
+#: whole pool, ordinary API calls would queue behind them and the UI would look
+#: hung. With this ceiling, a burst of streams costs at most this many threads
+#: and the rest of the pool stays available for normal requests.
+MAX_SSE_CONNECTIONS = int(_setting("MAX_SSE_CONNECTIONS", "32"))
+
+#: Hard ceiling on one SSE response. Defaults to ``RAG_TIMEOUT`` because that is
+#: the model call's own bound and nothing shorter can pre-empt it; lowering this
+#: makes a stream emit a truncated-answer event sooner rather than extending it.
+SSE_MAX_SECONDS = float(_setting("SSE_MAX_SECONDS", str(int(RAG_TIMEOUT))))
+
+#: Listen backlog. The stdlib default is 5, which refuses a connection burst in
+#: the kernel before the server can answer with a status.
+LISTEN_BACKLOG = int(_setting("LISTEN_BACKLOG", "128"))
+
 #: How many times a model call may be retried before the failure is reported.
 #: Two, because the hosted endpoint's own failure mode under load is 503
 #: "Service temporarily overloaded" -- a condition that clears on its own in
@@ -554,6 +646,9 @@ RAG_NUM_CTX = int(_setting("RAG_NUM_CTX", "16384"))
 #: restart, and long enough that the probe is not repeated on every question.
 _OLLAMA_PROBE_TTL = 30.0
 _OLLAMA_PROBE_TIMEOUT = 2.0
+# Connect and read timeouts for Ollama probe (urllib uses single socket timeout)
+_OLLAMA_PROBE_CONNECT_TIMEOUT = 2.0
+_OLLAMA_PROBE_READ_TIMEOUT = 2.0
 
 
 class RagBackends:
@@ -621,16 +716,51 @@ class RagBackends:
 
     def _probe_ollama(self) -> tuple[bool, list[str]]:
         url = f"{OLLAMA_BASE_URL}/models"
+        # urllib uses a single socket timeout; use the more restrictive of connect/read
+        probe_timeout = min(_OLLAMA_PROBE_CONNECT_TIMEOUT, _OLLAMA_PROBE_READ_TIMEOUT)
+        request_id = get_request_id()
+        
+        # Validate URL against SSRF protection
+        valid, error = validate_url(url, DEFAULT_CONFIG)
+        if not valid:
+            record_ollama_probe(success=False)
+            log.debug(
+                "ollama_probe_ssrf_blocked",
+                extra={
+                    "request_id": request_id,
+                    "error": error,
+                    "url": url,
+                },
+            )
+            return False, []
+        
         try:
-            with urllib.request.urlopen(url, timeout=_OLLAMA_PROBE_TIMEOUT) as resp:
+            with urllib.request.urlopen(url, timeout=probe_timeout) as resp:
                 payload = json.loads(resp.read().decode("utf-8"))
-        except (urllib.error.URLError, OSError, ValueError, TimeoutError):
+        except (urllib.error.URLError, OSError, ValueError, TimeoutError) as exc:
+            record_ollama_probe(success=False)
+            log.debug(
+                "ollama_probe_failed",
+                extra={
+                    "request_id": request_id,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                },
+            )
             return False, []
         names = []
         for entry in payload.get("data") or []:
             name = (entry or {}).get("id")
             if name:
                 names.append(str(name))
+        record_ollama_probe(success=True)
+        log.debug(
+            "ollama_probe_success",
+            extra={
+                "request_id": request_id,
+                "models": names,
+            },
+        )
         return True, sorted(names)
 
     def resolve(self) -> dict[str, Any]:
@@ -765,6 +895,26 @@ def _load_api_key() -> str:
 
 MAX_BODY = 128 * 1024
 
+#: Seconds a readiness probe waits for a free connection before giving up. The
+#: probe is on a load balancer's poll interval, so it has to be able to answer
+#: "busy" quickly; waiting behind a slow question to then say the same thing
+#: only delays the balancer's decision.
+READINESS_LOCK_TIMEOUT = 1.0
+
+#: How many graph queries may run at once. Reads are the bulk of a question --
+#: routing, seeding and evidence are about twenty statements -- and they were
+#: previously serialised behind one connection, which capped the whole server at
+#: one question at a time no matter how many requests were in flight. Measured
+#: on this graph, that lock was 94.7% of wall clock while the model call was
+#: under 11%.
+#:
+#: Four matches LadybugDB's own ``AsyncConnection`` default, and is deliberately
+#: small: it bounds concurrent statements, not throughput. Raise it only with a
+#: measurement, because each extra connection is another native handle.
+#: A read-write handle ignores this and stays at one, since only one write
+#: transaction may be open at a time.
+GRAPH_QUERY_SLOTS = int(_setting("GRAPH_QUERY_SLOTS", "4"))
+
 ANSWER_SYSTEM = """\
 You answer questions using only a tagged evidence block retrieved from financial filings.
 
@@ -785,23 +935,242 @@ Rules:
 
 # ── Database Layer ────────────────────────────────────────────────────────────
 
+class _ConnectionPool:
+    """A bounded set of LadybugDB connections handed out one query at a time.
+
+    Why more than one connection is safe, stated once: LadybugDB's own
+    ``Connection`` documents that it expects multi-threaded callers and guards
+    the per-connection state that needs guarding. From ``ladybug/connection.py``,
+    on preparing a statement:
+
+        Serializes prepare / bind / execute on a single connection so that the
+        cached entry's mutable bound state cannot be torn by concurrent callers
+        (multi-threaded users or AsyncConnection's thread-pool). [...] The C++
+        side has its own ``mtx`` around ``executeWithParams``.
+
+    So the guard this class replaces was protecting nothing LadybugDB does not
+    already protect. What one connection *cannot* do is run two queries at once,
+    because that ``mtx`` is per connection -- which is the whole reason for the
+    pool rather than merely dropping the lock.
+
+    Connections are created lazily up to ``max_size`` and returned to an idle
+    stack, so a server that only ever answers one question at a time never pays
+    for handles it does not use. ``acquire`` with a timeout is what lets
+    readiness answer "busy" instead of queueing.
+    """
+
+    def __init__(self, database: Any, max_size: int) -> None:
+        self._database = database
+        self._max_size = max(1, int(max_size))
+        self._condition = threading.Condition()
+        self._idle: list[Any] = []
+        self._made = 0
+        self._closed = False
+
+    @property
+    def max_size(self) -> int:
+        return self._max_size
+
+    @property
+    def in_use(self) -> int:
+        """Connections currently checked out. For tests and diagnostics."""
+        with self._condition:
+            return self._made - len(self._idle)
+
+    def acquire(self, timeout: float | None = None) -> Any | None:
+        """Check out a connection, or return ``None`` if none frees up in time.
+
+        ``timeout=None`` waits indefinitely, which is what a request wants.
+        """
+        deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
+        with self._condition:
+            while True:
+                if self._closed:
+                    raise RuntimeError("graph pool is closed")
+                if self._idle:
+                    return self._idle.pop()
+                if self._made < self._max_size:
+                    self._made += 1
+                    break
+                remaining = None if deadline is None else deadline - time.monotonic()
+                if remaining is not None and remaining <= 0:
+                    return None
+                self._condition.wait(remaining if remaining is not None else 0.25)
+        # Opening a connection runs initialisation work, so it happens outside
+        # the condition. A failure has to give the slot back, or a transient
+        # error would permanently shrink the pool.
+        try:
+            return lb.Connection(self._database)
+        except Exception:
+            with self._condition:
+                self._made -= 1
+                self._condition.notify()
+            raise
+
+    def release(self, connection: Any) -> None:
+        with self._condition:
+            self._idle.append(connection)
+            self._condition.notify()
+
+    def discard(self, connection: Any) -> None:
+        """Retire a connection that failed, so it is not handed out again."""
+        with self._condition:
+            self._made -= 1
+            self._condition.notify()
+        try:
+            connection.close()
+        except Exception:
+            log.debug("discarding a failed graph connection", exc_info=True)
+
+    def close(self) -> None:
+        with self._condition:
+            self._closed = True
+            idle, self._idle = self._idle, []
+            self._condition.notify_all()
+        for connection in idle:
+            try:
+                connection.close()
+            except Exception:
+                log.debug("error closing a pooled graph connection", exc_info=True)
+
+    @contextlib.contextmanager
+    def slot(self, timeout: float | None = None):
+        """Borrow a connection for one query, closing it if it turns out broken."""
+        connection = self.acquire(timeout=timeout)
+        if connection is None:
+            yield None
+            return
+        healthy = True
+        try:
+            yield connection
+        except Exception:
+            healthy = False
+            raise
+        finally:
+            if healthy:
+                self.release(connection)
+            else:
+                self.discard(connection)
+
+
 class KnowledgeGraph:
     def __init__(self, db_path: Path, read_only: bool = True):
         # Read-only by default: this UI never writes, and LadybugDB takes an
         # exclusive lock on a read-write handle, so a read-write open makes a
         # second server on another port fail to start at all.
+        self.path = Path(db_path)
         self.db = lb.Database(str(db_path), read_only=read_only)
-        self.conn = lb.Connection(self.db)
-        self.lock = threading.Lock()
+        # A read-write handle is pinned to one connection: LadybugDB allows only
+        # one open write transaction unless `enable_multi_writes` is set, so
+        # fanning queries out there would trade a throughput problem for a
+        # correctness one. Read-only handles -- what this server actually opens
+        # -- have no such conflict.
+        self.read_only = read_only
+        self.pool = _ConnectionPool(
+            self.db, GRAPH_QUERY_SLOTS if read_only else 1
+        )
+        #: Set by begin_shutdown(); see that method for why a read-only server
+        #: needs a write guard at all.
+        self.sealed = False
+        # LadybugDB holds the inode it opened. If the file is rebuilt while a
+        # server is running, that handle keeps reading the old inode: every
+        # query still succeeds and every answer is from a database that no
+        # longer exists on disk. The inode is the only part of a file's identity
+        # that a checkpoint cannot change, so freshness is judged on it alone.
+        try:
+            self._inode: int | None = os.stat(self.path).st_ino
+        except OSError:
+            self._inode = None
         self.schema = detect_schema(self._raw_execute)
 
     def close(self):
-        self.conn.close()
+        self.pool.close()
         self.db.close()
 
+    def begin_shutdown(self) -> None:
+        """Seal the handle: no new statement may change the database.
+
+        The UI opens read-only by default and none of its request handlers
+        writes, so this refuses nothing today. It is here because the
+        ``--read-write`` flag exists: a server opened that way holds the
+        authoritative file, and a mutation arriving *after* the drain started
+        would be committed by a process that is on its way out. Refusing at
+        ``execute`` covers every query in the process, including any a future
+        handler adds, without each call site having to remember.
+        """
+        self.sealed = True
+
+    def probe_freshness(self) -> tuple[bool, str]:
+        """Whether the file on disk is still the file this handle opened.
+
+        ``probe_read`` answers "can this handle query", which a replaced
+        database still passes -- the orphaned inode is perfectly readable and
+        perfectly wrong. This answers the other half, "is it the graph on disk",
+        which is the only version of the question that catches a rebuild landing
+        under a running server. One ``stat``, no query, no lock.
+        """
+        if self._inode is None:
+            return False, "path_unstatable"
+        try:
+            current = os.stat(self.path).st_ino
+        except OSError:
+            return False, "missing_on_disk"
+        if current != self._inode:
+            return False, "replaced_on_disk"
+        return True, "current"
+
+    def probe_read(self, timeout: float = READINESS_LOCK_TIMEOUT) -> tuple[bool, str, float]:
+        """Ask this handle one bounded question and report whether it answered.
+
+        Readiness cannot decide "can serve requests" without reading the graph,
+        so the check has to be a real query. Three properties keep it from
+        turning into load of its own:
+
+        * it borrows a connection from the same pool every other request uses,
+          so it cannot open a second handle and contend for LadybugDB's lock;
+        * it borrows under a deadline, so a fully busy pool yields ``busy``
+          rather than a queue -- a balancer needs a fast answer it can act on,
+          not a late one. Note this is pool exhaustion, not "some query is
+          running": with several slots, ordinary in-flight work no longer makes
+          readiness flap, which is what it used to do under any load at all;
+        * it is a single ``count`` over one label, which is a metadata lookup
+          rather than a scan.
+
+        ``Company`` is the table both schemas name identically, so the probe
+        needs no blueprint/engine rewrite and cannot fail merely because the
+        graph was rebuilt in the other shape. It never raises: every outcome,
+        including a closed handle, comes back as a triple.
+        """
+        started = time.monotonic()
+
+        def elapsed_ms() -> float:
+            return round((time.monotonic() - started) * 1000.0, 3)
+
+        # A closed handle has to report rather than raise: this probe is on an
+        # unauthenticated readiness path, and the caller expects a
+        # (readable, detail, ms) triple for every outcome, including "this
+        # server already shut down".
+        try:
+            connection = self.pool.acquire(timeout=max(0.0, timeout))
+        except Exception as exc:
+            return False, type(exc).__name__, elapsed_ms()
+        if connection is None:
+            return False, "busy", elapsed_ms()
+        try:
+            connection.execute("MATCH (n:Company) RETURN count(n)", {})
+        except Exception as exc:
+            # The class name is the entire report. The message can carry a
+            # filesystem path or a connection string, and readiness is served
+            # without authentication.
+            log.warning("readiness probe failed: %s", type(exc).__name__)
+            return False, type(exc).__name__, elapsed_ms()
+        finally:
+            self.pool.release(connection)
+        return True, "readable", elapsed_ms()
+
     def _raw_execute(self, cypher: str, params: dict | None = None) -> list[list[Any]]:
-        with self.lock:
-            res = self.conn.execute(cypher, params or {})
+        with self.pool.slot() as connection:
+            res = connection.execute(cypher, params or {})
             return [list(r) for r in res.get_all()]
 
     def execute(self, cypher: str, params: dict | None = None) -> list[list[Any]]:
@@ -810,7 +1179,17 @@ class KnowledgeGraph:
         Every query in this module is written in blueprint terms. On an
         engine-schema database they are rewritten here, so the rest of the file
         -- and the canned reports -- need no schema awareness at all.
+
+        This is also the only place a query enters the graph from a request, so
+        it is where the drain's write seal is enforced. Reads keep working: an
+        in-flight request has to be allowed to finish, which is the whole point
+        of draining rather than killing.
         """
+        if self.sealed and is_mutation(cypher):
+            raise DatabaseSealed(
+                "refusing to write: this graph was sealed when the server "
+                "began shutting down"
+            )
         if self.schema == "engine":
             cypher = translate_for_engine(cypher)
         return self._raw_execute(cypher, params)
@@ -918,42 +1297,175 @@ class KnowledgeGraph:
         nodes_dict: dict[str, dict[str, Any]] = {}
         edges: list[dict[str, Any]] = []
 
-        all_ents = {e["id"]: e for e in self.all_entities(limit=1000)}
+        # Use a high limit to capture all entities for accurate BFS traversal.
+        # The graph has ~122k nodes; 200k provides headroom.
+        all_ents = {e["id"]: e for e in self.all_entities(limit=200000)}
 
-        for sid in seed_ids:
-            if sid in all_ents:
-                nodes_dict[sid] = all_ents[sid]
-
-        # Fetch connecting relationships
+        # Fetch ALL connecting relationships (no seed filtering at query time)
+        # Use blueprint schema names; execute() translates for engine schema.
+        # Avoid toString() which doesn't exist in LadybugDB; format in Python instead.
+        # Do NOT include relation name as string literal in RETURN (translation replaces it).
+        # Instead, use query index to determine relation type.
         queries = [
             # SUBMITTED: Company -> Filing
-            ("MATCH (a:Company)-[r:SUBMITTED]->(b:Filing) RETURN a.ticker, b.accession_number, 'SUBMITTED', 'Submitted filing'", "ticker", "accession_number"),
-            # REPORTS_METRIC: Filing -> Metric
-            ("MATCH (a:Filing)-[r:REPORTS_METRIC]->(b:FinancialMetric) RETURN a.accession_number, b.metric_id, 'REPORTS_METRIC', 'value=' + toString(r.value) + ' (' + toString(r.period_type) + ')'", "accession_number", "metric_id"),
-            # DISAGGREGATED_BY: Metric -> Segment
-            ("MATCH (a:FinancialMetric)-[r:DISAGGREGATED_BY]->(b:Segment) RETURN a.metric_id, b.segment_id, 'DISAGGREGATED_BY', 'segment value=' + toString(r.value)", "metric_id", "segment_id"),
+            ("MATCH (a:Company)-[r:SUBMITTED]->(b:Filing) RETURN a.ticker, b.accession_number, 'Submitted filing'", "SUBMITTED"),
+            # REPORTS_METRIC: Filing -> Metric (period_code is on Metric node, not the edge)
+            ("MATCH (a:Filing)-[r:REPORTS_METRIC]->(b:FinancialMetric) RETURN a.accession_number, b.metric_id, r.value, r.currency, b.period_code", "REPORTS_METRIC"),
+            # DISAGGREGATED_BY: Metric -> Segment (period is on the edge in engine schema)
+            ("MATCH (a:FinancialMetric)-[r:DISAGGREGATED_BY]->(b:Segment) RETURN a.metric_id, b.segment_id, r.value, r.period", "DISAGGREGATED_BY"),
             # DISCLOSES_EVENT: Filing -> DisclosureEvent
-            ("MATCH (a:Filing)-[r:DISCLOSES_EVENT]->(b:DisclosureEvent) RETURN a.accession_number, b.event_id, 'DISCLOSES_EVENT', 'Discloses event'", "accession_number", "event_id"),
+            ("MATCH (a:Filing)-[r:DISCLOSES_EVENT]->(b:DisclosureEvent) RETURN a.accession_number, b.event_id, 'Discloses event'", "DISCLOSES_EVENT"),
         ]
 
         seen_edges = set()
-        for cql, _, _ in queries:
+        for cql, rel in queries:
             try:
                 for row in self.execute(cql):
-                    u, v, rel, desc = row[0], row[1], row[2], row[3]
-                    # if seed_ids given, restrict to incident
-                    if seed_ids and (u not in seed_ids and v not in seed_ids):
-                        continue
+                    u, v = row[0], row[1]
+                    # Build description from relation type and remaining columns
+                    if rel == "REPORTS_METRIC":
+                        value, currency, period = row[2], row[3], row[4]
+                        desc = f"Reported: value={value:,.2f} {currency or ''}".rstrip()
+                        if period:
+                            desc += f", period={period}"
+                    elif rel == "DISAGGREGATED_BY":
+                        value, period = row[2], row[3]
+                        desc = f"segment value={value:,.2f}, period {period or 'unstated'}"
+                    else:
+                        desc = row[2] if len(row) > 2 else rel
+
                     if u in all_ents:
                         nodes_dict[u] = all_ents[u]
                     if v in all_ents:
                         nodes_dict[v] = all_ents[v]
                     edge_key = (u, v, rel)
-                    if edge_key not in seen_edges and len(edges) < limit:
+                    if edge_key not in seen_edges:
                         seen_edges.add(edge_key)
                         edges.append({"source": u, "target": v, "relation": rel, "description": desc})
-            except Exception:
+            except Exception as e:
+                print(f"DEBUG neighborhood exception: {e}")  # DEBUG
                 continue
+
+        # If seeds provided, extract k-hop subgraph from seeds
+        if seed_ids:
+            # Build adjacency from all edges
+            adj: dict[str, set[str]] = {}
+            for e in edges:
+                s, t = e["source"], e["target"]
+                adj.setdefault(s, set()).add(t)
+                adj.setdefault(t, set()).add(s)
+
+            # BFS from seeds up to hops distance
+            keep_nodes = set()
+            frontier = set(s for s in seed_ids if s in nodes_dict)
+            keep_nodes.update(frontier)
+            for _ in range(hops):
+                next_frontier = set()
+                for n in frontier:
+                    for nb in adj.get(n, ()):
+                        if nb not in keep_nodes:
+                            keep_nodes.add(nb)
+                            next_frontier.add(nb)
+                frontier = next_frontier
+                if not frontier:
+                    break
+
+            # Filter nodes and edges to k-hop subgraph
+            nodes_dict = {nid: node for nid, node in nodes_dict.items() if nid in keep_nodes}
+            edges = [e for e in edges if e["source"] in keep_nodes and e["target"] in keep_nodes]
+
+        # Apply limit with priority for financial/source-critical edges
+        if len(edges) > limit:
+            # Group edges by relation type
+            by_type: dict[str, list[dict]] = {}
+            for e in edges:
+                by_type.setdefault(e["relation"], []).append(e)
+
+            # Priority order: primary edges (financial/source-critical) first,
+            # secondary edges (segment/event) fill remaining capacity.
+            PRIMARY_TYPES = ("REPORTS_METRIC", "SUBMITTED")
+            SECONDARY_TYPES = ("DISAGGREGATED_BY", "DISCLOSES_EVENT")
+
+            limited_edges = []
+
+            # First pass: include all primary edges
+            for t in PRIMARY_TYPES:
+                if t in by_type:
+                    limited_edges.extend(by_type[t])
+
+            # If primary edges already exceed limit, trim them proportionally
+            if len(limited_edges) > limit:
+                # Ensure SUBMITTED (which connects companies to filings) gets a fair share
+                # balanced across all companies so all issuers remain visible in the graph,
+                # rather than being crowded out by the massive volume of REPORTS_METRIC edges.
+                sub_edges = by_type.get("SUBMITTED", [])
+                sub_by_co: dict[str, list[dict]] = {}
+                for e in sub_edges:
+                    sub_by_co.setdefault(e["source"], []).append(e)
+
+                sub_target = min(len(sub_edges), max(len(sub_by_co) * 4, int(limit * 0.15)))
+                per_co = max(1, sub_target // max(1, len(sub_by_co)))
+                balanced_sub = []
+                chosen_filings = set()
+                filing_to_co = {}
+                for co, co_edges in sorted(sub_by_co.items()):
+                    for e in co_edges[:per_co]:
+                        balanced_sub.append(e)
+                        chosen_filings.add(e["target"])
+                        filing_to_co[e["target"]] = co
+
+                metric_budget = max(1, limit - len(balanced_sub))
+                all_metric_edges = by_type.get("REPORTS_METRIC", [])
+
+                # Balance metric edges across companies using chosen filings
+                metrics_by_co: dict[str, list[dict]] = {co: [] for co in sub_by_co}
+                orphan_metrics: list[dict] = []
+                for e in all_metric_edges:
+                    co = filing_to_co.get(e["source"])
+                    if co:
+                        metrics_by_co[co].append(e)
+                    else:
+                        orphan_metrics.append(e)
+
+                balanced_metrics = []
+                num_cos = max(1, len(sub_by_co))
+                per_co_metric = max(1, metric_budget // num_cos)
+                for co in sorted(sub_by_co.keys()):
+                    balanced_metrics.extend(metrics_by_co[co][:per_co_metric])
+
+                if len(balanced_metrics) < metric_budget:
+                    remaining_slots = metric_budget - len(balanced_metrics)
+                    for co in sorted(sub_by_co.keys()):
+                        extra = metrics_by_co[co][per_co_metric:per_co_metric + (remaining_slots // num_cos + 1)]
+                        balanced_metrics.extend(extra)
+                        if len(balanced_metrics) >= metric_budget:
+                            break
+
+                limited_edges = balanced_sub + balanced_metrics[:metric_budget]
+                if len(limited_edges) < limit and orphan_metrics:
+                    limited_edges.extend(orphan_metrics[:limit - len(limited_edges)])
+                # Final trim if still over
+                limited_edges = limited_edges[:limit]
+            else:
+                # Second pass: fill remaining capacity with secondary edges
+                remaining = limit - len(limited_edges)
+                if remaining > 0:
+                    secondary_types = [t for t in SECONDARY_TYPES if t in by_type]
+                    if secondary_types:
+                        per_secondary = max(1, remaining // len(secondary_types))
+                        for t in secondary_types:
+                            limited_edges.extend(by_type[t][:per_secondary])
+                        # If still over limit (uneven distribution), trim
+                        if len(limited_edges) > limit:
+                            limited_edges = limited_edges[:limit]
+
+            edges = limited_edges
+            # Keep only nodes referenced by remaining edges
+            kept_nodes = set()
+            for e in edges:
+                kept_nodes.add(e["source"])
+                kept_nodes.add(e["target"])
+            nodes_dict = {nid: node for nid, node in nodes_dict.items() if nid in kept_nodes}
 
         return {
             "seeds": seed_ids,
@@ -1098,14 +1610,53 @@ def _names_issuer(question: str, ticker: str, legal_name: str | None) -> bool:
     return False
 
 
-def retrieve_financial_context(kg: KnowledgeGraph, question: str, ticker: str | None = None) -> tuple[list[dict], list[dict], dict[str, str], list[str]]:
+# Cache for retrieve_financial_context results
+# Key: (question_hash, ticker, fiscal_year, fiscal_quarter, form_type)
+# Value: (nodes, edges, tag_map, seed_ids)
+_RETRIEVAL_CACHE: dict[tuple, tuple] = {}
+_RETRIEVAL_CACHE_MAX = 128
+
+
+def _make_cache_key(
+    question: str, 
+    ticker: str | None, 
+    fiscal_year: int | None, 
+    fiscal_quarter: str | None, 
+    form_type: str | None
+) -> tuple:
+    """Create a hashable cache key from query parameters."""
+    import hashlib
+    q_hash = hashlib.sha256(question.lower().encode()).hexdigest()[:16]
+    return (q_hash, ticker or "", fiscal_year or 0, fiscal_quarter or "", form_type or "")
+
+
+def retrieve_financial_context(
+    kg: KnowledgeGraph, 
+    question: str, 
+    ticker: str | None = None,
+    fiscal_year: int | None = None,
+    fiscal_quarter: str | None = None,
+    form_type: str | None = None,
+) -> tuple[list[dict], list[dict], dict[str, str], list[str]]:
     """Retrieves relevant entities and relations matching the question and tags them [E1], [E2]...
 
     Returns ``(nodes, edges, tag_map, seed_ids)``. There is no formatted
     context string: the prompt is assembled from the evidence block, which
     carries each line's provenance, so a parallel rendering of the same graph
     would be a second thing to keep in step and nothing would read it.
+    
+    Temporal filters:
+    - fiscal_year: Filter to specific fiscal year (e.g., 2024)
+    - fiscal_quarter: Filter to specific quarter (e.g., "Q1", "FY")
+    - form_type: Filter to specific form type (e.g., "10-K", "10-Q", "8-K")
     """
+    # Check cache
+    cache_key = _make_cache_key(question, ticker, fiscal_year, fiscal_quarter, form_type)
+    if cache_key in _RETRIEVAL_CACHE:
+        cached = _RETRIEVAL_CACHE[cache_key]
+        # Return copies to prevent accidental mutation of cached data
+        return (list(cached[0]), list(cached[1]), dict(cached[2]), list(cached[3]))
+
     q_low = question.lower()
 
     # Identify candidate seeds
@@ -1129,15 +1680,33 @@ def retrieve_financial_context(kg: KnowledgeGraph, question: str, ticker: str | 
     for c in companies:
         add_node(c[0], c[1], "Company", f"Ticker: {c[0]}, CIK: {c[2]}", hint=c[0])
 
+    # Build temporal filters for filings query
+    temporal_where = []
+    temporal_params: dict[str, Any] = {}
+    if ticker:
+        temporal_params["ticker"] = ticker
+    if fiscal_year is not None:
+        temporal_where.append("f.fiscal_year = $fiscal_year")
+        temporal_params["fiscal_year"] = fiscal_year
+    if fiscal_quarter is not None:
+        temporal_where.append("f.fiscal_period = $fiscal_quarter")
+        temporal_params["fiscal_quarter"] = fiscal_quarter
+    if form_type is not None:
+        temporal_where.append("f.form_type = $form_type")
+        temporal_params["form_type"] = form_type
+    
+    temporal_where_clause = " AND ".join(temporal_where) if temporal_where else "1=1"
+
     # Check filings. The filer is part of the label: "10-K FY2026 (FY)" is what
     # every issuer's annual report looks like, so without it a multi-company
     # graph renders one indistinguishable box per filing.
     filer: dict[str, str] = {}
     if ticker:
         filings = kg.execute(
-            "MATCH (c:Company {ticker: $ticker})-[:SUBMITTED]->(f:Filing) "
-            "RETURN f.accession_number, f.form_type, f.fiscal_year, f.fiscal_period, f.period_end_date",
-            {"ticker": ticker},
+            f"MATCH (c:Company {{ticker: $ticker}})-[:SUBMITTED]->(f:Filing) "
+            f"WHERE {temporal_where_clause} "
+            f"RETURN f.accession_number, f.form_type, f.fiscal_year, f.fiscal_period, f.period_end_date",
+            temporal_params,
         )
         for f in filings:
             filer[f[0]] = ticker
@@ -1149,7 +1718,11 @@ def retrieve_financial_context(kg: KnowledgeGraph, question: str, ticker: str | 
                 filer[acc] = tick
         except Exception:
             pass
-        filings = kg.execute("MATCH (f:Filing) RETURN f.accession_number, f.form_type, f.fiscal_year, f.fiscal_period, f.period_end_date")
+        filings = kg.execute(
+            f"MATCH (f:Filing) WHERE {temporal_where_clause} "
+            f"RETURN f.accession_number, f.form_type, f.fiscal_year, f.fiscal_period, f.period_end_date",
+            temporal_params,
+        )
     #: Issuers the question names. "Compare Apple and Microsoft" must not answer
     #: with NVIDIA's revenue: the words match every issuer equally well, so
     #: without this the prompt carries a third company's figures and the model
@@ -1602,6 +2175,20 @@ def retrieve_financial_context(kg: KnowledgeGraph, question: str, ticker: str | 
     # telling the model nothing new.
     retrieved_edges = merge_edges(retrieved_edges)
 
+    # Cache the result
+    result = (
+        retrieved_nodes,
+        retrieved_edges,
+        tag_map,
+        [n["id"] for n in seed_nodes[:5]]
+    )
+    if len(_RETRIEVAL_CACHE) >= _RETRIEVAL_CACHE_MAX:
+        # Simple eviction: clear oldest half
+        keys_to_remove = list(_RETRIEVAL_CACHE.keys())[:_RETRIEVAL_CACHE_MAX // 2]
+        for k in keys_to_remove:
+            del _RETRIEVAL_CACHE[k]
+    _RETRIEVAL_CACHE[cache_key] = result
+
     # No context string is built here. It used to be: every node and every edge
     # rendered to a tagged "[E1] --REPORTS_METRIC--> [E9]" line, joined, and
     # returned as the first value -- and the one caller unpacked it into a name
@@ -1951,10 +2538,23 @@ def ask_rag(
     kg: KnowledgeGraph,
     question: str,
     on_stage: "Callable[[str], None] | None" = None,
+    on_stage_exit: "Callable[[str, float], None] | None" = None,
+    fiscal_year: int | None = None,
+    fiscal_quarter: str | None = None,
+    form_type: str | None = None,
+    request_id: str | None = None,
 ) -> dict[str, Any]:
-    timer = _StageTimer(on_enter=on_stage)
+    timer = StageTimer(on_enter=on_stage, on_exit=on_stage_exit, request_id=request_id)
     with timer.stage("routing"):
         routing = route_query(question, kg)
+
+    # Override routing temporal filters with explicit API parameters
+    if fiscal_year is not None:
+        routing = routing._replace(fiscal_year=fiscal_year)
+    if fiscal_quarter is not None:
+        routing = routing._replace(fiscal_quarter=fiscal_quarter)
+    if form_type is not None:
+        routing = routing._replace(form_type=form_type)
 
     if routing.route == EntityRoute.COLD_START:
         ticker = (routing.ticker or "").strip().upper()
@@ -2086,7 +2686,10 @@ def ask_rag(
     # start that skipped work.
     with timer.stage("traversal"):
         nodes, edges, tag_map, seed_ids = retrieve_financial_context(
-            kg, question, ticker=routing.ticker
+            kg, question, ticker=routing.ticker,
+            fiscal_year=routing.fiscal_year,
+            fiscal_quarter=routing.fiscal_quarter,
+            form_type=routing.form_type,
         )
 
     # Provenance is resolved here, by code, before the model is called: every
@@ -2726,6 +3329,49 @@ _HTML = r"""<!DOCTYPE html>
   <div class="stats" id="stats">loading…</div>
   <span class="chip" id="modelChip" title="Answering model and backend">model</span>
   <div class="spacer"></div>
+  <!-- Temporal Filters -->
+  <div class="row" style="gap: 8px; margin-right: 16px;">
+    <label class="field inline stats" for="yearFilter" style="font-size: 11px;">Year</label>
+    <select id="yearFilter" class="compact" style="width: auto; min-width: 80px;">
+      <option value="">All Years</option>
+      <option value="2020">2020</option>
+      <option value="2021">2021</option>
+      <option value="2022">2022</option>
+      <option value="2023">2023</option>
+      <option value="2024">2024</option>
+      <option value="2025">2025</option>
+      <option value="2026">2026</option>
+    </select>
+    <label class="field inline stats" for="quarterFilter" style="font-size: 11px;">Quarter</label>
+    <select id="quarterFilter" class="compact" style="width: auto; min-width: 80px;">
+      <option value="">All Quarters</option>
+      <option value="FY">FY (Annual)</option>
+      <option value="Q1">Q1</option>
+      <option value="Q2">Q2</option>
+      <option value="Q3">Q3</option>
+      <option value="Q4">Q4</option>
+    </select>
+    <label class="field inline stats" for="formFilter" style="font-size: 11px;">Form</label>
+    <select id="formFilter" class="compact" style="width: auto; min-width: 100px;">
+      <option value="">All Forms</option>
+      <option value="10-K">10-K</option>
+      <option value="10-Q">10-Q</option>
+      <option value="8-K">8-K</option>
+      <option value="DEF 14A">DEF 14A</option>
+      <option value="3">Form 3</option>
+      <option value="4">Form 4</option>
+      <option value="5">Form 5</option>
+      <option value="13F-HR">13F-HR</option>
+      <option value="SC 13D">SC 13D</option>
+      <option value="SC 13G">SC 13G</option>
+      <option value="S-3">S-3</option>
+      <option value="S-8">S-8</option>
+      <option value="424B">424B</option>
+      <option value="ARS">ARS</option>
+      <option value="SD">SD</option>
+      <option value="11-K">11-K</option>
+    </select>
+  </div>
   <label class="field inline stats" for="hops">hops</label>
   <select id="hops" class="compact" style="width:auto">
     <option value="1">1</option>
@@ -3423,10 +4069,20 @@ async function askQuestion() {
   clearProvenance("Grading the answer as it arrives…");
   startTimer();
   try {
+    // Collect temporal filters
+    const yearFilter = $("yearFilter").value;
+    const quarterFilter = $("quarterFilter").value;
+    const formFilter = $("formFilter").value;
+    
     const res = await api("/api/ask", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question: q }),
+      body: JSON.stringify({ 
+        question: q,
+        fiscal_year: yearFilter ? parseInt(yearFilter, 10) : null,
+        fiscal_quarter: quarterFilter || null,
+        form_type: formFilter || null,
+      }),
     });
     renderAnswer(res);
     if (res.rag) applyRagState(res.rag);
@@ -4142,13 +4798,181 @@ document.getElementById('reportsOverlay').addEventListener('click', (e) => {
 """
 
 
+# ── Health and readiness ─────────────────────────────────────────────────────
+# Two endpoints because they answer two different questions, and a load
+# balancer acts on them differently.
+#
+# Liveness (/healthz) asks "is this process running". It may not check a
+# dependency: a probe that fails when a dependency fails gets the orchestrator
+# to kill the one process that is still healthy while the real fault sits
+# somewhere it cannot restart.
+#
+# Readiness (/readyz) asks "can this process serve a question right now", which
+# is only answerable by reading the graph.
+#
+# Neither reaches the network on purpose. Resolving the RAG backend probes
+# Ollama, /api/company reaches Yahoo, and cold-start reaches SEC -- so a probe
+# that touched any of them would turn a balancer's poll into an outbound request
+# storm and report a third party's outage as FinGraph being unhealthy.
+#
+# Neither response carries the database path, a credential, or an exception
+# message: both are served without authentication, and both are exactly the
+# responses that end up in shared monitoring dashboards.
+
+_STARTED_MONOTONIC = time.monotonic()
+
+
+def _service_identity(service: str) -> dict[str, Any]:
+    return {
+        "service": service,
+        "pid": os.getpid(),
+        "uptime_seconds": round(time.monotonic() - _STARTED_MONOTONIC, 3),
+    }
+
+
+def liveness_payload(service: str) -> dict[str, Any]:
+    """Body for /healthz. Reads no dependency and opens no socket.
+
+    ``ready`` is deliberately absent rather than true: a probe that reports
+    readiness it never checked is worse than one that reports none, because a
+    balancer cannot tell which one to trust.
+    """
+    payload = _service_identity(service)
+    payload["status"] = "alive"
+    payload["checks"] = {"process": {"status": "ok"}}
+    payload["note"] = (
+        "process liveness only; it does not imply the graph is readable. "
+        "Use /readyz to decide whether to route traffic here."
+    )
+    return payload
+
+
+def readiness_payload(kg: Any, service: str) -> dict[str, Any]:
+    """Body for /readyz, plus the boolean the caller turns into a status code.
+
+    Every check is local and already in memory or in the open graph handle, so
+    building this costs one bounded query and no I/O beyond it.
+    """
+    checks: dict[str, Any] = {}
+    failed: list[str] = []
+
+    def record(name: str, ok: bool, **extra: Any) -> None:
+        checks[name] = {"status": "ok" if ok else "failed", **extra}
+        if not ok:
+            failed.append(name)
+
+    probe = getattr(kg, "probe_read", None)
+    freshness = getattr(kg, "probe_freshness", None)
+    schema = getattr(kg, "schema", None)
+    lifecycle = getattr(kg, "lifecycle", None)
+
+    # A draining server still has a readable graph, so every check below passes
+    # while the process is on its way out. Saying "ready" then would leave it in
+    # the balancer until the socket closes. Draining is reported as its own
+    # reason, and /readyz is exempt from the drain's request gate precisely so
+    # this can be seen.
+    draining = bool(lifecycle is not None and lifecycle.draining)
+
+    if not callable(probe):
+        record("graph_initialized", False, detail="graph handle is missing or unusable")
+        record("schema_detected", False, detail="not attempted")
+        record("database_readable", False, detail="not attempted")
+        record("database_current", False, detail="not attempted")
+    else:
+        record("graph_initialized", True)
+        # detect_schema() landing on neither shape means every count in the app
+        # silently reports zero. Readiness has to call that what it is.
+        record("schema_detected", schema in ("blueprint", "engine"), value=str(schema))
+        try:
+            readable, detail, latency_ms = probe()
+        except Exception as exc:
+            # Readiness reports on the server, so it is the one handler that
+            # must never answer with a traceback: an orchestrator reads the
+            # status line, and a 500 here says nothing about whether to route.
+            log.warning("readiness probe raised: %s", type(exc).__name__)
+            readable, detail, latency_ms = False, type(exc).__name__, None
+        record("database_readable", readable, detail=detail, latency_ms=latency_ms)
+
+        # Reported separately from the read: the read is what the handle can do,
+        # this is whether it is the right handle. A rebuild under a live server
+        # passes the read and fails here, which is the whole point.
+        if callable(freshness):
+            try:
+                current, current_detail = freshness()
+            except Exception as exc:
+                log.warning("freshness probe raised: %s", type(exc).__name__)
+                current, current_detail = False, type(exc).__name__
+            record("database_current", current, detail=current_detail)
+        else:
+            record("database_current", False, detail="handle cannot be checked")
+
+
+    payload = _service_identity(service)
+    payload["status"] = "not_ready" if failed else "ready"
+    payload["ready"] = not failed
+    payload["checks"] = checks
+    if draining:
+        # Last, so it is visible next to a status that still says otherwise:
+        # the checks are all genuinely passing, the process is genuinely on its
+        # way out, and reporting only "ready" would hide the second fact.
+        payload["ready"] = False
+        payload["status"] = "draining"
+        payload["failed_checks"] = list(failed) + ["draining"]
+        payload["checks"]["draining"] = {
+            "status": "failed",
+            "detail": lifecycle.report()["shutdown_reason"] or "shutdown in progress",
+            "inflight_requests": lifecycle.inflight,
+        }
+    elif failed:
+        payload["failed_checks"] = failed
+    return payload
+
+
 # ── HTTP Server Request Handler ───────────────────────────────────────────────
+
+class _SseDeadlineExceeded(Exception):
+    """One SSE response outlived ``SSE_MAX_SECONDS``.
+
+    Carries the event that was being sent when the limit was hit, so the
+    terminal ``done`` frame can say where the stream stopped instead of just
+    that it did.
+    """
+
+    def __init__(self, event: str) -> None:
+        super().__init__(f"stream exceeded its deadline during {event!r}")
+        self.event = event
+
 
 class _Handler(BaseHTTPRequestHandler):
     server_version = "blueprint-graphrag-ui"
     protocol_version = "HTTP/1.1"
 
+    #: Socket timeout for reading a request and writing a response.
+    #:
+    #: The stdlib default is ``None``, which with HTTP/1.1 keep-alive means a
+    #: thread blocks forever in ``readline()`` after answering a connection that
+    #: then goes idle. Measured: 200 idle connections held 219 threads
+    #: indefinitely, and 100 stalled sockets held 100 more. Setting this makes
+    #: ``StreamRequestHandler.setup`` call ``settimeout`` and
+    #: ``handle_one_request`` close the connection on expiry, so an idle or
+    #: half-sent connection costs a thread for at most this long.
+    #:
+    #: It bounds the socket per read and per write, not the request as a whole:
+    #: a stream that keeps writing is never cut off by it, which is why SSE
+    #: lifetime is bounded separately by ``SSE_MAX_SECONDS``.
+    #: Fallback socket timeout. The effective value is the listener's
+    #: ``Limits.request_timeout``, applied in :meth:`setup`, because
+    #: ``StreamRequestHandler`` reads the *handler's* ``timeout`` and so would
+    #: otherwise ignore a per-listener setting entirely.
+    timeout = REQUEST_TIMEOUT
+
     kg: KnowledgeGraph
+
+    def setup(self) -> None:
+        limits = getattr(self.server, "limits", None)
+        if limits is not None:
+            self.timeout = limits.request_timeout
+        super().setup()
 
     def log_message(self, fmt: str, *args: Any) -> None:
         log.debug("%s — %s", self.address_string(), fmt % args)
@@ -4158,6 +4982,10 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ct)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        # Include request ID in response headers for client-side tracing
+        request_id = getattr(self, "_request_id", None) or get_request_id()
+        if request_id:
+            self.send_header("X-Request-ID", request_id)
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(body)
@@ -4168,6 +4996,17 @@ class _Handler(BaseHTTPRequestHandler):
     def _err(self, status: int, msg: str) -> None:
         self._json({"error": msg}, status)
 
+    def _health(self, payload: dict[str, Any], status: int) -> None:
+        """Send a health body through _send rather than _json.
+
+        _NextHandler._json hardcodes 200 and takes no status argument, so a 503
+        routed through it would either misreport readiness to the balancer or
+        raise. Both classes' _send takes the status and sets Content-Length,
+        which is also what keeps a 503 from hanging a keep-alive client.
+        """
+        self._send(status, json.dumps(payload, default=str).encode(),
+                   "application/json; charset=utf-8")
+
     def do_GET(self) -> None:  # noqa: N802
         self._guarded(self._get)
 
@@ -4175,6 +5014,52 @@ class _Handler(BaseHTTPRequestHandler):
         self._guarded(self._post)
 
     def _guarded(self, fn: Any) -> None:
+        """Count the request in, run it, count it out.
+
+        Two jobs, and both are about shutdown:
+
+        * Refuse work that arrives after the drain began, at admission, before a
+          handler body runs. Refusing late would mean refusing from inside a
+          query that has already taken the graph lock.
+        * Account for the request so the drain knows what it is waiting for.
+          ``daemon_threads = True`` means ``socketserver`` tracks none of these
+          threads, so nothing else can answer "is anything still running?".
+
+        The ``finally`` is what makes the count trustworthy: a request that
+        raises must decrement too, or the drain waits out its whole deadline on a
+        number that will never reach zero.
+        """
+        # Generate and set request ID for this request
+        request_id = generate_request_id()
+        token = set_request_id(request_id)
+        # Add request ID to response headers for client-side tracing
+        self._request_id = request_id
+
+        lifecycle = getattr(self.server, "lifecycle", None)
+        admitted = False
+        if lifecycle is not None:
+            try:
+                admitted = lifecycle.enter_request(self.path)
+            except ShutdownStarted as exc:
+                # 503 with Content-Length and Connection: close. The header
+                # matters: without it a keep-alive client sits waiting on a body
+                # that never comes and reports the drain as a network failure.
+                self.close_connection = True
+                self._send(
+                    503,
+                    json.dumps({"error": str(exc), "draining": True}).encode(),
+                    "application/json; charset=utf-8",
+                )
+                clear_request_id(token)
+                return
+        try:
+            self._run_guarded(fn)
+        finally:
+            if lifecycle is not None and admitted:
+                lifecycle.exit_request()
+            clear_request_id(token)
+
+    def _run_guarded(self, fn: Any) -> None:
         """Run a handler body, turning an unexpected raise into a 500.
 
         socketserver handles an exception escaping do_POST by printing a
@@ -4194,7 +5079,12 @@ class _Handler(BaseHTTPRequestHandler):
             # The client hung up. Nothing to report and nothing to fix.
             raise
         except Exception as exc:
-            log.exception("unhandled error serving %s %s", self.command, self.path)
+            request_id = getattr(self, "_request_id", None) or get_request_id()
+            log.exception(
+                "unhandled error serving %s %s",
+                self.command, self.path,
+                extra={"request_id": request_id} if request_id else {}
+            )
             try:
                 self._err(500, f"{type(exc).__name__}: {exc}")
             except Exception:
@@ -4204,6 +5094,26 @@ class _Handler(BaseHTTPRequestHandler):
     def _get(self) -> None:
         parsed = urlparse(self.path)
         p, qs = parsed.path, parse_qs(parsed.query)
+        # Ahead of every other route, and touching none of their state, so a
+        # balancer can still reach a verdict while the graph is unusable.
+        if p == "/healthz":
+            payload = liveness_payload(self.server_version)
+            # Liveness stays 200 while draining: the process is healthy, it is
+            # finishing up on purpose. A supervisor that saw it go unhealthy
+            # here would escalate to SIGKILL and destroy the very in-flight
+            # requests the grace period exists to protect.
+            lifecycle = getattr(self.server, "lifecycle", None)
+            if lifecycle is not None:
+                payload.update(lifecycle.report())
+            # Occupancy, so an operator can see a server that is refusing
+            # connections because it is full rather than because it is broken.
+            connections = getattr(self.server, "connections", None)
+            if connections is not None:
+                payload["limits"] = connections.report()
+            return self._health(payload, 200)
+        if p == "/readyz":
+            readiness = readiness_payload(self.kg, self.server_version)
+            return self._health(readiness, 200 if readiness["ready"] else 503)
         if p in ("/", "/index.html"):
             return self._send(200, _HTML.encode(), "text/html; charset=utf-8")
         if p.startswith("/vendor/") and p[len("/vendor/"):] in VENDOR:
@@ -4285,16 +5195,120 @@ class _Handler(BaseHTTPRequestHandler):
         return self._json(get_backends().resolve())
 
     def _send_sse(self, event: str, data: dict[str, Any]) -> None:
+        deadline = getattr(self, "_sse_deadline", None)
+        if deadline is not None and time.monotonic() > deadline:
+            # The stream outlived SSE_MAX_SECONDS. Raised rather than silently
+            # dropped so the client gets one terminal ``done`` with a reason
+            # instead of a stream that stops mid-sentence with no explanation.
+            raise _SseDeadlineExceeded(event)
         payload = f"event: {event}\ndata: {json.dumps(data)}\n\n"
         self.wfile.write(payload.encode("utf-8"))
         self.wfile.flush()
 
-    def _handle_sse_ask(self, question: str) -> None:
+    def _handle_sse_ask(
+        self,
+        question: str,
+        fiscal_year: int | None = None,
+        fiscal_quarter: str | None = None,
+        form_type: str | None = None,
+    ) -> None:
+        """Admit one stream against the stream ceiling, then run it.
+
+        Streams get their own, lower ceiling than the connection pool. A stream
+        pins a thread for as long as the model takes -- ``RAG_TIMEOUT``, 900s by
+        default -- so with only a connection ceiling a burst of streams would
+        take every thread in the pool and ordinary API calls would queue behind
+        them. With a separate ceiling, a burst costs at most
+        ``MAX_SSE_CONNECTIONS`` threads and the rest of the pool stays available.
+        """
+        counter = getattr(self.server, "connections", None)
+        if counter is not None and not counter.try_acquire_sse():
+            # Refused before any 200, and as ordinary JSON rather than an empty
+            # event stream, so the client sees a status and a retry hint instead
+            # of a 200 it will wait on forever for events that never come.
+            #
+            # ``_send`` rather than ``_err``: the reason ``_guarded`` writes its
+            # draining 503 the same way. ``_NextHandler._err`` omits
+            # Content-Length, and without it a keep-alive client cannot tell
+            # where the body ends and waits for bytes that never come.
+            self.close_connection = True
+            self._send(
+                503,
+                json.dumps({
+                    "error": (
+                        f"too many concurrent streams "
+                        f"(limit {counter.limits.max_sse_connections}); retry shortly"
+                    ),
+                    "limit": "max_sse_connections",
+                }).encode(),
+                "application/json; charset=utf-8",
+            )
+            return
+        try:
+            # Bounds the stream's output, not the model call: ask_rag has no
+            # timeout parameter, so a model call already in flight still runs to
+            # RAG_TIMEOUT. This is what makes an operator-lowered SSE_MAX_SECONDS
+            # truncate the stream, and it is why the starvation protection above
+            # counts streams rather than trusting this deadline.
+            self._sse_deadline = time.monotonic() + SSE_MAX_SECONDS
+            self._sse_started = time.monotonic()
+            request_id = getattr(self, "_request_id", None) or get_request_id()
+            self._run_sse(
+                question,
+                fiscal_year=fiscal_year,
+                fiscal_quarter=fiscal_quarter,
+                form_type=form_type,
+                request_id=request_id,
+            )
+        except _SseDeadlineExceeded as exc:
+            # The stream was already open, so this is still an SSE frame: the
+            # client's reader is mid-stream and an HTML body would be noise.
+            try:
+                self._send_sse_unbounded("done", {
+                    "status": "truncated",
+                    "error": f"stream exceeded SSE_MAX_SECONDS ({SSE_MAX_SECONDS:.0f}s)",
+                    "last_event": exc.event,
+                    "ticker": None,
+                    "stage_latencies_ms": {},
+                    "graph_metrics": _graph_metrics(
+                        max_hop_depth=0, node_count=0, edge_count=0
+                    ),
+                    "latency_ms": round((time.monotonic() - self._sse_started) * 1000, 2),
+                })
+            except OSError:
+                # The client hung up on receiving the truncation; nothing to add.
+                pass
+        finally:
+            if counter is not None:
+                counter.release_sse()
+            self._sse_deadline = None
+
+    def _send_sse_unbounded(self, event: str, data: dict[str, Any]) -> None:
+        """Send one terminal SSE frame, ignoring the deadline.
+
+        Only for the frame that *reports* the deadline being hit; every other
+        frame goes through :meth:`_send_sse` so the limit cannot be bypassed by
+        an exception handler.
+        """
+        self._sse_deadline = None
+        self._send_sse(event, data)
+
+    def _run_sse(
+        self,
+        question: str,
+        fiscal_year: int | None = None,
+        fiscal_quarter: str | None = None,
+        form_type: str | None = None,
+        request_id: str | None = None,
+    ) -> None:
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "close")
         self.send_header("Access-Control-Allow-Origin", "*")
+        # Include request ID in SSE response headers
+        if request_id:
+            self.send_header("X-Request-ID", request_id)
         self.end_headers()
         self.close_connection = True
 
@@ -4303,17 +5317,17 @@ class _Handler(BaseHTTPRequestHandler):
         # stage names with the same meaning. A client that measures one
         # transport and compares against the other should not have to know
         # which one it got.
-        timer = _StageTimer()
+        timer = StageTimer(request_id=request_id)
         try:
             # 1. Routing
-            self._send_sse("status", {"step": "routing", "message": "Analyzing entity..."})
+            self._send_sse("status", {"step": "routing", "message": "Analyzing entity...", "request_id": request_id})
             with timer.stage("routing"):
                 routing = route_query(question, self.kg)
 
             if routing.route == EntityRoute.AMBIGUOUS:
                 # Same terminal response ask_rag returns, so the streaming and
                 # JSON transports cannot drift apart on what "unresolved" means.
-                self._send_sse("status", {"step": "ambiguous", "message": "Ambiguous entity"})
+                self._send_sse("status", {"step": "ambiguous", "message": "Ambiguous entity", "request_id": request_id})
                 self._send_sse("token", {"token": _ambiguous_response(question)["message"]})
                 # A refusal touched no graph, so the depth is 0 and the counts
                 # are 0 -- stated rather than omitted, so a client reading
@@ -4328,6 +5342,7 @@ class _Handler(BaseHTTPRequestHandler):
                         max_hop_depth=0, node_count=0, edge_count=0
                     ),
                     "latency_ms": round((time.monotonic() - start_time) * 1000, 2),
+                    "request_id": request_id,
                 })
                 return
 
@@ -4365,7 +5380,28 @@ class _Handler(BaseHTTPRequestHandler):
                         ),
                     })
 
-                result = ask_rag(self.kg, question, on_stage=announce)
+                def announce_exit(stage: str, duration_ms: float) -> None:
+                    # Send stage completion with actual duration
+                    self._send_sse("status", {
+                        "step": stage,
+                        "message": STAGE_MESSAGES.get(stage, stage),
+                        "elapsed_ms": round(
+                            (time.monotonic() - stage_started) * 1000.0, 2
+                        ),
+                        "stage_duration_ms": round(duration_ms, 2),
+                        "stage_complete": True,
+                    })
+
+                result = ask_rag(
+                    self.kg, 
+                    question, 
+                    on_stage=announce,
+                    on_stage_exit=announce_exit,
+                    fiscal_year=fiscal_year,
+                    fiscal_quarter=fiscal_quarter,
+                    form_type=form_type,
+                    request_id=request_id,
+                )
                 ans = str(result.get("answer") or "")
                 words = ans.split(" ")
                 for i, w in enumerate(words):
@@ -4430,6 +5466,19 @@ class _Handler(BaseHTTPRequestHandler):
             #: and a client scoring the answer needs to know which it got.
             degraded = False
 
+            def send_stage_complete(stage: str) -> None:
+                """Send stage completion with actual duration from timer."""
+                # Get the duration from timer's recorded stages
+                stage_key = f"{stage}_ms"
+                duration = timer._stages.get(stage, 0.0)
+                if duration > 0:
+                    self._send_sse("status", {
+                        "step": stage,
+                        "message": STAGE_MESSAGES.get(stage, stage),
+                        "stage_duration_ms": round(duration, 2),
+                        "stage_complete": True,
+                    })
+
             try:
                 # Step 1: Fetch SEC 10-K filing
                 self._send_sse("status", {
@@ -4444,10 +5493,11 @@ class _Handler(BaseHTTPRequestHandler):
                     cleaned_text = clean_and_truncate_section(
                         raw_html, form_type="10-K", max_tokens=6000
                     )
+                send_stage_complete("fetching")
 
                 # Step 2: Triple extraction
                 self._send_sse("status", {
-                    "step": "extracting",
+                    "step": "extraction",
                     "message": "Extracting financial triples...",
                 })
                 with timer.stage("extraction"):
@@ -4457,6 +5507,7 @@ class _Handler(BaseHTTPRequestHandler):
                         if hasattr(extractor, "extract")
                         else extractor.extract_triples(cleaned_text, target_ticker=ticker)
                     )
+                send_stage_complete("extraction")
 
                 # Step 3: Overlay stitching
                 self._send_sse("status", {
@@ -4466,17 +5517,23 @@ class _Handler(BaseHTTPRequestHandler):
                 with timer.stage("stitching"):
                     overlay = InMemoryOverlayGraph(kg_connection=self.kg)
                     stitch_coldstart_payload(overlay, payload, target_ticker=ticker)
+                send_stage_complete("stitching")
 
                 # Step 4: 2-hop traversal
                 self._send_sse("status", {
-                    "step": "traversing",
+                    "step": "traversal",
                     "message": "Running 2-hop traversal...",
                 })
                 with timer.stage("traversal"):
                     traverser = HybridGraphTraverser(overlay)
                     subgraph_result = traverser.traverse_neighborhood(ticker, max_hops=2)
+                send_stage_complete("traversal")
 
                 # Step 5: Stream synthesis tokens
+                self._send_sse("status", {
+                    "step": "synthesis",
+                    "message": "Composing answer...",
+                })
                 with timer.stage("synthesis"):
                     synthesizer = ColdStartSynthesizer()
                     context = {
@@ -4490,6 +5547,7 @@ class _Handler(BaseHTTPRequestHandler):
                         self._send_sse("token", {"token": token})
                         token_parts.append(token)
                     answer_text = "".join(token_parts)
+                send_stage_complete("synthesis")
 
                 # Step 7 (spec): Non-blocking background ingestion
                 background_queue.enqueue_coldstart_sync(ticker)
@@ -4512,7 +5570,12 @@ class _Handler(BaseHTTPRequestHandler):
                     ),
                 })
                 try:
-                    fallback_result = ask_rag(self.kg, question)
+                    fallback_result = ask_rag(
+                        self.kg, question, 
+                        on_stage=lambda s: None,  # Don't duplicate start events
+                        on_stage_exit=lambda s, d: None,  # Don't duplicate complete events
+                        request_id=request_id
+                    )
                     answer_text = str(
                         fallback_result.get("answer")
                         or fallback_result.get("text")
@@ -4555,6 +5618,12 @@ class _Handler(BaseHTTPRequestHandler):
                 "latency_ms": round((time.monotonic() - start_time) * 1000, 2),
                 "background_task_scheduled": True,
             })
+        except _SseDeadlineExceeded:
+            # Not a failure of the question: the stream hit its lifetime limit.
+            # The broad handler below would report this as an error frame and
+            # lose the distinction, so it is re-raised for _handle_sse_ask to
+            # turn into a terminal ``done`` with status "truncated".
+            raise
         except Exception as exc:
             self._send_sse("error", {"error": str(exc), "step": "failed"})
             self._send_sse("done", {
@@ -4590,6 +5659,26 @@ class _Handler(BaseHTTPRequestHandler):
         if not question:
             return self._err(400, "question is required")
 
+        # Extract temporal filters from payload
+        fiscal_year = payload.get("fiscal_year")
+        if fiscal_year is not None:
+            try:
+                fiscal_year = int(fiscal_year)
+            except (ValueError, TypeError):
+                fiscal_year = None
+        
+        fiscal_quarter = payload.get("fiscal_quarter")
+        if fiscal_quarter is not None:
+            fiscal_quarter = str(fiscal_quarter).strip().upper()
+            if fiscal_quarter not in ("FY", "Q1", "Q2", "Q3", "Q4", "H1", "H2"):
+                fiscal_quarter = None
+        
+        form_type = payload.get("form_type")
+        if form_type is not None:
+            form_type = str(form_type).strip().upper()
+            if not form_type:
+                form_type = None
+
         accept_header = self.headers.get("Accept", "")
         qs = parse_qs(urlparse(self.path).query)
         is_stream = (
@@ -4599,10 +5688,17 @@ class _Handler(BaseHTTPRequestHandler):
         )
 
         if not is_stream:
-            result = ask_rag(self.kg, question)
+            request_id = getattr(self, "_request_id", None) or get_request_id()
+            result = ask_rag(
+                self.kg, question, 
+                fiscal_year=fiscal_year, 
+                fiscal_quarter=fiscal_quarter, 
+                form_type=form_type,
+                request_id=request_id
+            )
             return self._json(result)
 
-        self._handle_sse_ask(question)
+        self._handle_sse_ask(question, fiscal_year=fiscal_year, fiscal_quarter=fiscal_quarter, form_type=form_type)
 
 
 def _int_param(qs: dict, name: str, default: int, minimum: int | None = None, maximum: int | None = None) -> int:
@@ -4661,13 +5757,43 @@ def _port_is_free(host: str, port: int) -> bool:
         probe.close()
 
 
-def _listeners(host: str, ports: Sequence[int], handler: type) -> list[ThreadingHTTPServer]:
+def http_limits() -> Limits:
+    """Build the listener ceilings for this process.
+
+    The four transport ceilings come from :meth:`Limits.from_env`, which owns
+    the variable names and the fallbacks, so the other HTTP entry points in the
+    repository answer to the same names. ``SSE_MAX_SECONDS`` is then overridden
+    because its default is package-specific: it tracks ``RAG_TIMEOUT``, the
+    model call's own bound, rather than a fixed number.
+
+    The module-level constants above are evaluated at import, not per call, so
+    changing the environment after startup does not move a live ceiling. That
+    matches every other setting in this module and is deliberate: a running
+    server's limits should not change underneath it. Set the variables before
+    launching the process.
+    """
+    return replace(
+        Limits.from_env(lambda name: _setting(name, "")),
+        sse_max_seconds=SSE_MAX_SECONDS,
+    )
+
+
+def _listeners(
+    host: str,
+    ports: Sequence[int],
+    handler: type,
+    limits: Limits | None = None,
+) -> list[BoundedThreadingHTTPServer]:
     """Bind one listener per port, all serving the same *handler*.
 
     Split out of :func:`serve` so the part that can actually fail is reachable
     from a test: a second port that fails to bind, or a shutdown that only
     closes one of them, is invisible in a function that blocks forever and
     keeps its servers to itself.
+
+    Each listener gets its own :class:`ConnectionCounter`, because the ceilings
+    are per port. One shared counter would let a burst on the second port refuse
+    connections on the first.
     """
     taken = [p for p in ports if not _port_is_free(host, p)]
     if taken:
@@ -4675,11 +5801,11 @@ def _listeners(host: str, ports: Sequence[int], handler: type) -> list[Threading
             f"port already in use: {', '.join(str(p) for p in taken)}. "
             f"Stop whatever is serving it, or name different ports with --port."
         )
+    ceilings = limits if limits is not None else http_limits()
     servers = []
     try:
         for number in ports:
-            server = ThreadingHTTPServer((host, number), handler)
-            server.daemon_threads = True
+            server = BoundedThreadingHTTPServer((host, number), handler, limits=ceilings)
             servers.append(server)
     except Exception:
         # One port already taken must not leave the earlier ones listening.
@@ -4733,28 +5859,57 @@ def serve(host: str = "127.0.0.1", port: int | Sequence[int] = 9000,
         print(f"  Answers      : DISABLED. Paste a key in the browser, or run "
               f"`ollama serve` and `ollama pull {OLLAMA_MODEL}`, then re-ask.")
     print(f"  RAG Timeout  : {RAG_TIMEOUT:.0f}s")
+    ceilings = http_limits()
+    print(f"  Req Timeout  : {ceilings.request_timeout:.0f}s")
+    print(f"  Max Conns    : {ceilings.max_connections} "
+          f"(streams: {ceilings.max_sse_connections}, backlog: {ceilings.listen_backlog})")
     print(f"  Press Ctrl-C to stop")
     print(f"{'='*70}\n")
 
     if open_browser:
         threading.Timer(0.6, lambda: webbrowser.open(primary)).start()
 
-    # One thread per extra port; the main thread serves the first, so Ctrl-C
-    # lands where the user is looking.
-    for server in servers[1:]:
-        threading.Thread(
-            target=server.serve_forever, daemon=True,
-            name=f"http-{server.server_address[1]}",
-        ).start()
+    print(f"  Shutdown     : {SHUTDOWN_TIMEOUT:.0f}s grace period on SIGINT/SIGTERM")
+    print(f"  Press Ctrl-C to stop")
+    print(f"{'='*70}\n")
+
+    coordinator = ShutdownCoordinator(service="query-ui", timeout=SHUTDOWN_TIMEOUT)
+    install_signal_handlers(coordinator)
+    # Deliberately not restored afterwards. serve() blocks for the process's
+    # whole life and only returns on the way out, so restoring SIG_DFL would
+    # hand the last few instructions before exit back to the kernel's default
+    # disposition -- and a supervisor that retries its SIGTERM would then kill a
+    # process that had already closed its graph and released its ports, turning
+    # a clean shutdown into a signal death. The handler stays installed and
+    # swallows anything that arrives after the drain has finished.
     try:
-        servers[0].serve_forever()
-    except KeyboardInterrupt:
-        print("\nStopping server...")
+        summary = serve_until_signalled(
+            servers, coordinator, graph=kg, background=background_queue
+        )
     finally:
-        for server in servers:
-            server.shutdown()
-            server.server_close()
+        # Belt and braces: serve_until_signalled closes the graph, but if it
+        # raised partway the handle would otherwise be left open, holding
+        # LadybugDB's lock so the next server cannot start.
+        _safe_close(kg)
+    if summary.get("forced"):
+        print(
+            f"Stopped. {summary.get('dropped_requests', 0)} request(s) were still "
+            f"running when the {SHUTDOWN_TIMEOUT:.0f}s grace period expired."
+        )
+    else:
+        print("Stopped.")
+
+
+def _safe_close(kg: Any) -> None:
+    """Close a graph handle if it is still open, never raising.
+
+    ``LadybugDB`` is idempotent enough here, but a second close raising during
+    teardown would replace a real error with a confusing one.
+    """
+    try:
         kg.close()
+    except Exception as exc:
+        log.warning("closing the graph failed: %s: %s", type(exc).__name__, exc)
 
 
 def _main() -> None:

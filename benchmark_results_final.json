@@ -1,0 +1,714 @@
+{
+  "metadata": {
+    "db_path": "/Users/dev/Downloads/Fin/sandbox_engine/_run/sandbox.lbug",
+    "iterations": 2,
+    "warmup": 0,
+    "timestamp": "2026-10-04 00:53:12"
+  },
+  "stage_aggregates": [
+    {
+      "stage": "node_lookup",
+      "count": 2,
+      "mean_ms": 0.77,
+      "median_ms": 0.77,
+      "p50_ms": 1.4,
+      "p95_ms": 1.4,
+      "p99_ms": 1.4,
+      "min_ms": 0.14,
+      "max_ms": 1.4,
+      "success_rate": 100.0
+    },
+    {
+      "stage": "edge_traversal",
+      "count": 2,
+      "mean_ms": 3.13,
+      "median_ms": 3.13,
+      "p50_ms": 4.43,
+      "p95_ms": 4.43,
+      "p99_ms": 4.43,
+      "min_ms": 1.84,
+      "max_ms": 4.43,
+      "success_rate": 100.0
+    },
+    {
+      "stage": "1hop_retrieval",
+      "count": 2,
+      "mean_ms": 2.67,
+      "median_ms": 2.67,
+      "p50_ms": 3.75,
+      "p95_ms": 3.75,
+      "p99_ms": 3.75,
+      "min_ms": 1.59,
+      "max_ms": 3.75,
+      "success_rate": 100.0
+    },
+    {
+      "stage": "2hop_retrieval",
+      "count": 2,
+      "mean_ms": 10.71,
+      "median_ms": 10.71,
+      "p50_ms": 16.02,
+      "p95_ms": 16.02,
+      "p99_ms": 16.02,
+      "min_ms": 5.4,
+      "max_ms": 16.02,
+      "success_rate": 100.0
+    },
+    {
+      "stage": "3hop_retrieval",
+      "count": 2,
+      "mean_ms": 16.84,
+      "median_ms": 16.84,
+      "p50_ms": 24.74,
+      "p95_ms": 24.74,
+      "p99_ms": 24.74,
+      "min_ms": 8.93,
+      "max_ms": 24.74,
+      "success_rate": 100.0
+    },
+    {
+      "stage": "entity_resolution",
+      "count": 2,
+      "mean_ms": 0.11,
+      "median_ms": 0.11,
+      "p50_ms": 0.17,
+      "p95_ms": 0.17,
+      "p99_ms": 0.17,
+      "min_ms": 0.04,
+      "max_ms": 0.17,
+      "success_rate": 100.0
+    },
+    {
+      "stage": "graph_vector_retrieval",
+      "count": 2,
+      "mean_ms": 2.56,
+      "median_ms": 2.56,
+      "p50_ms": 2.82,
+      "p95_ms": 2.82,
+      "p99_ms": 2.82,
+      "min_ms": 2.3,
+      "max_ms": 2.82,
+      "success_rate": 100.0
+    },
+    {
+      "stage": "llm_synthesis",
+      "count": 2,
+      "mean_ms": 0.03,
+      "median_ms": 0.03,
+      "p50_ms": 0.05,
+      "p95_ms": 0.05,
+      "p99_ms": 0.05,
+      "min_ms": 0.01,
+      "max_ms": 0.05,
+      "success_rate": 100.0
+    }
+  ],
+  "query_aggregates": {
+    "KNOWN": {
+      "stage": "full_query_KNOWN",
+      "count": 6,
+      "mean_ms": 18967.93,
+      "median_ms": 17482.38,
+      "p50_ms": 19043.62,
+      "p95_ms": 28343.91,
+      "p99_ms": 28343.91,
+      "min_ms": 9182.53,
+      "max_ms": 28343.91,
+      "success_rate": 100.0
+    },
+    "COLD_START": {
+      "stage": "full_query_COLD_START",
+      "count": 4,
+      "mean_ms": 7.01,
+      "median_ms": 4.83,
+      "p50_ms": 5.24,
+      "p95_ms": 14.07,
+      "p99_ms": 14.07,
+      "min_ms": 4.32,
+      "max_ms": 14.07,
+      "success_rate": 100.0
+    },
+    "AMBIGUOUS": {
+      "stage": "full_query_AMBIGUOUS",
+      "count": 4,
+      "mean_ms": 0.0,
+      "median_ms": 0.0,
+      "p50_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "min_ms": 0.0,
+      "max_ms": 0.0,
+      "success_rate": 100.0
+    }
+  },
+  "query_results": [
+    {
+      "query": "What are Apple's net sales for FY2025?",
+      "expected_route": "KNOWN",
+      "actual_route": "KNOWN",
+      "expected_ticker": "AAPL",
+      "actual_ticker": "AAPL",
+      "stage_measurements": [
+        {
+          "stage_name": "routing",
+          "latency_ms": 0.0,
+          "success": true,
+          "details": {
+            "result_type": "RoutingResult"
+          }
+        },
+        {
+          "stage_name": "routing",
+          "latency_ms": 0.17,
+          "success": true,
+          "details": {
+            "result_type": "RoutingResult"
+          }
+        },
+        {
+          "stage_name": "full_known_pipeline",
+          "latency_ms": 25991.15,
+          "success": true,
+          "details": {
+            "result_type": "dict"
+          }
+        }
+      ],
+      "total_latency_ms": 25991.32,
+      "success": true,
+      "error": null
+    },
+    {
+      "query": "Microsoft Azure revenue growth YoY",
+      "expected_route": "KNOWN",
+      "actual_route": "KNOWN",
+      "expected_ticker": "MSFT",
+      "actual_ticker": "MSFT",
+      "stage_measurements": [
+        {
+          "stage_name": "routing",
+          "latency_ms": 0.0,
+          "success": true,
+          "details": {
+            "result_type": "RoutingResult"
+          }
+        },
+        {
+          "stage_name": "routing",
+          "latency_ms": 0.13,
+          "success": true,
+          "details": {
+            "result_type": "RoutingResult"
+          }
+        },
+        {
+          "stage_name": "full_known_pipeline",
+          "latency_ms": 15921.02,
+          "success": true,
+          "details": {
+            "result_type": "dict"
+          }
+        }
+      ],
+      "total_latency_ms": 15921.15,
+      "success": true,
+      "error": null
+    },
+    {
+      "query": "NVIDIA H100 supply chain dependencies",
+      "expected_route": "KNOWN",
+      "actual_route": "KNOWN",
+      "expected_ticker": "NVDA",
+      "actual_ticker": "NVDA",
+      "stage_measurements": [
+        {
+          "stage_name": "routing",
+          "latency_ms": 0.0,
+          "success": true,
+          "details": {
+            "result_type": "RoutingResult"
+          }
+        },
+        {
+          "stage_name": "routing",
+          "latency_ms": 0.14,
+          "success": true,
+          "details": {
+            "result_type": "RoutingResult"
+          }
+        },
+        {
+          "stage_name": "full_known_pipeline",
+          "latency_ms": 19043.48,
+          "success": true,
+          "details": {
+            "result_type": "dict"
+          }
+        }
+      ],
+      "total_latency_ms": 19043.62,
+      "success": true,
+      "error": null
+    },
+    {
+      "query": "Analyze supply chain risks for $PLTR",
+      "expected_route": "COLD_START",
+      "actual_route": "COLD_START",
+      "expected_ticker": "PLTR",
+      "actual_ticker": "PLTR",
+      "stage_measurements": [
+        {
+          "stage_name": "routing",
+          "latency_ms": 0.0,
+          "success": true,
+          "details": {
+            "result_type": "RoutingResult"
+          }
+        },
+        {
+          "stage_name": "routing",
+          "latency_ms": 0.28,
+          "success": true,
+          "details": {
+            "result_type": "RoutingResult"
+          }
+        },
+        {
+          "stage_name": "fetching",
+          "latency_ms": 0.44,
+          "success": true,
+          "details": {
+            "result_type": "dict"
+          }
+        },
+        {
+          "stage_name": "extraction",
+          "latency_ms": 0.79,
+          "success": true,
+          "details": {
+            "result_type": "dict"
+          }
+        },
+        {
+          "stage_name": "stitching",
+          "latency_ms": 4.86,
+          "success": true,
+          "details": {
+            "result_type": "dict"
+          }
+        },
+        {
+          "stage_name": "traversal_2hop",
+          "latency_ms": 4.82,
+          "success": true,
+          "details": {
+            "result_type": "dict"
+          }
+        },
+        {
+          "stage_name": "synthesis",
+          "latency_ms": 2.88,
+          "success": true,
+          "details": {
+            "result_type": "dict"
+          }
+        }
+      ],
+      "total_latency_ms": 14.07,
+      "success": true,
+      "error": null
+    },
+    {
+      "query": "Snowflake competitive moat analysis",
+      "expected_route": "COLD_START",
+      "actual_route": "COLD_START",
+      "expected_ticker": "SNOW",
+      "actual_ticker": "SNOW",
+      "stage_measurements": [
+        {
+          "stage_name": "routing",
+          "latency_ms": 0.0,
+          "success": true,
+          "details": {
+            "result_type": "RoutingResult"
+          }
+        },
+        {
+          "stage_name": "routing",
+          "latency_ms": 0.08,
+          "success": true,
+          "details": {
+            "result_type": "RoutingResult"
+          }
+        },
+        {
+          "stage_name": "fetching",
+          "latency_ms": 0.04,
+          "success": true,
+          "details": {
+            "result_type": "dict"
+          }
+        },
+        {
+          "stage_name": "extraction",
+          "latency_ms": 0.13,
+          "success": true,
+          "details": {
+            "result_type": "dict"
+          }
+        },
+        {
+          "stage_name": "stitching",
+          "latency_ms": 0.73,
+          "success": true,
+          "details": {
+            "result_type": "dict"
+          }
+        },
+        {
+          "stage_name": "traversal_2hop",
+          "latency_ms": 1.51,
+          "success": true,
+          "details": {
+            "result_type": "dict"
+          }
+        },
+        {
+          "stage_name": "synthesis",
+          "latency_ms": 1.93,
+          "success": true,
+          "details": {
+            "result_type": "dict"
+          }
+        }
+      ],
+      "total_latency_ms": 4.42,
+      "success": true,
+      "error": null
+    },
+    {
+      "query": "What is the current net sales trend?",
+      "expected_route": "AMBIGUOUS",
+      "actual_route": "AMBIGUOUS",
+      "expected_ticker": null,
+      "actual_ticker": null,
+      "stage_measurements": [
+        {
+          "stage_name": "routing",
+          "latency_ms": 0.0,
+          "success": true,
+          "details": {
+            "result_type": "RoutingResult"
+          }
+        }
+      ],
+      "total_latency_ms": 0.0,
+      "success": true,
+      "error": null
+    },
+    {
+      "query": "How to calculate operating margin?",
+      "expected_route": "AMBIGUOUS",
+      "actual_route": "AMBIGUOUS",
+      "expected_ticker": null,
+      "actual_ticker": null,
+      "stage_measurements": [
+        {
+          "stage_name": "routing",
+          "latency_ms": 0.0,
+          "success": true,
+          "details": {
+            "result_type": "RoutingResult"
+          }
+        }
+      ],
+      "total_latency_ms": 0.0,
+      "success": true,
+      "error": null
+    },
+    {
+      "query": "What are Apple's net sales for FY2025?",
+      "expected_route": "KNOWN",
+      "actual_route": "KNOWN",
+      "expected_ticker": "AAPL",
+      "actual_ticker": "AAPL",
+      "stage_measurements": [
+        {
+          "stage_name": "routing",
+          "latency_ms": 0.0,
+          "success": true,
+          "details": {
+            "result_type": "RoutingResult"
+          }
+        },
+        {
+          "stage_name": "routing",
+          "latency_ms": 0.09,
+          "success": true,
+          "details": {
+            "result_type": "RoutingResult"
+          }
+        },
+        {
+          "stage_name": "full_known_pipeline",
+          "latency_ms": 9182.44,
+          "success": true,
+          "details": {
+            "result_type": "dict"
+          }
+        }
+      ],
+      "total_latency_ms": 9182.53,
+      "success": true,
+      "error": null
+    },
+    {
+      "query": "Microsoft Azure revenue growth YoY",
+      "expected_route": "KNOWN",
+      "actual_route": "KNOWN",
+      "expected_ticker": "MSFT",
+      "actual_ticker": "MSFT",
+      "stage_measurements": [
+        {
+          "stage_name": "routing",
+          "latency_ms": 0.0,
+          "success": true,
+          "details": {
+            "result_type": "RoutingResult"
+          }
+        },
+        {
+          "stage_name": "routing",
+          "latency_ms": 0.11,
+          "success": true,
+          "details": {
+            "result_type": "RoutingResult"
+          }
+        },
+        {
+          "stage_name": "full_known_pipeline",
+          "latency_ms": 28343.8,
+          "success": true,
+          "details": {
+            "result_type": "dict"
+          }
+        }
+      ],
+      "total_latency_ms": 28343.91,
+      "success": true,
+      "error": null
+    },
+    {
+      "query": "NVIDIA H100 supply chain dependencies",
+      "expected_route": "KNOWN",
+      "actual_route": "KNOWN",
+      "expected_ticker": "NVDA",
+      "actual_ticker": "NVDA",
+      "stage_measurements": [
+        {
+          "stage_name": "routing",
+          "latency_ms": 0.0,
+          "success": true,
+          "details": {
+            "result_type": "RoutingResult"
+          }
+        },
+        {
+          "stage_name": "routing",
+          "latency_ms": 0.11,
+          "success": true,
+          "details": {
+            "result_type": "RoutingResult"
+          }
+        },
+        {
+          "stage_name": "full_known_pipeline",
+          "latency_ms": 15324.96,
+          "success": true,
+          "details": {
+            "result_type": "dict"
+          }
+        }
+      ],
+      "total_latency_ms": 15325.07,
+      "success": true,
+      "error": null
+    },
+    {
+      "query": "Analyze supply chain risks for $PLTR",
+      "expected_route": "COLD_START",
+      "actual_route": "COLD_START",
+      "expected_ticker": "PLTR",
+      "actual_ticker": "PLTR",
+      "stage_measurements": [
+        {
+          "stage_name": "routing",
+          "latency_ms": 0.0,
+          "success": true,
+          "details": {
+            "result_type": "RoutingResult"
+          }
+        },
+        {
+          "stage_name": "routing",
+          "latency_ms": 0.1,
+          "success": true,
+          "details": {
+            "result_type": "RoutingResult"
+          }
+        },
+        {
+          "stage_name": "fetching",
+          "latency_ms": 0.05,
+          "success": true,
+          "details": {
+            "result_type": "dict"
+          }
+        },
+        {
+          "stage_name": "extraction",
+          "latency_ms": 0.14,
+          "success": true,
+          "details": {
+            "result_type": "dict"
+          }
+        },
+        {
+          "stage_name": "stitching",
+          "latency_ms": 0.95,
+          "success": true,
+          "details": {
+            "result_type": "dict"
+          }
+        },
+        {
+          "stage_name": "traversal_2hop",
+          "latency_ms": 1.83,
+          "success": true,
+          "details": {
+            "result_type": "dict"
+          }
+        },
+        {
+          "stage_name": "synthesis",
+          "latency_ms": 2.17,
+          "success": true,
+          "details": {
+            "result_type": "dict"
+          }
+        }
+      ],
+      "total_latency_ms": 5.24,
+      "success": true,
+      "error": null
+    },
+    {
+      "query": "Snowflake competitive moat analysis",
+      "expected_route": "COLD_START",
+      "actual_route": "COLD_START",
+      "expected_ticker": "SNOW",
+      "actual_ticker": "SNOW",
+      "stage_measurements": [
+        {
+          "stage_name": "routing",
+          "latency_ms": 0.0,
+          "success": true,
+          "details": {
+            "result_type": "RoutingResult"
+          }
+        },
+        {
+          "stage_name": "routing",
+          "latency_ms": 0.16,
+          "success": true,
+          "details": {
+            "result_type": "RoutingResult"
+          }
+        },
+        {
+          "stage_name": "fetching",
+          "latency_ms": 0.04,
+          "success": true,
+          "details": {
+            "result_type": "dict"
+          }
+        },
+        {
+          "stage_name": "extraction",
+          "latency_ms": 0.11,
+          "success": true,
+          "details": {
+            "result_type": "dict"
+          }
+        },
+        {
+          "stage_name": "stitching",
+          "latency_ms": 0.77,
+          "success": true,
+          "details": {
+            "result_type": "dict"
+          }
+        },
+        {
+          "stage_name": "traversal_2hop",
+          "latency_ms": 1.48,
+          "success": true,
+          "details": {
+            "result_type": "dict"
+          }
+        },
+        {
+          "stage_name": "synthesis",
+          "latency_ms": 1.76,
+          "success": true,
+          "details": {
+            "result_type": "dict"
+          }
+        }
+      ],
+      "total_latency_ms": 4.32,
+      "success": true,
+      "error": null
+    },
+    {
+      "query": "What is the current net sales trend?",
+      "expected_route": "AMBIGUOUS",
+      "actual_route": "AMBIGUOUS",
+      "expected_ticker": null,
+      "actual_ticker": null,
+      "stage_measurements": [
+        {
+          "stage_name": "routing",
+          "latency_ms": 0.0,
+          "success": true,
+          "details": {
+            "result_type": "RoutingResult"
+          }
+        }
+      ],
+      "total_latency_ms": 0.0,
+      "success": true,
+      "error": null
+    },
+    {
+      "query": "How to calculate operating margin?",
+      "expected_route": "AMBIGUOUS",
+      "actual_route": "AMBIGUOUS",
+      "expected_ticker": null,
+      "actual_ticker": null,
+      "stage_measurements": [
+        {
+          "stage_name": "routing",
+          "latency_ms": 0.0,
+          "success": true,
+          "details": {
+            "result_type": "RoutingResult"
+          }
+        }
+      ],
+      "total_latency_ms": 0.0,
+      "success": true,
+      "error": null
+    }
+  ]
+}

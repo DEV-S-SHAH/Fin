@@ -139,15 +139,12 @@ class NegativeControlTests(unittest.TestCase):
         if not Path(path).exists():
             raise unittest.SkipTest(f"graph not built at {path}")
         cls.kg = query_ui.KnowledgeGraph(path)
-        result = cls.kg.conn.execute(
+        # go through the public handle so the read is pooled and translation-
+        # aware, rather than reaching into the private connection.
+        rows = cls.kg.execute(
             "MATCH (c:Company) RETURN c.ticker AS ticker, c.name AS name"
         )
-        names = result.get_column_names()
-        cls.issuers = []
-        while result.has_next():
-            row = dict(zip(names, result.get_next()))
-            cls.issuers.append((str(row["ticker"]), str(row["name"] or "")))
-        result.close()
+        cls.issuers = [(str(ticker), str(name or "")) for ticker, name in rows]
 
     @classmethod
     def tearDownClass(cls):

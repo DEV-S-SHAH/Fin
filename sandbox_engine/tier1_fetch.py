@@ -6,12 +6,14 @@ Strictly enforces:
 - Zero silent drops (typed exceptions: FetchError, FetchTimeoutError,
   EDGARRateLimitError / RateLimitError, FilingNotFoundError).
 - HTTP 429 Retry-After parsing with single jittered retry within budget.
+- SSRF protection for all outbound requests.
 """
 
 from __future__ import annotations
 
 import gzip
 import json
+import logging
 import os
 import random
 import socket
@@ -19,6 +21,19 @@ import time
 import urllib.error
 import urllib.request
 from typing import Any, Optional
+
+from .observability import (
+    StageTimer,
+    get_request_id,
+    record_sec_fetch,
+    record_retry,
+    record_external_api_failure,
+    record_rate_limit_rejection,
+    new_span_id,
+)
+from .ssrf import DEFAULT_CONFIG, safe_urlopen, validate_url
+
+log = logging.getLogger("graphrag.sec")
 
 
 class FetchError(Exception):
@@ -111,25 +126,36 @@ class SECRuntimeFetcher:
         retry_count: int = 0,
     ) -> bytes:
         """Issue an HTTP GET request respecting timeouts, compression, and rate limits."""
+        request_id = get_request_id()
+        span_id = new_span_id()
+
         elapsed = time.monotonic() - start_time
         remaining = timeout - elapsed
         if remaining <= 0:
+            record_sec_fetch(success=False)
+            record_external_api_failure("sec_edgar", "timeout")
             raise FetchTimeoutError(
                 f"Operation timed out ({elapsed:.2f}s >= {timeout:.2f}s) before fetching {url}"
             )
 
         socket_timeout = min(MAX_SOCKET_TIMEOUT_SECONDS, max(0.01, remaining))
-        request = urllib.request.Request(
-            url,
-            headers={
+
+        # Validate URL against SSRF protection before making request
+        valid, error = validate_url(url, DEFAULT_CONFIG)
+        if not valid:
+            record_sec_fetch(success=False)
+            record_external_api_failure("sec_edgar", "ssrf_blocked")
+            raise FetchError(f"SSRF validation failed for {url}: {error}")
+
+        req_start = time.monotonic()
+        try:
+            # Use safe_urlopen which validates redirects
+            request_headers = {
                 "User-Agent": self.user_agent,
                 "Accept-Encoding": "gzip",
                 "Accept": "text/html,application/json,*/*",
-            },
-        )
-
-        try:
-            with urllib.request.urlopen(request, timeout=socket_timeout) as response:
+            }
+            with safe_urlopen(url, timeout=socket_timeout, config=DEFAULT_CONFIG, headers=request_headers) as response:
                 payload = response.read()
                 headers = response.headers
                 content_encoding = (
@@ -137,9 +163,23 @@ class SECRuntimeFetcher:
                 )
                 if content_encoding == "gzip":
                     payload = gzip.decompress(payload)
+                record_sec_fetch(success=True)
+                log.info(
+                    "sec_request_complete",
+                    extra={
+                        "request_id": request_id,
+                        "span_id": span_id,
+                        "url": url,
+                        "status_code": response.status,
+                        "elapsed_ms": round((time.monotonic() - req_start) * 1000, 2),
+                    },
+                )
                 return payload
         except urllib.error.HTTPError as exc:
             if exc.code == 429:
+                record_sec_fetch(success=False, rate_limited=True)
+                record_rate_limit_rejection("sec_edgar")
+                record_external_api_failure("sec_edgar", "rate_limited")
                 retry_after_hdr = None
                 if exc.headers and hasattr(exc.headers, "get"):
                     retry_after_hdr = exc.headers.get("Retry-After")
@@ -161,11 +201,33 @@ class SECRuntimeFetcher:
                     or total_delay >= now_remaining
                     or (now_elapsed + total_delay) >= min(timeout, MAX_SOCKET_TIMEOUT_SECONDS)
                 ):
+                    log.warning(
+                        "sec_rate_limit_exceeded",
+                        extra={
+                            "request_id": request_id,
+                            "span_id": span_id,
+                            "url": url,
+                            "retry_after": retry_after_hdr,
+                            "remaining_budget_ms": round(now_remaining * 1000, 2),
+                        },
+                    )
                     raise EDGARRateLimitError(
                         f"SEC EDGAR rate limit (HTTP 429). Retry-After={retry_after_hdr}s "
                         f"exceeds budget (remaining={now_remaining:.2f}s)"
                     ) from exc
 
+                record_retry("sec_edgar", retry_count + 1)
+                log.warning(
+                    "sec_rate_limit_retry",
+                    extra={
+                        "request_id": request_id,
+                        "span_id": span_id,
+                        "url": url,
+                        "retry_after": retry_after_hdr,
+                        "delay_ms": round(total_delay * 1000, 2),
+                        "attempt": retry_count + 1,
+                    },
+                )
                 time.sleep(total_delay)
                 return self._request(
                     url,
@@ -174,19 +236,27 @@ class SECRuntimeFetcher:
                     retry_count=retry_count + 1,
                 )
             elif exc.code == 404:
+                record_sec_fetch(success=False)
+                record_external_api_failure("sec_edgar", "not_found")
                 raise FilingNotFoundError(
                     f"Resource not found (HTTP 404) at {url}: {exc.reason}"
                 ) from exc
             else:
+                record_sec_fetch(success=False)
+                record_external_api_failure("sec_edgar", f"http_{exc.code}")
                 raise FetchError(
                     f"HTTP {exc.code} {exc.reason} while fetching {url}"
                 ) from exc
         except (TimeoutError, socket.timeout) as exc:
+            record_sec_fetch(success=False)
+            record_external_api_failure("sec_edgar", "timeout")
             elapsed = time.monotonic() - start_time
             raise FetchTimeoutError(
                 f"Socket timed out after {elapsed:.2f}s fetching {url}: {exc}"
             ) from exc
         except urllib.error.URLError as exc:
+            record_sec_fetch(success=False)
+            record_external_api_failure("sec_edgar", "network_error")
             elapsed = time.monotonic() - start_time
             if (
                 isinstance(exc.reason, (TimeoutError, socket.timeout))
@@ -202,6 +272,8 @@ class SECRuntimeFetcher:
                 (FetchError, FetchTimeoutError, EDGARRateLimitError, FilingNotFoundError),
             ):
                 raise
+            record_sec_fetch(success=False)
+            record_external_api_failure("sec_edgar", "unexpected_error")
             elapsed = time.monotonic() - start_time
             if elapsed >= timeout:
                 raise FetchTimeoutError(

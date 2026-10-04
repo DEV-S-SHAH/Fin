@@ -30,6 +30,7 @@ nodes.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -43,6 +44,7 @@ __all__ = [
     "MAX_EVENTS",
     "MIN_CHUNK_CHARS",
     "DATA_DIR",
+    "FINGRAPH_DATA_DIR",
     "FORM_FOLDERS",
     "Paths",
     "PERIOD_SCOPED_METRICS",
@@ -133,6 +135,12 @@ ABSENT_YEAR = 2019
 #: module docstring: ``<company>/<year>/<form>/<filing>.htm``.
 DATA_DIR = Path("sandbox_engine") / "data"
 
+#: Configurable persistent data directory. Defaults to a local ``data`` directory
+#: alongside the repository. Override with ``FINGRAPH_DATA_DIR`` environment
+#: variable to persist the LadybugDB, WAL, concept registry, staging spill,
+#: and ingestion checkpoints across restarts.
+FINGRAPH_DATA_DIR = Path(os.environ.get("FINGRAPH_DATA_DIR", "data")).resolve()
+
 #: The lowercase form folders under each ``<company>/<year>`` directory, in the
 #: order filings are ingested. The folder is what labels the form -- the resolve
 #: step never has to open the document to know what it is.
@@ -194,13 +202,16 @@ class Paths:
         rediscovering them.
         """
         root = Path(root).resolve()
-        sandbox = root / "sandbox_engine" / "_run"
+        # Use FINGRAPH_DATA_DIR for persistent data (database, staging, registry)
+        # This ensures the authoritative LadybugDB survives restarts.
+        persistent = FINGRAPH_DATA_DIR
+        persistent.mkdir(parents=True, exist_ok=True)
         return cls(
             root=root,
-            db=sandbox / "sandbox.lbug",
-            staging=sandbox / "staging",
-            report=sandbox / "report.json",
-            registry=sandbox / "concepts.json",
+            db=persistent / "sandbox.lbug",
+            staging=persistent / "staging",
+            report=persistent / "report.json",
+            registry=persistent / "concepts.json",
         )
 
     def ensure(self) -> "Paths":
@@ -210,32 +221,23 @@ class Paths:
         return self
 
     def reset(self) -> None:
-        """Delete the database, the staging spill, the report, and the registry.
+        """Delete the staging spill, the report, and the concept registry.
 
-        The database is removed as a whole directory: LadybugDB creates the
-        ``.lbug`` path alongside ``.wal`` and ``.tmp`` siblings, so deleting the
-        single named file leaves the transaction log behind and the next open
-        reports a stale WAL.
-
-        The registry goes with it. It is dedup *state*, not a cache: keeping it
-        across a reset would let a run resolve onto entities belonging to a
-        graph that no longer exists, which is the one thing a reset has to
-        prevent.
+        The authoritative LadybugDB at :attr:`db` is NEVER deleted or reset.
+        It is the persistent source of truth and must survive restarts.
+        A reset only clears the transient Parquet staging and run report.
         """
         import shutil
 
         for path in (
-            self.db,
-            self.db.with_name(self.db.name + ".wal"),
+            self.staging,
             self.report,
             self.registry,
         ):
-            if path.is_file():
+            if path.is_dir():
+                shutil.rmtree(path)
+            elif path.is_file():
                 path.unlink()
-        if self.db.is_dir():
-            shutil.rmtree(self.db)
-        if self.staging.is_dir():
-            shutil.rmtree(self.staging)
         self.ensure()
 
 

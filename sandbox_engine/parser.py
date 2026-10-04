@@ -131,6 +131,10 @@ def filing_identity(metadata: dict[str, Any]) -> str:
     Scoped to the filing rather than to the ticker, because a company files many
     8-Ks: two of them can both contain "Item 5.07" with the same title, and a
     ticker-scoped id would silently keep only the first.
+    
+    Includes accession_number and content_hash for proper deduplication:
+    - accession_number uniquely identifies the SEC filing
+    - content_hash prevents duplicate content from being ingested
     """
     return stable_id(
         "filing",
@@ -139,6 +143,8 @@ def filing_identity(metadata: dict[str, Any]) -> str:
         metadata["fiscal_year"],
         metadata["fiscal_period"],
         metadata["filing_date"],
+        metadata.get("accession_number", ""),
+        metadata.get("content_hash", ""),
     )
 
 
@@ -1395,6 +1401,23 @@ class ExtractionResult:
     #: produces them from one gazetteer pass and the causal layer treats them
     #: as one family.
     entities: dict[str, dict[str, dict[str, Any]]] = field(default_factory=dict)
+    
+    # -- SEC Filing Intelligence Layer ----------------------------------
+    insiders: dict[str, dict[str, Any]] = field(default_factory=dict)
+    insider_transactions: dict[str, dict[str, Any]] = field(default_factory=dict)
+    institutional_holders: dict[str, dict[str, Any]] = field(default_factory=dict)
+    institutional_holdings: dict[str, dict[str, Any]] = field(default_factory=dict)
+    shareholders: dict[str, dict[str, Any]] = field(default_factory=dict)
+    shareholdings: dict[str, dict[str, Any]] = field(default_factory=dict)
+    securities: dict[str, dict[str, Any]] = field(default_factory=dict)
+    corporate_events: dict[str, dict[str, Any]] = field(default_factory=dict)
+    capital_raises: dict[str, dict[str, Any]] = field(default_factory=dict)
+    equity_compensation_plans: dict[str, dict[str, Any]] = field(default_factory=dict)
+    exhibits: dict[str, dict[str, Any]] = field(default_factory=dict)
+    supporting_documents: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # -- Temporal Hierarchy Layer ---------------------------------------
+    fiscal_years: dict[str, dict[str, Any]] = field(default_factory=dict)
+    fiscal_quarters: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def counts(self) -> dict[str, int]:
         """Row count per table, for the run report and benchmark 1."""
@@ -1414,6 +1437,22 @@ class ExtractionResult:
             "sector_overlays": len(self.sector_overlays),
             "concepts": len(self.concepts),
             "entities": sum(len(v) for v in self.entities.values()),
+            # -- SEC Filing Intelligence Layer ----------------------------------
+            "insiders": len(self.insiders),
+            "insider_transactions": len(self.insider_transactions),
+            "institutional_holders": len(self.institutional_holders),
+            "institutional_holdings": len(self.institutional_holdings),
+            "shareholders": len(self.shareholders),
+            "shareholdings": len(self.shareholdings),
+            "securities": len(self.securities),
+            "corporate_events": len(self.corporate_events),
+            "capital_raises": len(self.capital_raises),
+            "equity_compensation_plans": len(self.equity_compensation_plans),
+            "exhibits": len(self.exhibits),
+            "supporting_documents": len(self.supporting_documents),
+            # -- Temporal Hierarchy Layer ---------------------------------------
+            "fiscal_years": len(self.fiscal_years),
+            "fiscal_quarters": len(self.fiscal_quarters),
             **{name: len(rows) for name, rows in self.edges.items()},
         }
 
@@ -1427,6 +1466,11 @@ class ExtractionResult:
             "sections", "raw_facts", "footnotes", "risk_factors",
             "causal_relations", "fiscal_periods", "restatements",
             "discontinued_segments", "sector_overlays", "concepts",
+            "insiders", "insider_transactions", "institutional_holders",
+            "institutional_holdings", "shareholders", "shareholdings",
+            "securities", "corporate_events", "capital_raises",
+            "equity_compensation_plans", "exhibits", "supporting_documents",
+            "fiscal_years", "fiscal_quarters",
         ):
             getattr(self, name).update(getattr(other, name))
         for table, nodes in other.entities.items():
@@ -1755,6 +1799,14 @@ class FilingParser:
         )
         sources["fiscal"] = period_source
 
+        # Extract accession number from DEI tag
+        accession_number = _dei_value(raw, "AccessionNumber")
+        if not accession_number:
+            accession_number = _dei_value(raw, "accessionNumber")
+        
+        # Extract content hash
+        content_hash = self._compute_content_hash(raw)
+
         return {
             "ticker": from_table or self._ticker_from_name(path),
             "name": name,
@@ -1766,7 +1818,14 @@ class FilingParser:
             "filing_date": self._filing_date(path, fiscal_year),
             "currency": self._currency(hidden),
             "sources": sources,
+            "accession_number": accession_number or "",
+            "content_hash": content_hash,
         }
+    
+    def _compute_content_hash(self, raw: str) -> str:
+        """Compute SHA256 hash of document content for deduplication."""
+        import hashlib
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
     def _form_from_text(self, text: str) -> str:
         match = re.search(r"FORM\s+(10-K|10-Q|8-K)", text, re.I)
@@ -2366,6 +2425,20 @@ class FilingParser:
         events = self.extract_events(raw, metadata)
         chunks = self.extract_chunks(raw, metadata)
 
+        # -- SEC Filing Intelligence Layer Extractions ----------------------
+        insiders = extract_insiders(raw, metadata)
+        insider_transactions = extract_insider_transactions(raw, metadata)
+        institutional_holders = extract_institutional_holders(raw, metadata)
+        institutional_holdings = extract_institutional_holdings(raw, metadata)
+        shareholders = extract_shareholders(raw, metadata)
+        shareholdings = extract_shareholdings(raw, metadata)
+        securities = extract_securities(raw, metadata)
+        corporate_events = extract_corporate_events(raw, metadata)
+        capital_raises = extract_capital_raises(raw, metadata)
+        equity_compensation_plans = extract_equity_compensation_plans(raw, metadata)
+        exhibits = extract_exhibits(raw, metadata)
+        supporting_documents = extract_supporting_documents(raw, metadata)
+
         # A segment note's figures hang off the revenue metric of the same
         # period. If that period never appeared on a statement -- a segment note
         # may use a point-in-time key -- the host node has to exist anyway, or
@@ -2418,6 +2491,76 @@ class FilingParser:
                 "currency": "USD",
             })
 
+        # -- Temporal Hierarchy Layer ---------------------------------------
+        fiscal_years: dict[str, dict[str, Any]] = {}
+        fiscal_quarters: dict[str, dict[str, Any]] = {}
+        
+        # Create FiscalYear node (one per company per fiscal year)
+        fy = metadata.get("fiscal_year")
+        if fy is not None:
+            fy_int = int(fy) if isinstance(fy, (int, str)) and str(fy).isdigit() else None
+            if fy_int is not None:
+                fy_id = stable_id("fy", metadata["ticker"], str(fy_int))
+                fiscal_years[fy_id] = {
+                    "id": fy_id,
+                    "company_ticker": metadata["ticker"],
+                    "fiscal_year": fy_int,
+                    "year_start_date": "",  # Will be computed from year_end if available
+                    "year_end_date": "",
+                }
+                
+                # Compute year start/end from fiscal year end
+                if year_end:
+                    month, day = year_end
+                    # Fiscal year ends in the given year
+                    year_end_date = f"{fy_int}-{month:02d}-{day:02d}"
+                    # Fiscal year starts the day after prior year end
+                    if month == 1 and day == 1:
+                        year_start_date = f"{fy_int - 1}-01-01"
+                    else:
+                        year_start_date = f"{fy_int - 1}-{month:02d}-{day:02d}"
+                    fiscal_years[fy_id]["year_start_date"] = year_start_date
+                    fiscal_years[fy_id]["year_end_date"] = year_end_date
+                
+                # Create FiscalQuarter node (one per filing's fiscal period)
+                fp = metadata.get("fiscal_period", "")
+                quarter_number = 0
+                quarter_label = fp
+                if fp == "FY":
+                    quarter_number = 0  # Full year
+                    quarter_label = "FY"
+                elif fp.startswith("Q"):
+                    try:
+                        quarter_number = int(fp[1:])
+                    except (ValueError, IndexError):
+                        quarter_number = 0
+                
+                fq_id = stable_id("fq", metadata["ticker"], str(fy_int), quarter_label)
+                fiscal_quarters[fq_id] = {
+                    "id": fq_id,
+                    "fiscal_year_id": fy_id,
+                    "quarter_number": quarter_number,
+                    "quarter_label": quarter_label,
+                    "quarter_start_date": "",
+                    "quarter_end_date": "",
+                }
+                
+                # Set quarter dates based on period_end
+                period_end = metadata.get("period_end", "")
+                if period_end:
+                    fiscal_quarters[fq_id]["quarter_end_date"] = period_end
+                    # Approximate quarter start (3 months before end for quarters)
+                    if quarter_number > 0:
+                        from datetime import datetime, timedelta
+                        try:
+                            end_dt = datetime.strptime(period_end, "%Y-%m-%d")
+                            start_dt = end_dt - timedelta(days=92)  # ~3 months
+                            fiscal_quarters[fq_id]["quarter_start_date"] = start_dt.strftime("%Y-%m-%d")
+                        except ValueError:
+                            pass
+                    else:
+                        fiscal_quarters[fq_id]["quarter_start_date"] = fiscal_years[fy_id].get("year_start_date", "")
+
         filing_id = filing_identity(metadata)
         result = ExtractionResult(
             company={
@@ -2437,6 +2580,22 @@ class FilingParser:
             segments=segments,
             events=events,
             chunks=chunks,
+            # -- SEC Filing Intelligence Layer ----------------------------
+            insiders=insiders,
+            insider_transactions=insider_transactions,
+            institutional_holders=institutional_holders,
+            institutional_holdings=institutional_holdings,
+            shareholders=shareholders,
+            shareholdings=shareholdings,
+            securities=securities,
+            corporate_events=corporate_events,
+            capital_raises=capital_raises,
+            equity_compensation_plans=equity_compensation_plans,
+            exhibits=exhibits,
+            supporting_documents=supporting_documents,
+            # -- Temporal Hierarchy Layer ---------------------------------------
+            fiscal_years=fiscal_years,
+            fiscal_quarters=fiscal_quarters,
         )
         result.edges = {
             "SUBMITTED": [{"from": metadata["ticker"], "to": filing_id}],
@@ -2456,6 +2615,91 @@ class FilingParser:
             "HAS_CHUNK": [
                 {"from": filing_id, "to": chunk_id} for chunk_id in chunks
             ],
+            # -- SEC Filing Intelligence Layer Relationships --------------
+            "INSIDER_OF": [
+                {"from": insider_id, "to": metadata["ticker"]}
+                for insider_id in insiders
+            ],
+            "FILED_INSIDER_FORM": [
+                {"from": insider_id, "to": filing_id, "form_type": metadata["form_type"]}
+                for insider_id in insiders
+            ],
+            "TRANSACTED": [
+                {"from": txn_id, "to": txn_id}
+                for txn_id in insider_transactions
+            ],
+            "REPORTED_HOLDING": [
+                {"from": holder_id, "to": holding_id}
+                for holder_id in institutional_holders
+                for holding_id in institutional_holdings
+            ],
+            "HOLDS_SECURITY": [
+                {"from": holding_id, "to": holding_id}
+                for holding_id in institutional_holdings
+            ],
+            "OWNS": [
+                {"from": sh_id, "to": sh_id}
+                for sh_id in shareholders
+            ],
+            "SHAREHOLDING_IN": [
+                {"from": sh_id, "to": metadata["ticker"]}
+                for sh_id in shareholdings
+            ],
+            "ISSUED": [
+                {"from": metadata["ticker"], "to": sec_id}
+                for sec_id in securities
+            ],
+            "HAS_EVENT": [
+                {"from": metadata["ticker"], "to": event_id}
+                for event_id in corporate_events
+            ],
+            "DISCLOSED_IN_FILING": [
+                {"from": event_id, "to": filing_id}
+                for event_id in corporate_events
+            ],
+            "RAISED_CAPITAL": [
+                {"from": metadata["ticker"], "to": cr_id}
+                for cr_id in capital_raises
+            ],
+            "CAPITAL_RAISE_IN_FILING": [
+                {"from": cr_id, "to": filing_id}
+                for cr_id in capital_raises
+            ],
+            "HAS_EQUITY_PLAN": [
+                {"from": metadata["ticker"], "to": plan_id}
+                for plan_id in equity_compensation_plans
+            ],
+            "EQUITY_PLAN_IN_FILING": [
+                {"from": plan_id, "to": filing_id}
+                for plan_id in equity_compensation_plans
+            ],
+            "HAS_EXHIBIT": [
+                {"from": filing_id, "to": ex_id}
+                for ex_id in exhibits
+            ],
+            "HAS_SUPPORTING_DOC": [
+                {"from": metadata["ticker"], "to": doc_id}
+                for doc_id in supporting_documents
+            ],
+            # -- Temporal Hierarchy Layer Relationships -------------------
+            "HAS_FISCAL_YEAR": [
+                {"from": metadata["ticker"], "to": fy_id}
+                for fy_id in fiscal_years
+            ],
+            "HAS_FISCAL_QUARTER": [
+                {"from": fy_id, "to": fq_id}
+                for fy_id in fiscal_years
+                for fq_id in fiscal_quarters
+                if fiscal_quarters[fq_id].get("fiscal_year_id") == fy_id
+            ],
+            "FILED_IN_QUARTER": [
+                {"from": filing_id, "to": fq_id}
+                for fq_id in fiscal_quarters
+            ],
+            # -- Amended Filing Relationships -------------------
+            "AMENDS": [
+                {"from": filing_id, "to": metadata.get("original_filing_id", "")}
+            ] if metadata.get("is_amended") and metadata.get("original_filing_id") else [],
         }
         result.stats = {
             **result.counts(),
@@ -2582,3 +2826,474 @@ def extract_suppliers(raw: str, metadata: dict[str, Any]) -> list[dict[str, Any]
     """
     # TODO: Implement supplier extraction from relevant sections
     return []
+
+
+# -- SEC Filing Intelligence Extraction Methods -----------------------------
+
+def extract_insiders(raw: str, metadata: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Extract insider information from Form 3, 4, 5 filings.
+    
+    Returns dict of insider_id -> insider data with keys:
+    id, name, title, cik, is_director, is_officer, is_ten_percent_owner
+    """
+    insiders: dict[str, dict[str, Any]] = {}
+    form_type = str(metadata.get("form_type", "")).upper()
+    
+    if form_type not in ("3", "4", "5"):
+        return insiders
+    
+    # Parse the filing for insider information
+    # Form 3: Initial Statement of Beneficial Ownership
+    # Form 4: Statement of Changes in Beneficial Ownership
+    # Form 5: Annual Statement of Changes in Beneficial Ownership
+    
+    text = strip_markup(raw)
+    text = re.sub(r"\s+", " ", text)
+    
+    # Look for insider name patterns
+    # SEC forms have specific sections for reporting persons
+    name_pattern = re.compile(r'Name of Reporting Person[:\s]*([A-Z][A-Za-z\s\.\-]+)', re.I)
+    title_pattern = re.compile(r'Title[:\s]*([A-Za-z\s]+)', re.I)
+    cik_pattern = re.compile(r'CIK[:\s]*(\d{10})', re.I)
+    
+    name_match = name_pattern.search(text)
+    title_match = title_pattern.search(text)
+    cik_match = cik_pattern.search(text)
+    
+    if name_match:
+        name = clean_text(name_match.group(1))
+        insider_id = stable_id("insider", name, metadata.get("ticker", ""))
+        insiders[insider_id] = {
+            "id": insider_id,
+            "name": name,
+            "title": clean_text(title_match.group(1)) if title_match else "",
+            "cik": cik_match.group(1).zfill(10) if cik_match else "",
+            "is_director": "director" in (title_match.group(1) if title_match else "").lower(),
+            "is_officer": any(t in (title_match.group(1) if title_match else "").lower() 
+                             for t in ["officer", "president", "ceo", "cfo", "coo", "cto", "secretary", "treasurer"]),
+            "is_ten_percent_owner": "10%" in text or "ten percent" in text.lower(),
+        }
+    
+    return insiders
+
+
+def extract_insider_transactions(raw: str, metadata: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Extract insider transactions from Form 4 filings.
+    
+    Returns dict of transaction_id -> transaction data with keys:
+    id, transaction_date, transaction_code, security_title, shares,
+    price_per_share, acquired_disposed, ownership_form, direct_indirect,
+    nature_of_ownership
+    """
+    transactions: dict[str, dict[str, Any]] = {}
+    form_type = str(metadata.get("form_type", "")).upper()
+    
+    if form_type != "4":
+        return transactions
+    
+    text = strip_markup(raw)
+    text = re.sub(r"\s+", " ", text)
+    
+    # Form 4 has Table I (Non-Derivative Securities) and Table II (Derivative Securities)
+    # Look for transaction rows
+    txn_pattern = re.compile(
+        r'Transaction Date[:\s]*(\d{2}/\d{2}/\d{4}).*?'
+        r'Transaction Code[:\s]*([A-Z]).*?'
+        r'Security Title[:\s]*([A-Za-z0-9\s]+).*?'
+        r'Shares[:\s]*([\d,]+).*?'
+        r'Price[:\s]*([\d\.]+).*?'
+        r'Acquired/Disposed[:\s]*([AD])',
+        re.I | re.S
+    )
+    
+    for match in txn_pattern.finditer(text):
+        txn_id = stable_id("insider_txn", match.group(1), match.group(3), metadata.get("ticker", ""))
+        transactions[txn_id] = {
+            "id": txn_id,
+            "transaction_date": match.group(1),
+            "transaction_code": match.group(2).upper(),
+            "security_title": clean_text(match.group(3)),
+            "shares": int(match.group(4).replace(",", "")) if match.group(4).replace(",", "").isdigit() else 0,
+            "price_per_share": float(match.group(5)) if match.group(5).replace(".", "").isdigit() else 0.0,
+            "acquired_disposed": match.group(6).upper(),
+            "ownership_form": "D",  # Direct
+            "direct_indirect": "D",
+            "nature_of_ownership": "",
+        }
+    
+    return transactions
+
+
+def extract_institutional_holders(raw: str, metadata: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Extract institutional holders from 13F-HR filings.
+    
+    CRITICAL: The institutional manager (filer) is SEPARATE from the issuer (company).
+    The 13F-HR is filed BY the institutional manager ABOUT their holdings IN the issuer.
+    
+    Returns dict of holder_id -> holder data with keys:
+    id, name, cik, filer_type
+    """
+    holders: dict[str, dict[str, Any]] = {}
+    form_type = str(metadata.get("form_type", "")).upper()
+    
+    if form_type != "13F-HR":
+        return holders
+    
+    text = strip_markup(raw)
+    text = re.sub(r"\s+", " ", text)
+    
+    # The FILER is the institutional investment manager
+    filer_name_pattern = re.compile(r'Name of Reporting Manager[:\s]*([A-Za-z0-9\s\.\,\&]+)', re.I)
+    filer_cik_pattern = re.compile(r'Central Index Key[:\s]*(\d{10})', re.I)
+    
+    filer_name_match = filer_name_pattern.search(text)
+    filer_cik_match = filer_cik_pattern.search(text)
+    
+    if filer_name_match:
+        name = clean_text(filer_name_match.group(1))
+        holder_id = stable_id("inst_holder", name)
+        holders[holder_id] = {
+            "id": holder_id,
+            "name": name,
+            "cik": filer_cik_match.group(1).zfill(10) if filer_cik_match else "",
+            "filer_type": "institutional_investment_manager",
+        }
+    
+    return holders
+
+
+def extract_institutional_holdings(raw: str, metadata: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Extract institutional holdings from 13F-HR filings.
+    
+    Returns dict of holding_id -> holding data with keys:
+    id, cusip, security_name, shares, value, put_call, discretion, voting_authority
+    """
+    holdings: dict[str, dict[str, Any]] = {}
+    form_type = str(metadata.get("form_type", "")).upper()
+    
+    if form_type != "13F-HR":
+        return holdings
+    
+    text = strip_markup(raw)
+    text = re.sub(r"\s+", " ", text)
+    
+    # 13F-HR has a table of holdings with CUSIP, security name, shares, value, etc.
+    # Pattern for holding entries
+    holding_pattern = re.compile(
+        r'CUSIP[:\s]*(\d{9}).*?'
+        r'Security Name[:\s]*([A-Za-z0-9\s\.\,\-]+).*?'
+        r'Shares[:\s]*([\d,]+).*?'
+        r'Value[:\s]*([\d,]+).*?'
+        r'Put/Call[:\s]*([A-Z]+).*?'
+        r'Discretion[:\s]*([A-Z]+).*?'
+        r'Voting Authority[:\s]*([\d,]+)',
+        re.I | re.S
+    )
+    
+    for match in holding_pattern.finditer(text):
+        holding_id = stable_id("inst_holding", match.group(1), metadata.get("ticker", ""))
+        holdings[holding_id] = {
+            "id": holding_id,
+            "cusip": match.group(1),
+            "security_name": clean_text(match.group(2)),
+            "shares": int(match.group(3).replace(",", "")) if match.group(3).replace(",", "").isdigit() else 0,
+            "value": int(match.group(4).replace(",", "")) if match.group(4).replace(",", "").isdigit() else 0,
+            "put_call": match.group(5).upper(),
+            "discretion": match.group(6).upper(),
+            "voting_authority": int(match.group(7).replace(",", "")) if match.group(7).replace(",", "").isdigit() else 0,
+        }
+    
+    return holdings
+
+
+def extract_shareholders(raw: str, metadata: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Extract shareholders from SC 13D, SC 13G, DEF 14A filings.
+    
+    Returns dict of shareholder_id -> shareholder data with keys:
+    id, name, cik, holder_type
+    """
+    shareholders: dict[str, dict[str, Any]] = {}
+    form_type = str(metadata.get("form_type", "")).upper()
+    
+    if form_type not in ("SC 13D", "SC 13G", "DEF 14A"):
+        return shareholders
+    
+    text = strip_markup(raw)
+    text = re.sub(r"\s+", " ", text)
+    
+    # Look for beneficial owner information
+    owner_pattern = re.compile(
+        r'Name of Reporting Person[:\s]*([A-Za-z0-9\s\.\,\&]+).*?'
+        r'CIK[:\s]*(\d{10})',
+        re.I | re.S
+    )
+    
+    for match in owner_pattern.finditer(text):
+        name = clean_text(match.group(1))
+        holder_id = stable_id("shareholder", name)
+        shareholders[holder_id] = {
+            "id": holder_id,
+            "name": name,
+            "cik": match.group(2).zfill(10),
+            "holder_type": "beneficial_owner" if form_type in ("SC 13D", "SC 13G") else "executive",
+        }
+    
+    return shareholders
+
+
+def extract_shareholdings(raw: str, metadata: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Extract shareholdings from SC 13D, SC 13G, DEF 14A filings.
+    
+    Returns dict of shareholding_id -> shareholding data with keys:
+    id, shares, percent_outstanding, filing_date
+    """
+    shareholdings: dict[str, dict[str, Any]] = {}
+    form_type = str(metadata.get("form_type", "")).upper()
+    
+    if form_type not in ("SC 13D", "SC 13G", "DEF 14A"):
+        return shareholdings
+    
+    text = strip_markup(raw)
+    text = re.sub(r"\s+", " ", text)
+    
+    # Look for shares owned and percentage
+    shares_pattern = re.compile(
+        r'Amount Beneficially Owned[:\s]*([\d,]+).*?'
+        r'Percent of Class[:\s]*([\d\.]+)%',
+        re.I | re.S
+    )
+    
+    for match in shares_pattern.finditer(text):
+        sh_id = stable_id("shareholding", match.group(1), metadata.get("ticker", ""), metadata.get("filing_date", ""))
+        shareholdings[sh_id] = {
+            "id": sh_id,
+            "shares": int(match.group(1).replace(",", "")) if match.group(1).replace(",", "").isdigit() else 0,
+            "percent_outstanding": float(match.group(2)) if match.group(2).replace(".", "").isdigit() else 0.0,
+            "filing_date": metadata.get("filing_date", ""),
+        }
+    
+    return shareholdings
+
+
+def extract_securities(raw: str, metadata: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Extract securities from S-3, S-8, 424B filings.
+    
+    Returns dict of security_id -> security data with keys:
+    id, cusip, isin, ticker, security_type, security_title, issuer
+    """
+    securities: dict[str, dict[str, Any]] = {}
+    form_type = str(metadata.get("form_type", "")).upper()
+    
+    if not (form_type.startswith("S-") or form_type.startswith("424B")):
+        return securities
+    
+    text = strip_markup(raw)
+    text = re.sub(r"\s+", " ", text)
+    
+    # Look for security information
+    security_pattern = re.compile(
+        r'CUSIP[:\s]*(\d{9}).*?'
+        r'ISIN[:\s]*([A-Z]{2}\d{9}[A-Z0-9]).*?'
+        r'Title of Security[:\s]*([A-Za-z0-9\s\.\,\-]+)',
+        re.I | re.S
+    )
+    
+    for match in security_pattern.finditer(text):
+        sec_id = stable_id("security", match.group(1), metadata.get("ticker", ""))
+        securities[sec_id] = {
+            "id": sec_id,
+            "cusip": match.group(1),
+            "isin": match.group(2),
+            "ticker": metadata.get("ticker", ""),
+            "security_type": "equity" if form_type == "S-8" else "debt" if form_type.startswith("424B") else "mixed",
+            "security_title": clean_text(match.group(3)),
+            "issuer": metadata.get("name", ""),
+        }
+    
+    return securities
+
+
+def extract_corporate_events(raw: str, metadata: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Extract corporate events from 8-K, 10-K, 10-Q filings.
+    
+    Returns dict of event_id -> event data with keys:
+    id, event_type, event_date, description, item_code, materiality
+    """
+    events: dict[str, dict[str, Any]] = {}
+    form_type = str(metadata.get("form_type", "")).upper()
+    
+    if form_type not in ("8-K", "10-K", "10-Q"):
+        return events
+    
+    text = strip_markup(raw)
+    text = re.sub(r"\s+", " ", text)
+    
+    # 8-K has specific item codes
+    item_pattern = re.compile(r'Item\s+(\d+\.\d+)\s*\.?\s*([^\n\r.]{3,80})', re.I)
+    
+    for match in item_pattern.finditer(text):
+        code = match.group(1).strip()
+        title = clean_text(match.group(2))
+        
+        # Only include material items
+        material_items = {"1.01", "1.02", "1.03", "2.01", "2.02", "2.03", "2.04", "2.05", "2.06",
+                         "3.01", "3.02", "3.03", "4.01", "4.02", "5.01", "5.02", "5.03",
+                         "5.04", "5.05", "5.06", "5.07", "5.08", "6.01", "6.02", "6.03",
+                         "6.04", "6.05", "7.01", "7.02", "8.01", "8.02", "9.01"}
+        
+        if code in material_items:
+            event_id = stable_id("event", code, title, metadata.get("ticker", ""), metadata.get("filing_date", ""))
+            events[event_id] = {
+                "id": event_id,
+                "event_type": f"8K_Item_{code}",
+                "event_date": metadata.get("filing_date", ""),
+                "description": title,
+                "item_code": code,
+                "materiality": "high" if code in material_items else "medium",
+            }
+    
+    return events
+
+
+def extract_capital_raises(raw: str, metadata: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Extract capital raises from S-3, 424B, 8-K filings.
+    
+    Returns dict of capital_raise_id -> capital raise data with keys:
+    id, offering_type, amount, price, shares, underwriters, use_of_proceeds
+    """
+    capital_raises: dict[str, dict[str, Any]] = {}
+    form_type = str(metadata.get("form_type", "")).upper()
+    
+    if not (form_type.startswith("S-") or form_type.startswith("424B") or form_type == "8-K"):
+        return capital_raises
+    
+    text = strip_markup(raw)
+    text = re.sub(r"\s+", " ", text)
+    
+    # Look for offering information
+    offering_pattern = re.compile(
+        r'Total Offering Amount[:\s]*\$?([\d,\.]+)\s*(million|billion)?.*?'
+        r'Price Per Share[:\s]*\$?([\d,\.]+).*?'
+        r'Shares Offered[:\s]*([\d,]+)',
+        re.I | re.S
+    )
+    
+    for match in offering_pattern.finditer(text):
+        cr_id = stable_id("capital_raise", match.group(1), metadata.get("ticker", ""), metadata.get("filing_date", ""))
+        amount_str = match.group(1).replace(",", "")
+        amount = float(amount_str) if amount_str.replace(".", "").isdigit() else 0.0
+        if match.group(2) and match.group(2).lower() == "million":
+            amount *= 1_000_000
+        elif match.group(2) and match.group(2).lower() == "billion":
+            amount *= 1_000_000_000
+        
+        capital_raises[cr_id] = {
+            "id": cr_id,
+            "offering_type": form_type,
+            "amount": amount,
+            "price": float(match.group(3)) if match.group(3).replace(",", "").replace(".", "").isdigit() else 0.0,
+            "shares": int(match.group(4).replace(",", "")) if match.group(4).replace(",", "").isdigit() else 0,
+            "underwriters": "",
+            "use_of_proceeds": "",
+        }
+    
+    return capital_raises
+
+
+def extract_equity_compensation_plans(raw: str, metadata: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Extract equity compensation plans from S-8, DEF 14A filings.
+    
+    Returns dict of plan_id -> plan data with keys:
+    id, plan_name, shares_authorized, shares_outstanding, exercise_price
+    """
+    plans: dict[str, dict[str, Any]] = {}
+    form_type = str(metadata.get("form_type", "")).upper()
+    
+    if form_type not in ("S-8", "DEF 14A"):
+        return plans
+    
+    text = strip_markup(raw)
+    text = re.sub(r"\s+", " ", text)
+    
+    # Look for plan information
+    plan_pattern = re.compile(
+        r'Plan Name[:\s]*([A-Za-z0-9\s\.\,\-]+).*?'
+        r'Shares Authorized[:\s]*([\d,]+).*?'
+        r'Shares Outstanding[:\s]*([\d,]+).*?'
+        r'Exercise Price[:\s]*\$?([\d,\.]+)',
+        re.I | re.S
+    )
+    
+    for match in plan_pattern.finditer(text):
+        plan_id = stable_id("eq_plan", match.group(1), metadata.get("ticker", ""))
+        plans[plan_id] = {
+            "id": plan_id,
+            "plan_name": clean_text(match.group(1)),
+            "shares_authorized": int(match.group(2).replace(",", "")) if match.group(2).replace(",", "").isdigit() else 0,
+            "shares_outstanding": int(match.group(3).replace(",", "")) if match.group(3).replace(",", "").isdigit() else 0,
+            "exercise_price": float(match.group(4).replace(",", "")) if match.group(4).replace(",", "").replace(".", "").isdigit() else 0.0,
+        }
+    
+    return plans
+
+
+def extract_exhibits(raw: str, metadata: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Extract exhibits from 10-K, 10-Q, 8-K, S-3 filings.
+    
+    Returns dict of exhibit_id -> exhibit data with keys:
+    id, exhibit_number, exhibit_title, description
+    """
+    exhibits: dict[str, dict[str, Any]] = {}
+    form_type = str(metadata.get("form_type", "")).upper()
+    
+    if form_type not in ("10-K", "10-Q", "8-K", "S-3"):
+        return exhibits
+    
+    text = strip_markup(raw)
+    text = re.sub(r"\s+", " ", text)
+    
+    # Look for exhibit index
+    exhibit_pattern = re.compile(
+        r'Exhibit\s+(\d+\.\d+)\s*[:\-]\s*([A-Za-z0-9\s\.\,\-\(\)]+)',
+        re.I
+    )
+    
+    for match in exhibit_pattern.finditer(text):
+        ex_id = stable_id("exhibit", match.group(1), metadata.get("ticker", ""))
+        exhibits[ex_id] = {
+            "id": ex_id,
+            "exhibit_number": match.group(1),
+            "exhibit_title": clean_text(match.group(2)),
+            "description": clean_text(match.group(2)),
+        }
+    
+    return exhibits
+
+
+def extract_supporting_documents(raw: str, metadata: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Extract supporting documents (ARS, SD, 11-K, earnings releases, presentations, etc.).
+    
+    Returns dict of doc_id -> document data with keys:
+    id, doc_type, title, description, source_url, retrieved_at
+    """
+    docs: dict[str, dict[str, Any]] = {}
+    form_type = str(metadata.get("form_type", "")).upper()
+    
+    if form_type not in ("ARS", "SD", "11-K"):
+        return docs
+    
+    text = strip_markup(raw)
+    text = re.sub(r"\s+", " ", text)
+    
+    # Generic document extraction
+    doc_id = stable_id("supp_doc", form_type, metadata.get("ticker", ""), metadata.get("filing_date", ""))
+    docs[doc_id] = {
+        "id": doc_id,
+        "doc_type": form_type,
+        "title": metadata.get("document_title", f"{form_type} Filing"),
+        "description": f"{form_type} filing for {metadata.get('name', metadata.get('ticker', ''))}",
+        "source_url": metadata.get("document_url", ""),
+        "retrieved_at": metadata.get("retrieved_at", ""),
+    }
+    
+    return docs

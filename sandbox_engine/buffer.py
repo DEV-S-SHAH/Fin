@@ -109,7 +109,10 @@ NODE_TABLES: dict[str, tuple[str, ...]] = {
     # as provenance rather than promoted to the key.
     "Filing": ("id", "form_type", "fiscal_year", "fiscal_period",
                "filing_date", "accession_number", "period_end_date",
-               "reporting_lag_in_days", "audit_status"),
+               "reporting_lag_in_days", "audit_status", "document_type",
+               "document_title", "document_url", "source", "source_authority",
+               "filing_status", "is_amended", "amendment_type", "exhibit_type",
+               "content_hash", "retrieved_at"),
     # ``period_code``/``period_start``/``period_end``/``period_days`` describe the
     # period the value was measured over; ``period_cumulative`` is 1 for a
     # year-to-date figure and 0 for a discrete quarter or an instant;
@@ -156,6 +159,32 @@ NODE_TABLES: dict[str, tuple[str, ...]] = {
     "RegulatoryBody": ("name", "jurisdiction", "scope"),
     "MacroVariable": ("name", "variable_type"),
     "SectorOverlay": ("sector", "overlay_name", "overlay_concept_list"),
+    # -- Temporal Hierarchy Layer ---------------------------------------
+    "FiscalYear": ("id", "company_ticker", "fiscal_year", "year_start_date", "year_end_date"),
+    "FiscalQuarter": ("id", "fiscal_year_id", "quarter_number", "quarter_label", "quarter_start_date", "quarter_end_date"),
+    # -- SEC Filing Intelligence Layer ----------------------------------
+    "Insider": ("id", "name", "title", "cik", "is_director", "is_officer",
+                "is_ten_percent_owner"),
+    "InsiderTransaction": ("id", "transaction_date", "transaction_code",
+                           "security_title", "shares", "price_per_share",
+                           "acquired_disposed", "ownership_form",
+                           "direct_indirect", "nature_of_ownership"),
+    "InstitutionalHolder": ("id", "name", "cik", "filer_type"),
+    "InstitutionalHolding": ("id", "cusip", "security_name", "shares",
+                             "value", "put_call", "discretion", "voting_authority"),
+    "Shareholder": ("id", "name", "cik", "holder_type"),
+    "Shareholding": ("id", "shares", "percent_outstanding", "filing_date"),
+    "Security": ("id", "cusip", "isin", "ticker", "security_type",
+                 "security_title", "issuer"),
+    "CorporateEvent": ("id", "event_type", "event_date", "description",
+                       "item_code", "materiality"),
+    "CapitalRaise": ("id", "offering_type", "amount", "price",
+                     "shares", "underwriters", "use_of_proceeds"),
+    "EquityCompensationPlan": ("id", "plan_name", "shares_authorized",
+                               "shares_outstanding", "exercise_price"),
+    "Exhibit": ("id", "exhibit_number", "exhibit_title", "description"),
+    "SupportingDocument": ("id", "doc_type", "title", "description",
+                           "source_url", "retrieved_at"),
 }
 
 PRIMARY_KEYS: dict[str, str] = {
@@ -182,6 +211,22 @@ PRIMARY_KEYS: dict[str, str] = {
     "RegulatoryBody": "name",
     "MacroVariable": "name",
     "SectorOverlay": "sector",
+    # -- Temporal Hierarchy Layer ---------------------------------------
+    "FiscalYear": "id",
+    "FiscalQuarter": "id",
+    # -- SEC Filing Intelligence Layer ----------------------------------
+    "Insider": "id",
+    "InsiderTransaction": "id",
+    "InstitutionalHolder": "id",
+    "InstitutionalHolding": "id",
+    "Shareholder": "id",
+    "Shareholding": "id",
+    "Security": "id",
+    "CorporateEvent": "id",
+    "CapitalRaise": "id",
+    "EquityCompensationPlan": "id",
+    "Exhibit": "id",
+    "SupportingDocument": "id",
 }
 
 #: Relationship table -> (source node, target node, property columns).
@@ -244,6 +289,29 @@ REL_TABLES: dict[str, tuple[str, str, tuple[str, ...]]] = {
     "SUBJECT_CUSTOMER": ("Customer", "CausalRelation", ()),
     "SUBJECT_REGULATORY_BODY": ("RegulatoryBody", "CausalRelation", ()),
     "SUBJECT_MACRO_VARIABLE": ("MacroVariable", "CausalRelation", ()),
+    # -- SEC Filing Intelligence Layer ----------------------------------
+    "INSIDER_OF": ("Insider", "Company", ()),
+    "FILED_INSIDER_FORM": ("Insider", "Filing", ("form_type",)),
+    "TRANSACTED": ("InsiderTransaction", "Security", ()),
+    "REPORTED_HOLDING": ("InstitutionalHolder", "InstitutionalHolding", ()),
+    "HOLDS_SECURITY": ("InstitutionalHolding", "Security", ()),
+    "OWNS": ("Shareholder", "Shareholding", ()),
+    "SHAREHOLDING_IN": ("Shareholding", "Company", ()),
+    "ISSUED": ("Company", "Security", ()),
+    "HAS_EVENT": ("Company", "CorporateEvent", ()),
+    "DISCLOSED_IN_FILING": ("CorporateEvent", "Filing", ()),
+    "RAISED_CAPITAL": ("Company", "CapitalRaise", ()),
+    "CAPITAL_RAISE_IN_FILING": ("CapitalRaise", "Filing", ()),
+    "HAS_EQUITY_PLAN": ("Company", "EquityCompensationPlan", ()),
+    "EQUITY_PLAN_IN_FILING": ("EquityCompensationPlan", "Filing", ()),
+    "HAS_EXHIBIT": ("Filing", "Exhibit", ()),
+    "HAS_SUPPORTING_DOC": ("Company", "SupportingDocument", ()),
+    # -- Amended Filing Relationships -------------------
+    "AMENDS": ("Filing", "Filing", ("amendment_type",)),
+    # -- Temporal Hierarchy Layer ---------------------------------------
+    "HAS_FISCAL_YEAR": ("Company", "FiscalYear", ()),
+    "HAS_FISCAL_QUARTER": ("FiscalYear", "FiscalQuarter", ()),
+    "FILED_IN_QUARTER": ("Filing", "FiscalQuarter", ()),
 }
 
 #: Columns stored as a non-string type.
@@ -252,16 +320,22 @@ _INT_COLUMNS = frozenset({
     "year_removed", "calendar_year_overlap", "reporting_lag_in_days",
     "char_start", "char_end", "char_count", "scale", "decimals",
     "period_days", "period_cumulative",
+    "shares", "voting_authority", "shares_authorized", "shares_outstanding",
+    "quarter_number",
 })
 _DATE_COLUMNS = frozenset({
     "filing_date", "period_start", "period_end", "period_end_date",
     "effective_date", "disposal_date", "launch_date",
+    "transaction_date", "event_date", "retrieved_at",
+    "year_start_date", "year_end_date", "quarter_start_date", "quarter_end_date",
 })
 #: Node columns stored as DOUBLE. Separate from ``_DOUBLE_PROPS`` because that
 #: set types rel-table properties; a fact's reported value is a node column and
 #: has to go through the same ``column_type``/``_arrow_type`` pair.
 _DOUBLE_COLUMNS = frozenset({
     "reported_value", "weight", "magnitude", "concentration_pct",
+    "price_per_share", "value", "amount", "price", "exercise_price",
+    "percent_outstanding",
 })
 #: Rel-table properties stored as DOUBLE.
 _DOUBLE_PROPS = frozenset({"value", "weight", "magnitude", "concentration_pct"})
@@ -282,6 +356,22 @@ RESULT_NODE_SOURCES: tuple[tuple[str, str], ...] = (
     ("RestatementEvent", "restatements"),
     ("DiscontinuedOpsSegment", "discontinued_segments"),
     ("SectorOverlay", "sector_overlays"),
+    # -- SEC Filing Intelligence Layer ----------------------------------
+    ("Insider", "insiders"),
+    ("InsiderTransaction", "insider_transactions"),
+    ("InstitutionalHolder", "institutional_holders"),
+    ("InstitutionalHolding", "institutional_holdings"),
+    ("Shareholder", "shareholders"),
+    ("Shareholding", "shareholdings"),
+    ("Security", "securities"),
+    ("CorporateEvent", "corporate_events"),
+    ("CapitalRaise", "capital_raises"),
+    ("EquityCompensationPlan", "equity_compensation_plans"),
+    ("Exhibit", "exhibits"),
+    ("SupportingDocument", "supporting_documents"),
+    # -- Temporal Hierarchy Layer ---------------------------------------
+    ("FiscalYear", "fiscal_years"),
+    ("FiscalQuarter", "fiscal_quarters"),
 )
 
 #: Written when a filing's fiscal year could not be resolved. Not a real year:

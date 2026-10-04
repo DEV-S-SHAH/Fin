@@ -83,7 +83,7 @@ class AskTransportTests(unittest.TestCase):
         reader no status and no cause, and the only real diagnosis sat in the
         terminal running the server.
         """
-        def explode(kg, question):
+        def explode(kg, question, **kwargs):
             raise RuntimeError("ladybug: cannot bind DISAGGREGATED_BY")
 
         query_ui.ask_rag = explode
@@ -104,7 +104,7 @@ class AskTransportTests(unittest.TestCase):
 
     def test_normal_path_still_answers(self):
         """The guard must not swallow the ordinary result."""
-        def ok(kg, question):
+        def ok(kg, question, **kwargs):
             return {"question": question, "text": "Net sales were $46.7B.", "grounded": True}
 
         query_ui.ask_rag = ok
@@ -127,7 +127,7 @@ class AskTransportTests(unittest.TestCase):
 
     def test_sse_streaming_response(self):
         """POST /api/ask with Accept: text/event-stream must return valid SSE events."""
-        query_ui.ask_rag = lambda kg, q: {"answer": "Streaming test answer", "evidence": []}
+        query_ui.ask_rag = lambda kg, q, **kwargs: {"answer": "Streaming test answer", "evidence": []}
         self.addCleanup(setattr, query_ui, "ask_rag", self.__class__.saved_ask)
         req = urllib.request.Request(
             f"http://127.0.0.1:{self.port}/api/ask",

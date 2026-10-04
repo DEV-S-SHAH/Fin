@@ -24,6 +24,9 @@ class RoutingResult(NamedTuple):
     ticker: Optional[str]
     entity_name: Optional[str]
     reason: str
+    fiscal_year: Optional[int] = None
+    fiscal_quarter: Optional[str] = None
+    form_type: Optional[str] = None
 
 
 class RouterDatabaseError(RuntimeError):
@@ -70,6 +73,41 @@ FINANCIAL_STOP_WORDS: frozenset[str] = frozenset({
     "TOP", "LINE", "SEGMENT", "EVENT", "CHUNK", "TABLE", "DATA", "CORPUS",
     "JP",
 })
+
+#: Temporal patterns
+_YEAR_RE = re.compile(r"\b(20\d{2})\b")
+_QUARTER_RE = re.compile(r"\b(Q[1-4]|FY|H[12])\b", re.I)
+_FORM_TYPE_RE = re.compile(r"\b(10-K|10-Q|8-K|DEF 14A|Form [345]|13F-HR|SC 13[DG]|S-[38]|424B\d?|ARS|SD|11-K)\b", re.I)
+
+
+def extract_temporal_filters(query: str) -> dict[str, Any]:
+    """Extract temporal filters from the query.
+    
+    Returns dict with keys: fiscal_year, fiscal_quarter, form_type
+    """
+    filters: dict[str, Any] = {}
+    
+    # Extract year (2020-2029)
+    year_matches = _YEAR_RE.findall(query)
+    if year_matches:
+        # Use the first year mentioned as the primary filter
+        filters["fiscal_year"] = int(year_matches[0])
+    
+    # Extract quarter
+    quarter_matches = _QUARTER_RE.findall(query)
+    if quarter_matches:
+        filters["fiscal_quarter"] = quarter_matches[0].upper()
+    
+    # Extract form type
+    form_matches = _FORM_TYPE_RE.findall(query)
+    if form_matches:
+        # Normalize form type
+        form = form_matches[0].upper()
+        if form.startswith("FORM "):
+            form = form[5:]  # Remove "FORM " prefix
+        filters["form_type"] = form
+    
+    return filters
 
 #: Built-in company aliases mapping ticker -> (entity_name, aliases)
 COMPANY_ALIASES: dict[str, tuple[str, tuple[str, ...]]] = {
@@ -128,6 +166,10 @@ COMPANY_ALIASES: dict[str, tuple[str, tuple[str, ...]]] = {
             "jpm",
         ),
     ),
+    "SNOW": (
+        "Snowflake Inc.",
+        ("snowflake", "snowflake inc", "snow"),
+    ),
 }
 
 #: Company name -> ticker, keyed on the normalised (lowercased, punctuation
@@ -154,6 +196,7 @@ COMPANY_NAME_TO_TICKER: dict[str, str] = {
     "meta platforms": "META",
     "nvidia": "NVDA",
     "rivian": "RIVN",
+    "snowflake": "SNOW",
     "tesla": "TSLA",
 }
 
@@ -308,6 +351,7 @@ def route_query(query: str, kg_connection: Any) -> RoutingResult:
     - EntityRoute.AMBIGUOUS: No clear candidate entity identified.
     """
     ticker, entity_name = extract_candidate_entity(query)
+    temporal_filters = extract_temporal_filters(query)
 
     if not ticker:
         return RoutingResult(
@@ -315,6 +359,9 @@ def route_query(query: str, kg_connection: Any) -> RoutingResult:
             ticker=None,
             entity_name=None,
             reason="No clear entity identified in query",
+            fiscal_year=temporal_filters.get("fiscal_year"),
+            fiscal_quarter=temporal_filters.get("fiscal_quarter"),
+            form_type=temporal_filters.get("form_type"),
         )
 
     exists = _check_db_presence(kg_connection, ticker)
@@ -325,6 +372,9 @@ def route_query(query: str, kg_connection: Any) -> RoutingResult:
             ticker=ticker,
             entity_name=entity_name,
             reason=f"Entity '{ticker}' found in knowledge graph",
+            fiscal_year=temporal_filters.get("fiscal_year"),
+            fiscal_quarter=temporal_filters.get("fiscal_quarter"),
+            form_type=temporal_filters.get("form_type"),
         )
     else:
         return RoutingResult(
@@ -332,4 +382,7 @@ def route_query(query: str, kg_connection: Any) -> RoutingResult:
             ticker=ticker,
             entity_name=entity_name,
             reason=f"Entity '{ticker}' not found in knowledge graph. Cold start required",
+            fiscal_year=temporal_filters.get("fiscal_year"),
+            fiscal_quarter=temporal_filters.get("fiscal_quarter"),
+            form_type=temporal_filters.get("form_type"),
         )

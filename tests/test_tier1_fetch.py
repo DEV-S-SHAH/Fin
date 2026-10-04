@@ -70,8 +70,8 @@ class TestTier1Fetch(unittest.TestCase):
         self.assertTrue(issubclass(FilingNotFoundError, FetchError))
         self.assertTrue(issubclass(RateLimitError, FetchError))
 
-    @patch("urllib.request.urlopen")
-    def test_fetch_successful_10k(self, mock_urlopen):
+    @patch("sandbox_engine.tier1_fetch.safe_urlopen")
+    def test_fetch_successful_10k(self, mock_safe_urlopen):
         """Verify happy path returns raw HTML and expected metadata."""
         # Response 1: Submissions JSON
         sub_resp = MagicMock()
@@ -85,7 +85,7 @@ class TestTier1Fetch(unittest.TestCase):
         doc_resp.headers = {"Content-Encoding": "identity"}
         doc_resp.__enter__.return_value = doc_resp
 
-        mock_urlopen.side_effect = [sub_resp, doc_resp]
+        mock_safe_urlopen.side_effect = [sub_resp, doc_resp]
 
         raw_html, metadata = self.fetcher.fetch_latest_filing_html("AAPL", form_type="10-K", timeout=2.0)
 
@@ -96,10 +96,10 @@ class TestTier1Fetch(unittest.TestCase):
         self.assertEqual(metadata["primary_document"], "aapl-20240928.htm")
         self.assertEqual(metadata["filing_date"], "2024-11-01")
         self.assertIn("https://www.sec.gov/Archives/edgar/data/", metadata["url"])
-        self.assertEqual(mock_urlopen.call_count, 2)
+        self.assertEqual(mock_safe_urlopen.call_count, 2)
 
-    @patch("urllib.request.urlopen")
-    def test_rate_limit_retry_after(self, mock_urlopen):
+    @patch("sandbox_engine.tier1_fetch.safe_urlopen")
+    def test_rate_limit_retry_after(self, mock_safe_urlopen):
         """Assert HTTP 429 parses Retry-After header and raises EDGARRateLimitError if budget expires."""
         hdrs = email.message.EmailMessage()
         hdrs["Retry-After"] = "5"
@@ -110,7 +110,7 @@ class TestTier1Fetch(unittest.TestCase):
             hdrs=hdrs,
             fp=io.BytesIO(b"Rate limited"),
         )
-        mock_urlopen.side_effect = err_429
+        mock_safe_urlopen.side_effect = err_429
 
         start = time.monotonic()
         with self.assertRaises((EDGARRateLimitError, RateLimitError)):
@@ -120,14 +120,14 @@ class TestTier1Fetch(unittest.TestCase):
         # Should fail immediately without waiting 5 seconds because 5s > 2.0s budget
         self.assertLess(elapsed, 0.5)
 
-    @patch("urllib.request.urlopen")
-    def test_timeout_enforcement(self, mock_urlopen):
+    @patch("sandbox_engine.tier1_fetch.safe_urlopen")
+    def test_timeout_enforcement(self, mock_safe_urlopen):
         """Mock a hanging socket and assert FetchTimeoutError is raised in <= 2.1 seconds."""
         def hanging_open(*args, **kwargs):
             time.sleep(0.3)
             raise TimeoutError("Socket read timed out")
 
-        mock_urlopen.side_effect = hanging_open
+        mock_safe_urlopen.side_effect = hanging_open
 
         start = time.monotonic()
         with self.assertRaises(FetchTimeoutError):
@@ -136,14 +136,14 @@ class TestTier1Fetch(unittest.TestCase):
 
         self.assertLessEqual(elapsed, 2.1)
 
-    @patch("urllib.request.urlopen")
-    def test_filing_not_found_on_absent_form(self, mock_urlopen):
+    @patch("sandbox_engine.tier1_fetch.safe_urlopen")
+    def test_filing_not_found_on_absent_form(self, mock_safe_urlopen):
         """Verify FilingNotFoundError is raised when target form type is absent in submissions."""
         sub_resp = MagicMock()
         sub_resp.read.return_value = json.dumps(self.sample_submissions).encode("utf-8")
         sub_resp.headers = {"Content-Encoding": "identity"}
         sub_resp.__enter__.return_value = sub_resp
-        mock_urlopen.return_value = sub_resp
+        mock_safe_urlopen.return_value = sub_resp
 
         with self.assertRaises(FilingNotFoundError):
             self.fetcher.fetch_latest_filing_html("AAPL", form_type="20-F", timeout=2.0)
