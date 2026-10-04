@@ -61,6 +61,15 @@ class ProvenanceApp {
     this.currentTicker = null;
   }
 
+  async #checkAuth() {
+    try {
+      const res = await fetch("/api/reports", { credentials: "include", cache: "no-store" });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
   async start() {
     stampLogos();
     this.#restorePreferences();
@@ -343,6 +352,14 @@ class ProvenanceApp {
       return;
     }
 
+    // Check authentication before asking
+    const authed = await this.#checkAuth();
+    if (!authed) {
+      const returnUrl = encodeURIComponent(location.pathname + location.search);
+      location.assign(`/auth?return=${returnUrl}`);
+      return;
+    }
+
     let route = "KNOWN";
     let ticker = null;
 
@@ -377,6 +394,12 @@ class ProvenanceApp {
 
       await this.#askStreaming(question);
     } catch (error) {
+      // Handle authentication error - redirect to auth page
+      if (error.message && error.message.includes("401")) {
+        const returnUrl = encodeURIComponent(location.pathname + location.search);
+        location.assign(`/auth?return=${returnUrl}`);
+        return;
+      }
       if (error.name === "AbortError") {
         this.answer.error("cancelled");
         this.executionCard?.handleError();
@@ -684,8 +707,7 @@ class ProvenanceApp {
   }
 
   #tickTimer() {
-    const seconds = Math.round((Date.now() - (this.timerStarted || Date.now())) / 1000);
-    $("wait-timer").textContent = `${this.phaseMessage}… ${seconds}s`;
+    $("wait-timer").textContent = "Composing";
   }
 
   #setTimerLabel(message) {

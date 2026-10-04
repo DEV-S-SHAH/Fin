@@ -1767,7 +1767,7 @@
       "hops_ok": true,
       "isolation_ok": true,
       "latency_ms": {
-        "routing_ms": 0.05
+        "routing_ms": 0.06
       },
       "leaked_terms": [],
       "missing_concepts": [],
@@ -1798,7 +1798,7 @@
       "hops_ok": true,
       "isolation_ok": true,
       "latency_ms": {
-        "routing_ms": 0.05
+        "routing_ms": 0.06
       },
       "leaked_terms": [],
       "missing_concepts": [],
@@ -1844,6 +1844,6 @@
       "ungrounded": []
     }
   },
-  "updated_at": "2026-10-04 15:43:07",
+  "updated_at": "2026-10-04 19:13:57",
   "version": 2
 }

@@ -118,6 +118,7 @@
   --glow-accent: 0 0 36px -6px rgba(255, 107, 53, 0.30);
   --graph-bg: #050505;
   --graph-grid: rgba(255, 60, 0, 0.025);
+  --label-stroke: #050505;
 }
 
 [data-theme="light"] {
@@ -138,8 +139,8 @@
   --border-accent: rgba(255, 60, 0, 0.35);
 
   --text: #14161c;
-  --text-muted: #5c6474;
-  --text-faint: #8a92a3;
+  --text-muted: #3c4350;
+  --text-faint: #6a7283;
 
   --accent: #FF3C00;
   --accent-strong: #FF551C;
@@ -170,6 +171,7 @@
   --glow-accent: 0 0 28px -4px rgba(255, 107, 53, 0.20);
   --graph-bg: #fbfbfd;
   --graph-grid: rgba(255, 60, 0, 0.035);
+  --label-stroke: #14161c;
 }
 
 /* ── 2. primitives ───────────────────────────────────────────────────────── */
@@ -1284,7 +1286,7 @@ mark.hit {
   fill: rgba(255, 255, 255, 0.9);
   pointer-events: none;
   paint-order: stroke;
-  stroke: var(--graph-bg, #050505);
+  stroke: var(--label-stroke, #050505);
   stroke-width: 3.5px;
   stroke-linejoin: round;
   stroke-linecap: round;

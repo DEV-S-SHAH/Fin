@@ -821,10 +821,7 @@ class App {
   }
 
   #tickTimer() {
-    // A local model on a laptop can take minutes, and a counter that stops
-    // advancing reads as a hang rather than as a slow machine.
-    const seconds = Math.round((Date.now() - (this.timerStarted || Date.now())) / 1000);
-    $("wait-timer").textContent = `${this.phaseMessage}… ${seconds}s`;
+    $("wait-timer").textContent = "Composing";
   }
 
   /** A status line from the server replaces the generic label, so the reader

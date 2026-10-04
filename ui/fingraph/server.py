@@ -1451,10 +1451,14 @@ class _NextHandler(_legacy._Handler):
                     return self._err(404, f"company not found: {ticker}")
                 return self._json(detail)
         if p == "/api/reports":
+            if self._require_auth() is None:
+                return True
             qs = parse_qs(parsed.query)
             ticker = (qs.get("ticker") or [""])[0].strip().upper()
             return self._json({"reports": self._list_reports(ticker)})
         if p.startswith("/api/reports/"):
+            if self._require_auth() is None:
+                return True
             report_id = p[len("/api/reports/"):]
             qs = parse_qs(parsed.query)
             ticker = (qs.get("ticker") or [""])[0].strip().upper()
@@ -1463,7 +1467,7 @@ class _NextHandler(_legacy._Handler):
         # Exploration endpoints (/api/graph, /api/entities, /api/stats) are public like the legacy UI
         # Public experience pages (/answer, /graph, /provenance, /compare) need /api/ask to work
         # Only write endpoints, reports, and /app Studio require auth
-        if p.startswith("/api/reports/") or p.startswith("/api/ingestion"):
+        if p.startswith("/api/ingestion"):
             if self._require_auth() is None:
                 return True
         # Everything else -- /api/rag, /vendor/* -- is the old router, unchanged.
