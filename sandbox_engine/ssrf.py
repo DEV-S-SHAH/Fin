@@ -159,12 +159,16 @@ def validate_url(url: str, config: SSRFConfig = DEFAULT_CONFIG) -> tuple[bool, O
         return False, f"host_not_allowed: {hostname}"
 
     # Host is in allowlist - but still verify it doesn't resolve to private IPs
-    # (DNS rebinding protection)
-    ips = _resolve_host(hostname)
-    for ip in ips:
-        if _is_private_ip(ip):
-            log.warning("ssrf_blocked_dns_rebinding", extra={"url": url, "host": hostname, "ip": str(ip)})
-            return False, f"dns_rebinding_detected: {hostname} -> {ip}"
+    # (DNS rebinding protection). Skip for explicit localhost addresses since
+    # they are expected to resolve to loopback/private IPs.
+    hostname_lower = hostname.lower()
+    is_localhost = hostname_lower in ("127.0.0.1", "localhost", "::1", "[::1]")
+    if not is_localhost:
+        ips = _resolve_host(hostname)
+        for ip in ips:
+            if _is_private_ip(ip):
+                log.warning("ssrf_blocked_dns_rebinding", extra={"url": url, "host": hostname, "ip": str(ip)})
+                return False, f"dns_rebinding_detected: {hostname} -> {ip}"
 
     return True, None
 

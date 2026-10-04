@@ -77,7 +77,15 @@ from .shutdown import (
     restore_signal_handlers,
     serve_until_signalled,
 )
-from .ssrf import DEFAULT_CONFIG, validate_url
+from .ssrf import DEFAULT_CONFIG, SSRFConfig, validate_url
+
+# SSRF config that allows localhost for Ollama probe (expected to fail in prod)
+OLLAMA_SSRF_CONFIG = SSRFConfig(
+    allowed_hosts=frozenset({"127.0.0.1", "localhost", "::1"}),
+    allow_localhost=True,
+    follow_redirects=False,
+    max_redirects=5,
+)
 from .observability import (
     StageTimer,
     generate_request_id,
@@ -720,8 +728,8 @@ class RagBackends:
         probe_timeout = min(_OLLAMA_PROBE_CONNECT_TIMEOUT, _OLLAMA_PROBE_READ_TIMEOUT)
         request_id = get_request_id()
         
-        # Validate URL against SSRF protection
-        valid, error = validate_url(url, DEFAULT_CONFIG)
+        # Validate URL against SSRF protection (allow localhost for Ollama probe)
+        valid, error = validate_url(url, OLLAMA_SSRF_CONFIG)
         if not valid:
             record_ollama_probe(success=False)
             log.debug(

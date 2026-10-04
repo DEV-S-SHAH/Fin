@@ -68,8 +68,30 @@ from sandbox_engine.observability import (
     record_retry,
     record_rate_limit_rejection,
 )
-from sandbox_engine.ssrf import DEFAULT_CONFIG, validate_url
+from sandbox_engine.ssrf import DEFAULT_CONFIG, SSRFConfig, validate_url
 from urllib.error import URLError
+
+
+# Production SSRF config: allows known external hosts without DNS rebinding checks
+# (Render's DNS may resolve Yahoo Finance to private IPs)
+FINGRAPH_SSRF_CONFIG = SSRFConfig(
+    allowed_hosts=frozenset({
+        # SEC EDGAR
+        "www.sec.gov",
+        "data.sec.gov",
+        # Yahoo Finance
+        "query1.finance.yahoo.com",
+        "query2.finance.yahoo.com",
+        # OAuth providers
+        "accounts.google.com",
+        "appleid.apple.com",
+        # NVIDIA NIM
+        "integrate.api.nvidia.com",
+    }),
+    allow_localhost=False,
+    follow_redirects=False,
+    max_redirects=5,
+)
 
 log = logging.getLogger("fingraph_ui")
 
@@ -347,7 +369,7 @@ def _fetch_one(ticker: str) -> dict[str, Any] | None:
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1d&range=1d"
     
     # Validate URL against SSRF protection
-    valid, error = validate_url(url, DEFAULT_CONFIG)
+    valid, error = validate_url(url, FINGRAPH_SSRF_CONFIG)
     if not valid:
         log.warning("yahoo_fetch_ssrf_blocked", extra={"ticker": ticker, "error": error, "url": url})
         return None
@@ -420,7 +442,7 @@ def _fetch_company_quote(ticker: str) -> dict[str, Any] | None:
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1d&range=1d"
     
     # Validate URL against SSRF protection
-    valid, error = validate_url(url, DEFAULT_CONFIG)
+    valid, error = validate_url(url, FINGRAPH_SSRF_CONFIG)
     if not valid:
         log.warning("yahoo_fetch_ssrf_blocked", extra={"ticker": ticker, "error": error, "url": url})
         return None
@@ -626,7 +648,7 @@ def _fetch_company_detail(ticker: str) -> dict[str, Any] | None:
     url = f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{ticker}?modules={modules_str}"
     
     # Validate URL against SSRF protection
-    valid, error = validate_url(url, DEFAULT_CONFIG)
+    valid, error = validate_url(url, FINGRAPH_SSRF_CONFIG)
     if not valid:
         log.warning("yahoo_fetch_ssrf_blocked", extra={"ticker": ticker, "error": error, "url": url})
         return None
@@ -652,7 +674,7 @@ def _fetch_chart_data(ticker: str, range_: str = "1mo", interval: str = "1d") ->
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval={interval}&range={range_}"
     
     # Validate URL against SSRF protection
-    valid, error = validate_url(url, DEFAULT_CONFIG)
+    valid, error = validate_url(url, FINGRAPH_SSRF_CONFIG)
     if not valid:
         log.warning("yahoo_fetch_ssrf_blocked", extra={"ticker": ticker, "error": error, "url": url})
         return None
@@ -678,7 +700,7 @@ def _fetch_news(ticker: str) -> list[dict[str, Any]]:
     url = f"https://query1.finance.yahoo.com/v1/finance/search?q={ticker}&quotesCount=0&newsCount=10"
     
     # Validate URL against SSRF protection
-    valid, error = validate_url(url, DEFAULT_CONFIG)
+    valid, error = validate_url(url, FINGRAPH_SSRF_CONFIG)
     if not valid:
         log.warning("yahoo_fetch_ssrf_blocked", extra={"ticker": ticker, "error": error, "url": url})
         return []
@@ -1062,7 +1084,7 @@ def _fetch_jwks(url: str) -> dict:
     import urllib.request, json
     
     # Validate URL against SSRF protection
-    valid, error = validate_url(url, DEFAULT_CONFIG)
+    valid, error = validate_url(url, FINGRAPH_SSRF_CONFIG)
     if not valid:
         log.warning("oauth_jwks_ssrf_blocked", extra={"error": error, "url": url})
         raise URLError(f"SSRF validation failed: {error}")
