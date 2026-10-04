@@ -1,0 +1,227 @@
+/**
+ * GeneralTab Styles
+ * 
+ * Clean metadata display for the General tab.
+ */
+
+.general-tab {
+  padding: var(--sp-4);
+  overflow-y: auto;
+  max-height: 100%;
+}
+
+.general-tab__grid {
+  display: grid;
+  gap: var(--sp-5);
+  margin: 0;
+}
+
+.general-tab__section {
+  display: grid;
+  gap: var(--sp-2);
+}
+
+.general-tab__section-title {
+  font-size: var(--text-xs);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-faint);
+  margin: 0;
+  padding-bottom: var(--sp-1);
+  border-bottom: 1px solid var(--border);
+}
+
+.general-tab__fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: var(--sp-3) var(--sp-4);
+  margin: 0;
+}
+
+.general-tab__field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.general-tab__label {
+  font-size: var(--text-xs);
+  font-weight: 550;
+  color: var(--text-muted);
+}
+
+.general-tab__value {
+  font-size: var(--text-sm);
+  color: var(--text);
+  word-break: break-word;
+  font-variant-numeric: tabular-nums;
+}
+
+.general-tab__value code {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  background: var(--surface-1);
+  padding: 1px 6px;
+  border-radius: var(--r-xs);
+  border: 1px solid var(--border);
+}
+
+.general-tab__value--status {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: 2px var(--sp-2);
+  border-radius: var(--r-full);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.general-tab__value--status.running {
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+
+.general-tab__value--status.success {
+  background: var(--green-soft);
+  color: var(--green);
+}
+
+.general-tab__value--status.failed {
+  background: var(--red-soft);
+  color: var(--red);
+}
+
+.general-tab__value--duration {
+  color: var(--primary);
+  font-weight: 550;
+}
+
+.general-tab__question {
+  margin: 0;
+  font-size: var(--text-base);
+  line-height: 1.6;
+  color: var(--text);
+  padding: var(--sp-3);
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Provenance items */
+.general-tab__provenance-item {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: var(--sp-2) var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  font-size: var(--text-xs);
+}
+
+.general-tab__provenance-type {
+  font-weight: 600;
+  color: var(--primary);
+  text-transform: capitalize;
+}
+
+.general-tab__provenance-query {
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 300px;
+}
+
+.general-tab__provenance-stats {
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Stage latencies */
+.general-tab__fields--stages {
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+}
+
+.general-tab__field--stage {
+  align-items: center;
+  flex-direction: row;
+  justify-content: space-between;
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+}
+
+.general-tab__field--stage.completed {
+  border-color: var(--accent-ring);
+  background: var(--primary-soft);
+}
+
+.general-tab__field--stage.completed .general-tab__label {
+  color: var(--primary);
+}
+
+.general-tab__field--stage.completed .general-tab__value {
+  color: var(--primary);
+  font-weight: 550;
+}
+
+.general-tab__field--stage.skipped {
+  opacity: 0.5;
+}
+
+.general-tab__field--stage.skipped .general-tab__value {
+  color: var(--text-faint);
+}
+
+/* Error section */
+.general-tab__section--error {
+  border: 1px solid var(--red);
+  border-radius: var(--r-md);
+  padding: var(--sp-3);
+  background: var(--red-soft);
+}
+
+.general-tab__section--error .general-tab__section-title {
+  color: var(--red);
+  border-color: var(--red);
+}
+
+.general-tab__error {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--red);
+  line-height: 1.6;
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  .general-tab__provenance-item {
+    animation: none;
+  }
+}
+
+/* Responsive */
+@media (max-width: 640px) {
+  .general-tab {
+    padding: var(--sp-3);
+  }
+  
+  .general-tab__fields {
+    grid-template-columns: 1fr;
+  }
+  
+  .general-tab__provenance-item {
+    grid-template-columns: 1fr;
+    gap: var(--sp-1);
+  }
+}

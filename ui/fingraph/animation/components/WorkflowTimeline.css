@@ -1,0 +1,155 @@
+/**
+ * WorkflowTimeline Styles
+ * 
+ * Vertical execution timeline container with progress indicator.
+ */
+
+.workflow-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  position: relative;
+  padding-left: 12px; /* Space for connector line */
+}
+
+.workflow-timeline__empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--sp-8);
+  color: var(--text-faint);
+  font-size: var(--text-sm);
+}
+
+/* Overall progress bar at bottom */
+.workflow-timeline__progress {
+  position: absolute;
+  left: 10px;
+  bottom: 0;
+  width: 2px;
+  height: 100%;
+  background: var(--border);
+  border-radius: var(--r-full);
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.workflow-timeline__progress-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(180deg, var(--primary), var(--primary-2));
+  border-radius: inherit;
+  transition: width var(--dur-slow) var(--ease-out);
+}
+
+/* Simple step list */
+.simple-step-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.simple-step-list__item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--r-sm);
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+
+.simple-step-list__item.is-done {
+  border-color: var(--accent-ring);
+  background: var(--primary-soft);
+}
+
+.simple-step-list__item.is-active {
+  border-color: var(--accent-ring);
+  background: var(--primary-soft);
+  animation: step-pulse-bg 1.5s ease-in-out infinite;
+}
+
+@keyframes step-pulse-bg {
+  0%, 100% { background: var(--primary-soft); }
+  50% { background: var(--accent-soft); }
+}
+
+.simple-step-list__item.is-failed {
+  border-color: var(--red);
+  background: var(--red-soft);
+}
+
+.simple-step-list__item.is-pending {
+  opacity: 0.6;
+}
+
+.simple-step-list__icon {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  font-size: var(--text-xs);
+  font-weight: 600;
+  flex: 0 0 auto;
+}
+
+.simple-step-list__item.is-done .simple-step-list__icon {
+  background: var(--primary);
+  color: var(--on-accent);
+}
+
+.simple-step-list__item.is-active .simple-step-list__icon {
+  background: var(--primary);
+  color: var(--on-accent);
+  box-shadow: 0 0 0 3px var(--primary-soft);
+}
+
+.simple-step-list__item.is-failed .simple-step-list__icon {
+  background: var(--red);
+  color: var(--on-accent);
+}
+
+.simple-step-list__item.is-pending .simple-step-list__icon {
+  background: var(--border);
+  color: var(--text-faint);
+}
+
+.simple-step-list__name {
+  flex: 1 1 auto;
+  font-size: var(--text-sm);
+  font-weight: 520;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.simple-step-list__duration {
+  flex: 0 0 auto;
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+.simple-step-list__item.is-active .simple-step-list__duration,
+.simple-step-list__item.is-done .simple-step-list__duration {
+  color: var(--text-muted);
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  .workflow-timeline__progress-fill {
+    transition: none;
+  }
+  .simple-step-list__item.is-active {
+    animation: none;
+  }
+}

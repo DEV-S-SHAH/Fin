@@ -37,7 +37,20 @@ venv/
 
 # Vite
 web/.vite/
+web/dist/
 
 # Runtime data
 data/
-sandbox_engine/_run/
+data/staging/*.jsonl
+data/*.lbug
+data/*.lbug.wal
+data/*.lbug.tmp
+sandbox_engine/_run/*
+!sandbox_engine/_run/sandbox.lbug
+sandbox_engine/_run/staging/
+
+# LadybugDB
+*.lbug
+!sandbox_engine/_run/sandbox.lbug
+*.lbug.wal
+*.lbug.tmp

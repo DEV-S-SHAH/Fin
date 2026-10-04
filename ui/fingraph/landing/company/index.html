@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="FinGraph Company Overview - Deep financial intelligence for investors">
+  <title id="page-title">Loading... - FinGraph</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="preload" as="style" href="/landing/styles.css">
+  <link rel="stylesheet" href="/landing/styles.css">
+  <link rel="stylesheet" href="styles.css">
+  <link rel="preload" as="script" href="/vendor/chart.min.js">
+  <script src="/vendor/chart.min.js"></script>
+</head>
+<body>
+  <a href="#main" class="skip-link">Skip to main content</a>
+
+  <!-- Navigation Bar -->
+  <nav class="nav" role="navigation" aria-label="Main navigation">
+    <div class="nav__inner">
+      <a href="/" class="nav__logo" aria-label="FinGraph Home">
+        <span class="logo" data-logo aria-hidden="true"></span>
+        <span class="nav__logo-text">FinGraph</span>
+      </a>
+
+      <div class="nav__links">
+        <a href="/#features" class="nav__link">Features</a>
+        <a href="/#markets" class="nav__link">Markets</a>
+        <a href="/#pricing" class="nav__link">Pricing</a>
+        <a href="/app" class="nav__link nav__link--cta">Launch App</a>
+      </div>
+
+      <div class="nav__actions">
+        <button class="nav__theme-toggle" aria-label="Toggle theme" data-theme-toggle>
+          <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="5" fill="none" stroke="currentColor" stroke-width="1.5"/><g stroke="currentColor" stroke-width="1.5"><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></g></svg>
+          <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 3a9 9 0 1 0 9 9c0-.46-.04-.92-.1-1.36a5.389 5.389 0 0 1-4.4 2.26 5.403 5.403 0 0 1-3.14-9.8c-.44-.06-.9-.1-1.36-.1z"/></svg>
+        </button>
+        <a href="/auth" class="nav__signin">Sign In</a>
+      </div>
+
+      <button class="nav__hamburger" aria-label="Toggle menu" aria-expanded="false" aria-controls="nav-menu">
+        <span class="hamburger__line"></span>
+        <span class="hamburger__line"></span>
+        <span class="hamburger__line"></span>
+      </button>
+    </div>
+  </nav>
+
+  <!-- Mobile Menu -->
+  <div class="nav__mobile" id="nav-menu" role="dialog" aria-label="Navigation menu" hidden>
+    <a href="/#features" class="nav__link">Features</a>
+    <a href="/#markets" class="nav__link">Markets</a>
+    <a href="/#pricing" class="nav__link">Pricing</a>
+    <a href="/app" class="nav__link nav__link--cta">Launch App</a>
+    <a href="/auth" class="nav__signin">Sign In</a>
+  </div>
+
+  <!-- Main Content -->
+  <main id="main" class="company-page">
+    <!-- Hero / Company Header -->
+    <header class="company-hero" aria-labelledby="company-name">
+      <div class="company-hero__bg" aria-hidden="true">
+        <div class="gradient-mesh" id="hero-gradient"></div>
+      </div>
+      <div class="container company-hero__content">
+        <div class="company-identity">
+          <div class="company-identity__ticker" id="company-ticker">AAPL</div>
+          <h1 class="company-identity__name" id="company-name">Apple Inc.</h1>
+          <div class="company-identity__meta">
+            <span class="company-identity__exchange" id="company-exchange">NASDAQ</span>
+            <span class="company-identity__sector" id="company-sector">Technology</span>
+            <span class="company-identity__currency" id="company-currency">USD</span>
+          </div>
+          <div class="company-identity__actions">
+            <a href="/app" class="btn btn--primary btn--lg" id="ask-btn" data-ticker="">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <circle cx="12" cy="12" r="10"/>
+                <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/>
+                <line x1="12" y1="17" x2="12.01" y2="17"/>
+              </svg>
+              Ask about this company
+            </a>
+            <button class="btn btn--ghost btn--lg" id="watchlist-btn" aria-label="Add to watchlist">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
+              </svg>
+              <span>Watchlist</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Live Price Card -->
+        <section class="live-price-card" aria-labelledby="live-price-title">
+          <div class="live-price-card__header">
+            <h2 id="live-price-title" class="visually-hidden">Live Price</h2>
+            <div class="price-timeframe">
+              <button class="timeframe-btn active" data-tf="1D" aria-pressed="true">1D</button>
+              <button class="timeframe-btn" data-tf="1W" aria-pressed="false">1W</button>
+              <button class="timeframe-btn" data-tf="1M" aria-pressed="false">1M</button>
+              <button class="timeframe-btn" data-tf="3M" aria-pressed="false">3M</button>
+              <button class="timeframe-btn" data-tf="1Y" aria-pressed="false">1Y</button>
+              <button class="timeframe-btn" data-tf="ALL" aria-pressed="false">ALL</button>
+            </div>
+          </div>
+          <div class="live-price-card__main">
+            <div class="price-display">
+              <div class="price-display__value" id="current-price">$0.00</div>
+              <div class="price-display__change" id="price-change">
+                <span class="change-value" id="change-value">+0.00 (+0.00%)</span>
+                <span class="change-time" id="market-state">Market Closed</span>
+              </div>
+            </div>
+            <div class="price-display__mini-chart" id="mini-chart-container">
+              <canvas id="mini-chart" aria-hidden="true"></canvas>
+            </div>
+          </div>
+          <div class="live-price-card__stats" id="price-stats">
+            <!-- Populated by JS -->
+          </div>
+        </section>
+      </div>
+    </header>
+
+    <!-- Grid Section -->
+    <div class="container company-grid">
+      <!-- Technicals Card -->
+      <section class="card card--elevated technicals-card" aria-labelledby="technicals-title">
+        <header class="card__header">
+          <h2 id="technicals-title" class="card__title">Technicals</h2>
+          <div class="card__badge" id="technicals-signal">Neutral</div>
+        </header>
+        <div class="card__body">
+          <div class="technicals-grid" id="technicals-grid">
+            <!-- Populated by JS -->
+          </div>
+        </div>
+      </section>
+
+      <!-- Fundamentals Card -->
+      <section class="card card--elevated fundamentals-card" aria-labelledby="fundamentals-title">
+        <header class="card__header">
+          <h2 id="fundamentals-title" class="card__title">Fundamentals</h2>
+        </header>
+        <div class="card__body">
+          <div class="fundamentals-tabs" role="tablist" aria-label="Fundamental categories">
+            <button class="fund-tab active" role="tab" aria-selected="true" data-tab="valuation">Valuation</button>
+            <button class="fund-tab" role="tab" aria-selected="false" data-tab="profitability">Profitability</button>
+            <button class="fund-tab" role="tab" aria-selected="false" data-tab="financial-health">Financial Health</button>
+            <button class="fund-tab" role="tab" aria-selected="false" data-tab="dividends">Dividends</button>
+          </div>
+          <div class="fundamentals-panels" id="fundamentals-panels">
+            <!-- Populated by JS -->
+          </div>
+        </div>
+      </section>
+
+      <!-- Interactive Chart -->
+      <section class="card card--elevated chart-card" aria-labelledby="chart-title">
+        <header class="card__header">
+          <h2 id="chart-title" class="card__title">Price Chart</h2>
+          <div class="chart-controls">
+            <div class="chart-type-selector" role="radiogroup" aria-label="Chart type">
+              <label class="chart-type-btn">
+                <input type="radio" name="chart-type" value="candlestick" checked>
+                <span>Candles</span>
+              </label>
+              <label class="chart-type-btn">
+                <input type="radio" name="chart-type" value="line">
+                <span>Line</span>
+              </label>
+              <label class="chart-type-btn">
+                <input type="radio" name="chart-type" value="area">
+                <span>Area</span>
+              </label>
+            </div>
+            <div class="chart-indicators" role="group" aria-label="Technical indicators">
+              <label class="indicator-toggle">
+                <input type="checkbox" name="indicator" value="sma20"> SMA 20
+              </label>
+              <label class="indicator-toggle">
+                <input type="checkbox" name="indicator" value="sma50"> SMA 50
+              </label>
+              <label class="indicator-toggle">
+                <input type="checkbox" name="indicator" value="bb"> Bollinger
+              </label>
+              <label class="indicator-toggle">
+                <input type="checkbox" name="indicator" value="volume"> Volume
+              </label>
+            </div>
+          </div>
+        </header>
+        <div class="card__body">
+          <div class="chart-container" id="main-chart-container">
+            <canvas id="main-chart" aria-label="Price chart with technical indicators"></canvas>
+          </div>
+          <div class="chart-legend" id="chart-legend" aria-hidden="true"></div>
+        </div>
+      </section>
+
+      <!-- News Card -->
+      <section class="card card--elevated news-card" aria-labelledby="news-title">
+        <header class="card__header">
+          <h2 id="news-title" class="card__title">Recent News</h2>
+        </header>
+        <div class="card__body">
+          <div class="news-list" id="news-list" role="feed" aria-label="Recent news articles">
+            <!-- Populated by JS -->
+          </div>
+        </div>
+      </section>
+
+      <!-- Knowledge Graph Relationships -->
+      <section class="card card--elevated kg-card" aria-labelledby="kg-title">
+        <header class="card__header">
+          <h2 id="kg-title" class="card__title">Knowledge Graph</h2>
+          <p class="card__subtitle">Entity relationships from SEC filings</p>
+        </header>
+        <div class="card__body">
+          <div class="kg-visualization" id="kg-viz">
+            <canvas id="kg-canvas" aria-label="Company knowledge graph visualization"></canvas>
+          </div>
+          <div class="kg-legend" id="kg-legend"></div>
+          <div class="kg-empty" id="kg-empty" hidden>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+              <circle cx="12" cy="12" r="10"/>
+              <path d="M12 8v4M12 16h.01"/>
+            </svg>
+            <p>No graph data available for this company</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Company Description -->
+      <section class="card card--elevated description-card" aria-labelledby="desc-title">
+        <header class="card__header">
+          <h2 id="desc-title" class="card__title">About</h2>
+        </header>
+        <div class="card__body">
+          <div class="description-content" id="description-content">
+            <!-- Populated by JS -->
+          </div>
+          <div class="description-meta" id="description-meta"></div>
+        </div>
+      </section>
+    </div>
+
+    <!-- Filings Section (if in graph) -->
+    <section class="container filings-section" id="filings-section" hidden aria-labelledby="filings-title">
+      <header class="section-header">
+        <h2 id="filings-title" class="section-header__title">Recent SEC Filings</h2>
+      </header>
+      <div class="filings-table-wrapper">
+        <table class="filings-table" id="filings-table">
+          <thead>
+            <tr>
+              <th scope="col">Form</th>
+              <th scope="col">Fiscal Year</th>
+              <th scope="col">Period</th>
+              <th scope="col">Period End</th>
+            </tr>
+          </thead>
+          <tbody id="filings-body"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <!-- Footer -->
+  <footer class="footer" role="contentinfo">
+    <div class="container footer__grid">
+      <div class="footer__brand">
+        <a href="/" class="footer__logo" aria-label="FinGraph Home">
+          <span class="logo logo--sm" data-logo aria-hidden="true"></span>
+          <span>FinGraph</span>
+        </a>
+        <p class="footer__tagline">Deep financial intelligence for modern investors.</p>
+      </div>
+      <nav class="footer__nav" aria-label="Footer navigation">
+        <div class="footer__col">
+          <h3>Product</h3>
+          <ul>
+            <li><a href="/#features">Features</a></li>
+            <li><a href="/#markets">Markets</a></li>
+            <li><a href="/#pricing">Pricing</a></li>
+            <li><a href="/app">Launch App</a></li>
+          </ul>
+        </div>
+        <div class="footer__col">
+          <h3>Company</h3>
+          <ul>
+            <li><a href="/#about">About</a></li>
+            <li><a href="/#blog">Blog</a></li>
+            <li><a href="/#careers">Careers</a></li>
+            <li><a href="/#contact">Contact</a></li>
+          </ul>
+        </div>
+        <div class="footer__col">
+          <h3>Legal</h3>
+          <ul>
+            <li><a href="/#privacy">Privacy</a></li>
+            <li><a href="/#terms">Terms</a></li>
+            <li><a href="/#disclaimer">Disclaimer</a></li>
+          </ul>
+        </div>
+      </nav>
+    </div>
+    <div class="footer__bottom">
+      <p>© 2025 FinGraph. Not financial advice. Data sourced from Yahoo Finance & SEC filings.</p>
+    </div>
+  </footer>
+
+  <!-- Loading Overlay -->
+  <div class="loading-overlay" id="loading-overlay" role="status" aria-live="polite" hidden>
+    <div class="loading-spinner"></div>
+    <p>Loading company data...</p>
+  </div>
+
+  <!-- Error Toast Container -->
+  <div class="toast-container" id="toast-container" aria-live="polite"></div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

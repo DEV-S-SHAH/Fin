@@ -1,0 +1,72 @@
+/**
+ * Animation Page Styles
+ * 
+ * Base styles for the animation pages, extending the FinGraph design system.
+ */
+
+/* Import the studio design tokens */
+@import url('/static/styles.css');
+
+/* Animation page specific overrides */
+.animation-page {
+  min-height: 100vh;
+  background: var(--bg-grad);
+  background-attachment: fixed;
+}
+
+/* Ensure the root fills the page */
+#animation-root {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Reduced motion support */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Focus visible styles */
+:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+  border-radius: var(--r-xs);
+}
+
+/* Selection */
+::selection {
+  background: var(--accent-soft);
+}
+
+/* Scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border: 2px solid transparent;
+  background-clip: content-box;
+  border-radius: var(--r-full);
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: var(--text-faint);
+  background-clip: content-box;
+}

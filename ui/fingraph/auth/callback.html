@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Signing you in — FinGraph</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/auth/styles.css">
+</head>
+<body class="auth">
+<div class="auth__space" aria-hidden="true">
+  <div class="auth__nebula auth__nebula--a"></div>
+  <div class="auth__nebula auth__nebula--b"></div>
+  <div class="auth__moon-glow"></div>
+  <div class="auth__moon"></div>
+</div>
+
+<main class="auth__main">
+  <div class="auth__card" id="callback-card">
+    <div class="auth__brand">
+      <span class="logo" data-logo></span>
+      <span class="auth__brand-name">FinGraph</span>
+    </div>
+    <h1 class="auth__title" id="callback-title">Signing you in…</h1>
+    <p class="auth__sub" id="callback-sub">Finishing authentication with your provider.</p>
+    <p class="auth__notice" id="callback-error" role="alert" hidden></p>
+  </div>
+</main>
+
+<script type="module">
+  /* The provider redirected here with the token in the URL fragment (implicit
+     flow) or the query string. Hand it to the server, which verifies the
+     state parameter and sets the session cookie, then send the browser on to
+     the app. */
+  import { stampLogos } from "../landing/components.js";
+
+  const STATE_KEY = "fin.auth.state";
+
+  function fail(message) {
+    const title = document.getElementById("callback-title");
+    const sub = document.getElementById("callback-sub");
+    const err = document.getElementById("callback-error");
+    if (title) title.textContent = "Sign-in failed";
+    if (sub) sub.textContent = "You can go back and try again.";
+    if (err) {
+      err.textContent = message;
+      err.hidden = false;
+    }
+    const back = document.createElement("a");
+    back.className = "oauth";
+    back.style.marginTop = "22px";
+    back.href = "/auth";
+    back.textContent = "Back to sign-in";
+    document.getElementById("callback-card").append(back);
+  }
+
+  function params() {
+    const source = location.hash && location.hash.length > 1
+      ? location.hash.slice(1)
+      : location.search.replace(/^\?/, "");
+    return new URLSearchParams(source);
+  }
+
+  async function main() {
+    stampLogos();
+    const p = params();
+    const provider = (p.get("provider") || "").trim();
+    const token = (p.get("access_token") || p.get("id_token") || p.get("code") || "").trim();
+    const state = (p.get("state") || "").trim();
+
+    if (!provider || !token) {
+      return fail("The provider did not return an authentication token.");
+    }
+
+    let expected = null;
+    try { expected = sessionStorage.getItem(STATE_KEY); } catch { /* private mode */ }
+    if (expected && state && state !== expected) {
+      return fail("The sign-in response did not match this browser session. Please try again.");
+    }
+    try { sessionStorage.removeItem(STATE_KEY); } catch { /* already gone */ }
+
+    let res;
+    try {
+      res = await fetch("/api/auth/session", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ provider, token }),
+      });
+    } catch {
+      return fail("Could not reach the FinGraph server. Is it still running?");
+    }
+
+    if (!res.ok) {
+      let detail = `HTTP ${res.status}`;
+      try { detail = (await res.json()).error || detail; } catch { /* non-JSON */ }
+      return fail(`The server rejected the sign-in (${detail}).`);
+    }
+
+    location.replace("/app");
+  }
+
+  main();
+</script>
+</body>
+</html>

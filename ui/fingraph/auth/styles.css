@@ -1,0 +1,397 @@
+/*==========================================================================
+   FinGraph — sign-in page stylesheet.
+   Same design language as the landing page (black luxury, #FF3C00 accent,
+   ultra-thin borders, glass surfaces) over a dark moon/space backdrop.
+ ==========================================================================*/
+
+/* ---------------------------------- tokens -------------------------------- */
+:root {
+  --bg:        #030303;
+  --bg-2:      #080808;
+  --surface:   #0D0D0E;
+  --border:    rgba(255, 255, 255, 0.08);
+  --border-2:  rgba(255, 60, 0, 0.28);
+  --text:      #F5F5F7;
+  --text-2:    #9CA3AF;
+  --text-3:    #6B7280;
+  --primary:   #FF3C00;
+  --primary-2: #FF551C;
+  --accent-2:  #FF6B35;
+
+  --font:    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+             "Helvetica Neue", Arial, "Inter", "Geist", sans-serif;
+  --mono:    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+             "Liberation Mono", monospace;
+
+  --r-sm: 12px;
+  --r-md: 16px;
+  --r-lg: 24px;
+
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --speed-item: 420ms;
+
+  --shadow-float: 0 20px 50px -18px rgba(0, 0, 0, 0.9);
+  --glow-primary: 0 0 36px -6px rgba(255, 60, 0, 0.35);
+}
+
+/* ---------------------------------- base ---------------------------------- */
+*,
+*::before,
+*::after { box-sizing: border-box; }
+
+html {
+  scroll-behavior: smooth;
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  min-height: 100svh;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 16px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow-x: clip;
+}
+
+a { color: inherit; text-decoration: none; }
+
+h1, p { margin: 0; }
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+img, svg, canvas { display: block; }
+
+::selection {
+  background: rgba(255, 60, 0, 0.35);
+  color: var(--text);
+}
+
+:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.skip-link {
+  position: fixed;
+  top: 10px; left: 10px;
+  z-index: 200;
+  padding: 10px 16px;
+  background: var(--bg-2);
+  border: 1px solid var(--border-2);
+  border-radius: var(--r-sm);
+  color: var(--text);
+  font-size: 14px;
+  transform: translateY(-160%);
+  transition: transform 180ms var(--ease-out);
+}
+
+.skip-link:focus-visible { transform: none; }
+
+/* ---------------------------------- logo ---------------------------------- */
+.logo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+}
+
+.logo img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.logo__svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.logo__node--main { fill: var(--primary); filter: drop-shadow(0 0 6px rgba(255, 60, 0, 0.85)); }
+.logo__node--sat { fill: var(--accent-2); filter: drop-shadow(0 0 5px rgba(255, 107, 53, 0.75)); }
+.logo__node--dot { fill: #F5F5F7; }
+.logo__link  { stroke: rgba(255, 60, 0, 0.55); }
+
+/* ------------------------------- space backdrop ---------------------------- */
+.auth__space {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  pointer-events: none;
+  background:
+    radial-gradient(120% 90% at 50% 0%, #0a0505 0%, #030303 55%),
+    linear-gradient(180deg, #050202 0%, #030303 100%);
+}
+
+.auth__stars {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+/* two soft red nebulae: one high left, one low right */
+.auth__nebula {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(70px);
+}
+
+.auth__nebula--a {
+  top: -12%;
+  left: -8%;
+  width: 55vw;
+  height: 55vw;
+  background: radial-gradient(circle, rgba(255, 60, 0, 0.12), transparent 65%);
+}
+
+.auth__nebula--b {
+  bottom: -18%;
+  right: -10%;
+  width: 60vw;
+  height: 60vw;
+  background: radial-gradient(circle, rgba(255, 60, 0, 0.08), transparent 65%);
+}
+
+/* ---------------------------------- layout --------------------------------- */
+.auth__main {
+  position: relative;
+  min-height: 100svh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 24px 56px;
+}
+
+.auth__back {
+  position: absolute;
+  top: 26px;
+  left: 26px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: rgba(13, 13, 14, 0.55);
+  color: var(--text-2);
+  font-size: 13.5px;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  transition: color 200ms var(--ease-out), border-color 200ms var(--ease-out),
+              background-color 200ms var(--ease-out);
+}
+
+.auth__back svg { width: 15px; height: 15px; }
+
+.auth__back:hover {
+  color: var(--text);
+  border-color: var(--border-2);
+  background: rgba(20, 20, 22, 0.8);
+}
+
+/* ---------------------------------- card ----------------------------------- */
+.auth__card {
+  position: relative;
+  width: min(100%, 420px);
+  padding: 28px 32px 22px;
+  border: 1px solid var(--border);
+  border-radius: 24px;
+  background: rgba(13, 13, 14, 0.62);
+  box-shadow: var(--shadow-float);
+  backdrop-filter: blur(24px) saturate(1.3);
+  -webkit-backdrop-filter: blur(24px) saturate(1.3);
+  text-align: center;
+  animation: auth-rise 700ms var(--ease-out) both;
+}
+
+/* the same top highlight line the landing cards use */
+.auth__card::before {
+  content: "";
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--primary), var(--accent-2), transparent);
+  opacity: 0.65;
+  border-radius: 28px 28px 0 0;
+}
+
+@keyframes auth-rise {
+  from { opacity: 0; transform: translateY(16px); }
+  to   { opacity: 1; transform: none; }
+}
+
+.auth__brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+.auth__brand .logo { width: 34px; height: 34px; }
+
+.auth__brand-name {
+  font-size: 19px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.auth__title {
+  font-size: clamp(1.45rem, 3vw, 1.8rem);
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  line-height: 1.15;
+}
+
+.auth__sub {
+  margin-top: 10px;
+  color: var(--text-2);
+  font-size: 15px;
+}
+
+.auth__notice {
+  margin-top: 18px;
+  padding: 10px 14px;
+  border: 1px solid rgba(248, 113, 113, 0.25);
+  border-radius: var(--r-sm);
+  background: rgba(248, 113, 113, 0.08);
+  color: #f87171;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* --------------------------------- providers -------------------------------- */
+.auth__providers {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 22px;
+}
+
+.oauth {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  padding: 11px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: rgba(20, 20, 22, 0.55);
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 550;
+  letter-spacing: 0.01em;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  transition: border-color var(--speed-item) var(--ease-out),
+              background-color var(--speed-item) var(--ease-out),
+              box-shadow var(--speed-item) var(--ease-out),
+              transform 160ms var(--ease-out);
+}
+
+.oauth:hover {
+  border-color: var(--border-2);
+  background: rgba(26, 26, 30, 0.8);
+  box-shadow: 0 0 26px -6px rgba(255, 60, 0, 0.3);
+  transform: translateY(-1px);
+}
+
+.oauth:active { transform: translateY(0); }
+
+.oauth__icon {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+}
+
+/* dev fallback */
+.auth__dev {
+  margin-top: 22px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+}
+
+.auth__dev-note {
+  color: var(--text-3);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.auth__dev-note code {
+  color: var(--text-2);
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+
+.oauth--dev {
+  margin-top: 14px;
+  border-style: dashed;
+  color: var(--text-2);
+}
+
+.oauth--dev:hover {
+  color: var(--text);
+  border-style: solid;
+}
+
+/* ---------------------------------- legal ----------------------------------- */
+.auth__legal {
+  margin-top: 18px;
+  color: var(--text-3);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.auth__legal a {
+  color: var(--text-2);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: rgba(255, 255, 255, 0.25);
+  transition: color 200ms var(--ease-out), text-decoration-color 200ms var(--ease-out);
+}
+
+.auth__legal a:hover {
+  color: var(--primary);
+  text-decoration-color: var(--primary);
+}
+
+/* --------------------------------- responsive ------------------------------- */
+@media (max-width: 640px) {
+  .auth__card { padding: 24px 20px 18px; }
+  .auth__back { top: 16px; left: 16px; }
+}
+
+/* --------------------------------- reduced motion --------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+
+  .auth__card {
+    animation: none !important;
+    transition: none !important;
+  }
+}
