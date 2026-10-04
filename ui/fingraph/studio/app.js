@@ -73,27 +73,6 @@ class App {
     this.entityTerm = "";
   }
 
-  async #checkAuth() {
-    try {
-      const res = await fetch("/api/auth/config", { credentials: "include", cache: "no-store" });
-      if (!res.ok) return false;
-      const config = await res.json();
-      // If no providers configured, allow dev mode
-      if (!config || Object.keys(config).length === 0) return true;
-      // Try to access a protected endpoint to verify session
-      const sessionRes = await fetch("/api/auth/session", {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ provider: "dev", token: "check" }),
-      });
-      // If 401, not authenticated
-      return sessionRes.ok;
-    } catch {
-      return false;
-    }
-  }
-
   /* ── boot ────────────────────────────────────────────────────────────── */
 
   async start() {
@@ -414,7 +393,7 @@ class App {
 
   /* ── asking ──────────────────────────────────────────────────────────── */
 
-  /**
+/**
    * Two transports, chosen from the route rather than guessed at.
    *
    * `COLD_START` fetches a filing from EDGAR and synthesises it through a
@@ -434,15 +413,6 @@ class App {
     }
     if (state.busy) {
       toast("a question is already running", "bad");
-      return;
-    }
-
-    // Check authentication before asking
-    const authed = await this.#checkAuth();
-    if (!authed) {
-      // Redirect to auth page with return URL
-      const returnUrl = encodeURIComponent(location.pathname + location.search);
-      location.assign(`/auth?return=${returnUrl}`);
       return;
     }
 
@@ -487,35 +457,41 @@ class App {
       this.currentRoute = route;
       this.currentTicker = ticker;
 
-this.answer.pending(question);
-       
-/* Show centered execution card with live SSE sync */
-        if (!this.executionCard) {
-          this.executionCard = new ExecutionCard();
-        }
-        this.executionCard.show(question, route, ticker, () => {
-          // Card auto-hides, answer UI is already rendered
-        });
-        
-        /* Both routes stream now. The known path used to post to /api/ask and wait
-         * on a silent socket, which is the wait people described as a hang -- the
-         * retrieval is quick and then the model says nothing for a minute. Its
-         * stream carries the same stages as the cold start's, so one timeline in
-         * the client serves both and neither route is the one that goes blank. */
-        await this.#askStreaming(question);
-      } catch (error) {
-        if (error.name === "AbortError") {
-          this.answer.error("cancelled");
-          this.executionCard?.handleError();
-          this.executionCard?.hide();
-        } else {
-          this.answer.error(`Query failed: ${error.message}`);
-          toast(`query failed: ${error.message}`, "bad");
-          announce("Query failed");
-          this.executionCard?.handleError();
-          this.executionCard?.hide();
-        }
-      } finally {
+      this.answer.pending(question);
+      
+      /* Show centered execution card with live SSE sync */
+      if (!this.executionCard) {
+        this.executionCard = new ExecutionCard();
+      }
+      this.executionCard.show(question, route, ticker, () => {
+        // Card auto-hides, answer UI is already rendered
+      });
+      
+      /* Both routes stream now. The known path used to post to /api/ask and wait
+       * on a silent socket, which is the wait people described as a hang -- the
+       * retrieval is quick and then the model says nothing for a minute. Its
+       * stream carries the same stages as the cold start's, so one timeline in
+       * the client serves both and neither route is the one that goes blank. */
+      await this.#askStreaming(question);
+    } catch (error) {
+      // Handle authentication error - redirect to auth page
+      if (error.message && error.message.includes("401")) {
+        const returnUrl = encodeURIComponent(location.pathname + location.search);
+        location.assign(`/auth?return=${returnUrl}`);
+        return;
+      }
+      if (error.name === "AbortError") {
+        this.answer.error("cancelled");
+        this.executionCard?.handleError();
+        this.executionCard?.hide();
+      } else {
+        this.answer.error(`Query failed: ${error.message}`);
+        toast(`query failed: ${error.message}`, "bad");
+        announce("Query failed");
+        this.executionCard?.handleError();
+        this.executionCard?.hide();
+      }
+    } finally {
       // Cleared here as well as by the request finishing, so a superseded or
       // abandoned controller cannot abort whatever runs next.
       this.abort = null;

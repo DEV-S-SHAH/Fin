@@ -1461,8 +1461,8 @@ class _NextHandler(_legacy._Handler):
             return self._json(self._run_report(report_id, ticker))
         # Protected API endpoints require authentication
         # Exploration endpoints (/api/graph, /api/entities, /api/stats) are public like the legacy UI
-        # Only write endpoints and reports require auth
-        if p.startswith("/api/reports") or p.startswith("/api/ingestion"):
+        # Only write endpoints, reports, and ask require auth
+        if p.startswith("/api/reports/") or p.startswith("/api/ingestion") or p == "/api/ask":
             if self._require_auth() is None:
                 return True
         # Everything else -- /api/rag, /vendor/* -- is the old router, unchanged.
@@ -1543,8 +1543,8 @@ class _NextHandler(_legacy._Handler):
             return self._api_auth_session()
         if p == "/api/auth/logout":
             return self._api_auth_logout()
-        # Protected POST endpoints (only ingestion and rag config management)
-        if p.startswith("/api/ingestion") or (p == "/api/rag" and self.command == "POST"):
+        # Protected POST endpoints (only ingestion, rag config management, and ask)
+        if p.startswith("/api/ingestion") or (p == "/api/rag" and self.command == "POST") or p == "/api/ask":
             if self._require_auth() is None:
                 return
         return super()._post()
