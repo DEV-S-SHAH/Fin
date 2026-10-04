@@ -253,7 +253,7 @@ img, svg, canvas { display: block; }
   margin-bottom: 20px;
 }
 
-.auth__brand .logo { width: 34px; height: 34px; }
+.auth__brand .logo { width: 30px; height: 30px; }
 
 .auth__brand-name {
   font-size: 19px;
