@@ -11,6 +11,9 @@ import { stampLogos } from "../landing/components.js";
 const REDIRECT_URI = `${location.origin}/auth/callback`;
 const STATE_KEY = "fin.auth.state";
 
+/* Get return URL from query params */
+const RETURN_URL = new URLSearchParams(location.search).get("return") || "/app";
+
 /* Official authorize endpoints. response_type=token (implicit) for Google
    and TradingView so the access token comes back in the redirect fragment;
    Apple returns code+id_token the same way with response_mode=fragment. */
@@ -127,7 +130,10 @@ async function loadConfig() {
 /* --------------------------------- signing in ------------------------------- */
 function beginOAuth(provider, clientId) {
   const state = crypto.randomUUID();
-  try { sessionStorage.setItem(STATE_KEY, state); } catch { /* private mode */ }
+  try { 
+    sessionStorage.setItem(STATE_KEY, state);
+    sessionStorage.setItem("fin.auth.return", RETURN_URL);
+  } catch { /* private mode */ }
   location.assign(PROVIDERS[provider].url(clientId, state));
 }
 
@@ -147,7 +153,7 @@ async function signInLocally() {
       body: JSON.stringify({ provider: "dev", token: "local" }),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    location.assign("/app");
+    location.assign(RETURN_URL);
   } catch (err) {
     showNotice(`Could not start a local session: ${err.message || "unknown error"}`);
     if (btn) {

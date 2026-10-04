@@ -73,6 +73,27 @@ class App {
     this.entityTerm = "";
   }
 
+  async #checkAuth() {
+    try {
+      const res = await fetch("/api/auth/config", { credentials: "include", cache: "no-store" });
+      if (!res.ok) return false;
+      const config = await res.json();
+      // If no providers configured, allow dev mode
+      if (!config || Object.keys(config).length === 0) return true;
+      // Try to access a protected endpoint to verify session
+      const sessionRes = await fetch("/api/auth/session", {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider: "dev", token: "check" }),
+      });
+      // If 401, not authenticated
+      return sessionRes.ok;
+    } catch {
+      return false;
+    }
+  }
+
   /* ── boot ────────────────────────────────────────────────────────────── */
 
   async start() {
@@ -413,6 +434,15 @@ class App {
     }
     if (state.busy) {
       toast("a question is already running", "bad");
+      return;
+    }
+
+    // Check authentication before asking
+    const authed = await this.#checkAuth();
+    if (!authed) {
+      // Redirect to auth page with return URL
+      const returnUrl = encodeURIComponent(location.pathname + location.search);
+      location.assign(`/auth?return=${returnUrl}`);
       return;
     }
 

@@ -97,7 +97,10 @@
       return fail(`The server rejected the sign-in (${detail}).`);
     }
 
-    location.replace("/app");
+    let returnUrl = "/app";
+    try { returnUrl = sessionStorage.getItem("fin.auth.return") || "/app"; } catch { /* ignore */ }
+    try { sessionStorage.removeItem("fin.auth.return"); } catch { /* ignore */ }
+    location.replace(returnUrl);
   }
 
   main();
