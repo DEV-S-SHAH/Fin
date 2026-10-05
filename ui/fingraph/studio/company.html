@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<meta name="description" content="FinGraph — Company Deep Dive. Live financial intelligence with real-time data sync.">
+<title id="page-title">Loading... - FinGraph</title>
+
+<link rel="icon" href="/favicon.png" type="image/png">
+<link rel="stylesheet" href="/static/styles.css">
+<link rel="stylesheet" href="/static/runDetails.css">
+
+<script>
+  try {
+    var saved = localStorage.getItem("ui2.theme");
+    if (saved === "light" || saved === "dark") {
+      document.documentElement.dataset.theme = saved;
+    } else if (window.matchMedia("(prefers-color-scheme: light)").matches) {
+      document.documentElement.dataset.theme = "light";
+    }
+  } catch (e) { }
+</script>
+</head>
+
+<body>
+<a class="skip-link" href="#main-content">Skip to main content</a>
+
+<!-- Gradient-bar floor (from landing page) -->
+<div class="gradient-bars" id="gradient-bars" aria-hidden="true"></div>
+
+<div class="app" id="app" data-view="company">
+
+  <!-- ── topbar (studio style) ────────────────────────────────────────────── -->
+  <header class="topbar">
+    <div class="brand">
+      <img class="brand__mark" aria-hidden="true" data-logo src="/static/fingraph-logo.png" alt="FinGraph" width="30" height="30" style="border-radius: 6px;">
+      <span class="brand__name">FinGraph</span>
+      <span class="brand__env" id="schema-chip" hidden></span>
+    </div>
+
+    <div class="topbar__stats" id="topbar-stats" aria-live="off">
+      <span><b id="stat-nodes">—</b> entities</span>
+      <span class="dot" aria-hidden="true"></span>
+      <span><b id="stat-edges">—</b> relationships</span>
+      <span class="dot" aria-hidden="true"></span>
+      <span><b id="stat-issuers">—</b> issuers</span>
+    </div>
+
+    <div class="topbar__spacer"></div>
+
+    <div class="topbar__actions">
+      <a href="/" class="btn btn--ghost btn--sm" title="Back to landing">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M19 12H5M12 19l-7-7 7-7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span class="btn__label">Home</span>
+      </a>
+
+      <a href="/app" class="btn btn--ghost btn--sm" title="Open Studio">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+        <span class="btn__label">Studio</span>
+      </a>
+
+      <div class="company-selector" id="company-selector">
+        <label class="sr-only" for="ticker-select">Select company</label>
+        <select id="ticker-select" class="select" style="width: auto; min-width: 140px;" aria-label="Select company">
+          <option value="">Select company…</option>
+        </select>
+      </div>
+
+      <button id="theme-btn" class="btn btn--ghost btn--icon" title="Toggle light and dark">
+        <svg id="theme-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M20 13.5A8 8 0 0 1 10.5 4a8.2 8.2 0 1 0 9.5 9.5Z" stroke-linejoin="round"/></svg>
+        <span class="sr-only">Toggle light and dark theme</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- ── workspace (studio layout) ─────────────────────────────────────────── -->
+  <main class="workspace" id="workspace">
+
+    <!-- Left: Company Hero + Key Metrics (landing page style cards) -->
+    <section class="panel panel--graph company-panel" id="company-panel" aria-label="Company overview">
+      <div class="company-hero" id="company-hero">
+        <div class="company-hero__bg" aria-hidden="true">
+          <div class="gradient-mesh" id="hero-gradient"></div>
+        </div>
+        <div class="company-hero__content">
+          <div class="company-identity">
+            <div class="company-identity__ticker" id="company-ticker">—</div>
+            <h1 class="company-identity__name" id="company-name">Select a company</h1>
+            <div class="company-identity__meta">
+              <span class="company-identity__exchange" id="company-exchange">—</span>
+              <span class="company-identity__sector" id="company-sector">—</span>
+              <span class="company-identity__currency" id="company-currency">USD</span>
+            </div>
+            <div class="company-identity__actions">
+              <a href="/app" class="btn btn--primary btn--lg" id="ask-btn" data-ticker="">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                  <circle cx="12" cy="12" r="10"/>
+                  <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/>
+                  <line x1="12" y1="17" x2="12.01" y2="17"/>
+                </svg>
+                Ask in Studio
+              </a>
+              <button class="btn btn--ghost btn--lg" id="watchlist-btn" aria-label="Add to watchlist">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                  <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
+                </svg>
+                <span>Watchlist</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Live Price Card -->
+          <section class="live-price-card" aria-labelledby="live-price-title">
+            <div class="live-price-card__header">
+              <h2 id="live-price-title" class="visually-hidden">Live Price</h2>
+              <div class="price-timeframe">
+                <button class="timeframe-btn active" data-tf="1D" aria-pressed="true">1D</button>
+                <button class="timeframe-btn" data-tf="1W" aria-pressed="false">1W</button>
+                <button class="timeframe-btn" data-tf="1M" aria-pressed="false">1M</button>
+                <button class="timeframe-btn" data-tf="3M" aria-pressed="false">3M</button>
+                <button class="timeframe-btn" data-tf="1Y" aria-pressed="false">1Y</button>
+                <button class="timeframe-btn" data-tf="ALL" aria-pressed="false">ALL</button>
+              </div>
+            </div>
+            <div class="live-price-card__main">
+              <div class="price-display">
+                <div class="price-display__value" id="current-price">$0.00</div>
+                <div class="price-display__change" id="price-change">
+                  <span class="change-value" id="change-value">+0.00 (+0.00%)</span>
+                  <span class="change-time" id="market-state">Market Closed</span>
+                </div>
+              </div>
+              <div class="price-display__mini-chart" id="mini-chart-container">
+                <canvas id="mini-chart" aria-hidden="true"></canvas>
+              </div>
+            </div>
+            <div class="live-price-card__stats" id="price-stats"></div>
+          </section>
+        </div>
+      </div>
+
+      <!-- Key Metrics Grid (landing page style cards) -->
+      <div class="company-grid" id="company-grid">
+        <!-- Technicals Card -->
+        <section class="card card--elevated technicals-card" aria-labelledby="technicals-title">
+          <header class="card__header">
+            <h2 id="technicals-title" class="card__title">Technicals</h2>
+            <div class="card__badge" id="technicals-signal">Neutral</div>
+          </header>
+          <div class="card__body">
+            <div class="technicals-grid" id="technicals-grid"></div>
+          </div>
+        </section>
+
+        <!-- Fundamentals Card -->
+        <section class="card card--elevated fundamentals-card" aria-labelledby="fundamentals-title">
+          <header class="card__header">
+            <h2 id="fundamentals-title" class="card__title">Fundamentals</h2>
+          </header>
+          <div class="card__body">
+            <div class="fundamentals-tabs" role="tablist" aria-label="Fundamental categories">
+              <button class="fund-tab active" role="tab" aria-selected="true" data-tab="valuation">Valuation</button>
+              <button class="fund-tab" role="tab" aria-selected="false" data-tab="profitability">Profitability</button>
+              <button class="fund-tab" role="tab" aria-selected="false" data-tab="financial-health">Financial Health</button>
+              <button class="fund-tab" role="tab" aria-selected="false" data-tab="dividends">Dividends</button>
+            </div>
+            <div class="fundamentals-panels" id="fundamentals-panels"></div>
+          </div>
+        </section>
+
+        <!-- Filings Table (from company page) -->
+        <section class="card card--elevated filings-card" aria-labelledby="filings-title">
+          <header class="card__header">
+            <h2 id="filings-title" class="card__title">SEC Filings</h2>
+            <span class="card__subtitle" id="filings-count">Loading…</span>
+          </header>
+          <div class="card__body">
+            <div class="filings-table-wrapper">
+              <table class="filings-table" id="filings-table">
+                <thead>
+                  <tr>
+                    <th scope="col">Form</th>
+                    <th scope="col">Fiscal Year</th>
+                    <th scope="col">Period</th>
+                    <th scope="col">Period End</th>
+                  </tr>
+                </thead>
+                <tbody id="filings-body"></tbody>
+              </table>
+            </div>
+            <div class="filings-empty" id="filings-empty" hidden>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                <polyline points="14 2 14 8 20 8"/>
+                <line x1="16" y1="13" x2="8" y2="13"/>
+                <line x1="16" y1="17" x2="8" y2="17"/>
+                <polyline points="10 9 9 9 8 9"/>
+              </svg>
+              <p>No filings in graph</p>
+            </div>
+          </div>
+        </section>
+
+        <!-- News Card -->
+        <section class="card card--elevated news-card" aria-labelledby="news-title">
+          <header class="card__header">
+            <h2 id="news-title" class="card__title">Recent News</h2>
+          </header>
+          <div class="card__body">
+            <div class="news-list" id="news-list" role="feed" aria-label="Recent news articles"></div>
+          </div>
+        </section>
+
+        <!-- Knowledge Graph Relationships -->
+        <section class="card card--elevated kg-card" aria-labelledby="kg-title">
+          <header class="card__header">
+            <h2 id="kg-title" class="card__title">Knowledge Graph</h2>
+            <p class="card__subtitle">Entity relationships from SEC filings</p>
+          </header>
+          <div class="card__body">
+            <div class="kg-visualization" id="kg-viz">
+              <canvas id="kg-canvas" aria-label="Company knowledge graph visualization"></canvas>
+            </div>
+            <div class="kg-legend" id="kg-legend"></div>
+            <div class="kg-empty" id="kg-empty" hidden>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+                <circle cx="12" cy="12" r="10"/>
+                <path d="M12 8v4M12 16h.01"/>
+              </svg>
+              <p>No graph data available</p>
+            </div>
+          </div>
+        </section>
+      </div>
+    </section>
+
+    <div class="splitter splitter--right" id="split-right" role="separator" aria-orientation="vertical" aria-label="Resize the detail panel" tabindex="0"></div>
+
+    <!-- Right: Detail Panel (studio style tabs) -->
+    <section class="panel panel--qa" id="detail-panel" aria-label="Company details">
+      <div class="tabs" role="tablist" aria-label="Detail views">
+        <div class="tabs__group tabs__group--tabs">
+          <button class="tab" role="tab" id="tab-btn-overview" aria-selected="true" aria-controls="tab-overview" data-tab="overview">Overview</button>
+          <button class="tab" role="tab" id="tab-btn-segments" aria-selected="false" aria-controls="tab-segments" data-tab="segments">Segments</button>
+          <button class="tab" role="tab" id="tab-btn-peers" aria-selected="false" aria-controls="tab-peers" data-tab="peers">Peers</button>
+          <button class="tab" role="tab" id="tab-btn-graph" aria-selected="false" aria-controls="tab-graph" data-tab="graph">Graph</button>
+        </div>
+      </div>
+
+      <div class="tabpanels" id="tabpanels">
+        <div class="tabpanel" id="tab-overview" role="tabpanel" aria-labelledby="tab-btn-overview" tabindex="0">
+          <div class="overview-content" id="overview-content"></div>
+        </div>
+        <div class="tabpanel" id="tab-segments" role="tabpanel" aria-labelledby="tab-btn-segments" tabindex="0" hidden>
+          <div class="segments-table-wrapper">
+            <table class="compare-table" id="segments-table">
+              <thead>
+                <tr>
+                  <th scope="col">Segment</th>
+                  <th scope="col">Revenue</th>
+                  <th scope="col">% of Total</th>
+                  <th scope="col">YoY Growth</th>
+                </tr>
+              </thead>
+              <tbody id="segments-body"></tbody>
+            </table>
+          </div>
+          <div class="segments-empty" id="segments-empty" hidden>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+              <path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+            </svg>
+            <p>Segment data not available</p>
+          </div>
+        </div>
+        <div class="tabpanel" id="tab-peers" role="tabpanel" aria-labelledby="tab-btn-peers" tabindex="0" hidden>
+          <div class="peers-grid" id="peers-grid"></div>
+        </div>
+        <div class="tabpanel" id="tab-graph" role="tabpanel" aria-labelledby="tab-btn-graph" tabindex="0" hidden>
+          <p class="compare-graph-note">Use the graph panel on the left to explore relationships. Click nodes to inspect.</p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ── mobile nav ────────────────────────────────────────────────────── -->
+  <nav class="mobile-nav" id="mobile-nav" role="tablist" aria-label="Views">
+    <button role="tab" data-view="company" aria-selected="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 9h6M9 13h6M9 17h4"/></svg>
+      Company
+    </button>
+    <button role="tab" data-view="detail" aria-selected="false">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+      Details
+    </button>
+  </nav>
+</div>
+
+<div class="toasts" id="toasts" aria-live="polite"></div>
+<p class="sr-only" id="announcer" role="status" aria-live="polite"></p>
+
+<!-- Loading Overlay -->
+<div class="loading-overlay" id="loading-overlay" role="status" aria-live="polite" hidden>
+  <div class="loading-spinner"></div>
+  <p>Loading company data…</p>
+</div>
+
+<!-- D3 and GSAP from vendor -->
+<script src="/vendor/d3.v7.min.js"></script>
+<script src="/vendor/gsap.min.js"></script>
+<script src="/vendor/chart.min.js"></script>
+<script type="module" src="/static/company.js"></script>
+</body>
+</html>

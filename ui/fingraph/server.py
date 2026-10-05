@@ -217,6 +217,7 @@ _COMPANY_ASSETS: dict[str, str] = {
 
 _ASSETS: dict[str, str] = {
     "index.html": "text/html; charset=utf-8",
+    "company.html": "text/html; charset=utf-8",
     "styles.css": "text/css; charset=utf-8",
     "app.js": "text/javascript; charset=utf-8",
     "api.js": "text/javascript; charset=utf-8",
@@ -229,6 +230,7 @@ _ASSETS: dict[str, str] = {
     "runDetails.js": "text/javascript; charset=utf-8",
     "runDetails.css": "text/css; charset=utf-8",
     "executionCard.js": "text/javascript; charset=utf-8",
+    "company.js": "text/javascript; charset=utf-8",
     "logo.png": "image/png",
     "fingraph-logo.png": "image/png",
 }
@@ -245,6 +247,7 @@ _AUTH_ASSETS: dict[str, str] = {
 _VENDOR_ASSETS: dict[str, str] = {
     "gsap.min.js": "text/javascript; charset=utf-8",
     "d3.v7.min.js": "text/javascript; charset=utf-8",
+    "chart.min.js": "text/javascript; charset=utf-8",
 }
 
 _ANIMATION_ASSETS: dict[str, str] = {
@@ -1370,7 +1373,7 @@ class _NextHandler(_legacy._Handler):
             self.send_header("Content-Length", "0")
             self.end_headers()
             return None
-        # Company overview page
+        # Company overview page - Unified Studio + Landing design
         if p == "/company" or p == "/company/":
             # Redirect to landing page markets section
             self.send_response(302)
@@ -1379,9 +1382,9 @@ class _NextHandler(_legacy._Handler):
             self.end_headers()
             return None
         if p.startswith("/company/"):
-            # Company overview page is an SPA route - always serve the shell.
-            # react-router handles the ticker parameter client-side.
-            return self._serve_company("APP", "index.html")
+            # Unified company deep-dive page (Studio shell + Landing visuals)
+            # Always serve the shell; client-side routing handles ticker parameter.
+            return self._serve_asset("company.html")
         # Animation page
         if p in ("/animation", "/animation/", "/animation/index.html"):
             return self._serve_animation("index.html")
