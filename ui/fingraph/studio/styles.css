@@ -3478,6 +3478,22 @@ table.data td.mono { font-family: var(--font-mono); font-size: var(--text-xs); }
 .tech-item__sub.positive { color: var(--up); }
 .tech-item__sub.negative { color: var(--down); }
 
+/* Technicals groups */
+.tech-group {
+  margin-bottom: 20px;
+}
+.tech-group:last-child { margin-bottom: 0; }
+.tech-group__title {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
 /* Fundamentals Tabs */
 .fundamentals-tabs {
   display: flex;

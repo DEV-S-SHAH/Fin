@@ -1,16 +1,13 @@
-/* FinGraph Company Deep Dive — Unified Studio + Landing Design
+/* FinGraph Company Deep Dive — Technicals-Focused Page
  *
- * Combines:
- *   - Studio app shell (topbar, workspace, splitter, tabs, side panel)
- *   - Landing page visual language (gradient bars, cards, glow, animations)
- *   - Live data sync via polling + SSE-ready architecture
+ * Pure company technicals & fundamentals from Yahoo Finance.
+ * No GraphRAG, no Ask panel, no Knowledge Graph.
+ * Live data sync via 30s polling.
  */
 
 import {
-  fetchCompanies, fetchStats, fetchGraph,
-  fetchEntities, askJson,
+  fetchCompanies, fetchStats,
 } from "/static/api.js";
-import { GraphView } from "/static/graph.js";
 
 import { set, setCollection, state, subscribe } from "/static/store.js";
 import {
@@ -46,16 +43,10 @@ let appState = {
   chartType: 'candlestick',
   activeIndicators: { sma20: true, sma50: true, bb: false, volume: true },
   activeFundTab: 'valuation',
-  activeDetailTab: 'overview',
-  charts: { mini: null, main: null, kg: null },
+  charts: { mini: null },
   pollTimer: null,
-  graph: null,
   companies: [],
-  selectedEntity: null,
 };
-
-// ===== DOM Elements =====
-const els = {};
 
 // ===== Utility Functions =====
 const $q = (sel, ctx = document) => ctx.querySelector(sel);
@@ -220,9 +211,6 @@ function renderCompanyIdentity(data) {
   $q('#company-sector').textContent = fundamentals.sector || 'N/A';
   $q('#company-currency').textContent = quote.currency || 'USD';
 
-  $q('#ask-btn').dataset.ticker = quote.ticker;
-  $q('#ask-btn').href = `/app?ticker=${quote.ticker}`;
-
   // Update ticker select
   const select = $q('#ticker-select');
   if (select) select.value = quote.ticker;
@@ -324,24 +312,22 @@ function renderMiniChart() {
   appState.charts.mini = { ctx, data: chartData, cssWidth, cssHeight, minPrice, maxPrice };
 }
 
-function renderMainChart() {
-  // Not used in this unified page - we only show mini chart in hero
-}
-
 function renderTechnicals(data) {
-  const { technicals } = data;
+  const { technicals, quote } = data;
   if (!technicals) return;
 
   const grid = $q('#technicals-grid');
   const badge = $q('#technicals-signal');
 
+  // Comprehensive signal analysis
   let bullish = 0, bearish = 0;
   const checks = [
-    { val: technicals.price_vs_sma20, label: 'vs SMA 20', key: 'price_vs_sma20' },
-    { val: technicals.price_vs_sma50, label: 'vs SMA 50', key: 'price_vs_sma50' },
-    { val: technicals.price_vs_sma200, label: 'vs SMA 200', key: 'price_vs_sma200' },
+    { val: technicals.price_vs_sma20, label: 'Price vs SMA 20', key: 'price_vs_sma20' },
+    { val: technicals.price_vs_sma50, label: 'Price vs SMA 50', key: 'price_vs_sma50' },
+    { val: technicals.price_vs_sma200, label: 'Price vs SMA 200', key: 'price_vs_sma200' },
     { val: technicals.rsi_14, label: 'RSI (14)', key: 'rsi_14', invert: true },
-    { val: technicals.macd_histogram, label: 'MACD Hist', key: 'macd_histogram' }
+    { val: technicals.macd_histogram, label: 'MACD Hist', key: 'macd_histogram' },
+    { val: technicals.bb_upper && technicals.current_price ? ((technicals.current_price - technicals.bb_middle) / (technicals.bb_upper - technicals.bb_middle) * 2 - 1) : null, label: 'BB Position', key: 'bb_position' }
   ];
 
   checks.forEach(c => {
@@ -362,32 +348,65 @@ function renderTechnicals(data) {
   badge.textContent = signal;
   badge.className = `card__badge ${signalClass}`;
 
+  const currentPrice = technicals.current_price || quote?.price;
   const items = [
-    { label: 'RSI (14)', value: technicals.rsi_14, fmt: v => v?.toFixed(1), class: v => v > 70 ? 'negative' : v < 30 ? 'positive' : '' },
-    { label: 'MACD', value: technicals.macd, fmt: v => v?.toFixed(4) },
-    { label: 'Signal', value: technicals.macd_signal, fmt: v => v?.toFixed(4) },
-    { label: 'Histogram', value: technicals.macd_histogram, fmt: v => v?.toFixed(4), class: v => v > 0 ? 'positive' : 'negative' },
-    { label: 'SMA 20', value: technicals.sma_20, fmt: v => formatCurrency(v), sub: technicals.price_vs_sma20 !== null ? `${technicals.price_vs_sma20 > 0 ? '+' : ''}${technicals.price_vs_sma20.toFixed(2)}%` : null, subClass: technicals.price_vs_sma20 > 0 ? 'positive' : 'negative' },
-    { label: 'SMA 50', value: technicals.sma_50, fmt: v => formatCurrency(v), sub: technicals.price_vs_sma50 !== null ? `${technicals.price_vs_sma50 > 0 ? '+' : ''}${technicals.price_vs_sma50.toFixed(2)}%` : null, subClass: technicals.price_vs_sma50 > 0 ? 'positive' : 'negative' },
-    { label: 'SMA 200', value: technicals.sma_200, fmt: v => formatCurrency(v), sub: technicals.price_vs_sma200 !== null ? `${technicals.price_vs_sma200 > 0 ? '+' : ''}${technicals.price_vs_sma200.toFixed(2)}%` : null, subClass: technicals.price_vs_sma200 > 0 ? 'positive' : 'negative' },
-    { label: 'BB Upper', value: technicals.bb_upper, fmt: v => formatCurrency(v) },
-    { label: 'BB Lower', value: technicals.bb_lower, fmt: v => formatCurrency(v) },
-    { label: 'ATR (14)', value: technicals.atr_14, fmt: v => formatCurrency(v) }
+    // Momentum
+    { label: 'RSI (14)', value: technicals.rsi_14, fmt: v => v?.toFixed(1), class: v => v > 70 ? 'negative' : v < 30 ? 'positive' : '', group: 'Momentum' },
+    { label: 'MACD', value: technicals.macd, fmt: v => v?.toFixed(4), group: 'Momentum' },
+    { label: 'Signal Line', value: technicals.macd_signal, fmt: v => v?.toFixed(4), group: 'Momentum' },
+    { label: 'MACD Histogram', value: technicals.macd_histogram, fmt: v => v?.toFixed(4), class: v => v > 0 ? 'positive' : 'negative', group: 'Momentum' },
+
+    // Moving Averages
+    { label: 'SMA 20', value: technicals.sma_20, fmt: v => formatCurrency(v), sub: technicals.price_vs_sma20 !== null ? `${technicals.price_vs_sma20 > 0 ? '+' : ''}${technicals.price_vs_sma20.toFixed(2)}%` : null, subClass: technicals.price_vs_sma20 > 0 ? 'positive' : 'negative', group: 'Moving Averages' },
+    { label: 'SMA 50', value: technicals.sma_50, fmt: v => formatCurrency(v), sub: technicals.price_vs_sma50 !== null ? `${technicals.price_vs_sma50 > 0 ? '+' : ''}${technicals.price_vs_sma50.toFixed(2)}%` : null, subClass: technicals.price_vs_sma50 > 0 ? 'positive' : 'negative', group: 'Moving Averages' },
+    { label: 'SMA 200', value: technicals.sma_200, fmt: v => formatCurrency(v), sub: technicals.price_vs_sma200 !== null ? `${technicals.price_vs_sma200 > 0 ? '+' : ''}${technicals.price_vs_sma200.toFixed(2)}%` : null, subClass: technicals.price_vs_sma200 > 0 ? 'positive' : 'negative', group: 'Moving Averages' },
+
+    // Bollinger Bands
+    { label: 'BB Upper', value: technicals.bb_upper, fmt: v => formatCurrency(v), group: 'Bollinger Bands' },
+    { label: 'BB Middle', value: technicals.bb_middle, fmt: v => formatCurrency(v), group: 'Bollinger Bands' },
+    { label: 'BB Lower', value: technicals.bb_lower, fmt: v => formatCurrency(v), group: 'Bollinger Bands' },
+
+    // Volatility & Volume
+    { label: 'ATR (14)', value: technicals.atr_14, fmt: v => formatCurrency(v), group: 'Volatility' },
+    { label: 'Avg Volume', value: technicals.avg_volume, fmt: v => formatNumber(v), group: 'Volume' },
+    { label: 'Avg Vol (10d)', value: technicals.avg_volume_10d, fmt: v => formatNumber(v), group: 'Volume' },
+
+    // Price Levels
+    { label: '52W High', value: technicals['52wk_high'], fmt: v => formatCurrency(v), group: 'Price Levels' },
+    { label: '52W Low', value: technicals['52wk_low'], fmt: v => formatCurrency(v), group: 'Price Levels' },
+    { label: '50D Avg', value: technicals['50d_avg'], fmt: v => formatCurrency(v), group: 'Price Levels' },
+    { label: '200D Avg', value: technicals['200d_avg'], fmt: v => formatCurrency(v), group: 'Price Levels' },
+    { label: 'Beta', value: technicals.beta, fmt: v => v?.toFixed(2), group: 'Price Levels' },
   ];
 
-  grid.innerHTML = items.map(item => {
-    const val = item.value;
-    const formatted = val !== null && val !== undefined ? item.fmt(val) : '—';
-    const valClass = item.class ? item.class(val) : '';
-    const subHtml = item.sub ? `<span class="tech-item__sub ${item.subClass || ''}">${item.sub}</span>` : '';
-    return `
-      <div class="tech-item">
-        <span class="tech-item__label">${item.label}</span>
-        <span class="tech-item__value ${valClass}">${formatted}</span>
-        ${subHtml}
-      </div>
-    `;
-  }).join('');
+  // Group items by group
+  const grouped = items.reduce((acc, item) => {
+    const g = item.group || 'Other';
+    if (!acc[g]) acc[g] = [];
+    acc[g].push(item);
+    return acc;
+  }, {});
+
+  let html = '';
+  for (const [group, groupItems] of Object.entries(grouped)) {
+    html += `<div class="tech-group"><h4 class="tech-group__title">${group}</h4><div class="technicals-grid">`;
+    html += groupItems.map(item => {
+      const val = item.value;
+      const formatted = val !== null && val !== undefined ? item.fmt(val) : '—';
+      const valClass = item.class ? item.class(val) : '';
+      const subHtml = item.sub ? `<span class="tech-item__sub ${item.subClass || ''}">${item.sub}</span>` : '';
+      return `
+        <div class="tech-item">
+          <span class="tech-item__label">${item.label}</span>
+          <span class="tech-item__value ${valClass}">${formatted}</span>
+          ${subHtml}
+        </div>
+      `;
+    }).join('');
+    html += '</div></div>';
+  }
+
+  grid.innerHTML = html;
 }
 
 function renderFundamentals(data) {
@@ -512,103 +531,6 @@ function formatTimeAgo(timestamp) {
   return formatDate(timestamp);
 }
 
-function renderKnowledgeGraph(data) {
-  const { graph_info } = data;
-  const canvas = $q('#kg-canvas');
-  const empty = $q('#kg-empty');
-  const legend = $q('#kg-legend');
-
-  if (!graph_info?.in_graph) {
-    canvas.hidden = true;
-    empty.hidden = false;
-    legend.hidden = true;
-    return;
-  }
-
-  canvas.hidden = false;
-  empty.hidden = true;
-  legend.hidden = false;
-
-  const ctx = canvas.getContext('2d');
-  const width = canvas.width = canvas.offsetWidth * devicePixelRatio;
-  const height = canvas.height = canvas.offsetHeight * devicePixelRatio;
-  ctx.scale(devicePixelRatio, devicePixelRatio);
-  const cssWidth = canvas.offsetWidth;
-  const cssHeight = canvas.offsetHeight;
-
-  const nodes = [
-    { id: appState.ticker, label: appState.ticker, type: 'company', x: cssWidth / 2, y: cssHeight / 2, fx: cssWidth / 2, fy: cssHeight / 2 },
-    { id: 'sector', label: data.fundamentals.sector || 'Technology', type: 'sector', x: cssWidth / 2 + 150, y: cssHeight / 2 - 80 },
-    { id: 'industry', label: data.fundamentals.industry || 'Software', type: 'industry', x: cssWidth / 2 - 150, y: cssHeight / 2 - 80 },
-    { id: 'filings', label: `${graph_info.filings?.length || 0} Filings`, type: 'filings', x: cssWidth / 2 + 100, y: cssHeight / 2 + 100 },
-    { id: 'peers', label: 'Peers', type: 'peers', x: cssWidth / 2 - 100, y: cssHeight / 2 + 100 }
-  ];
-
-  const links = [
-    { source: appState.ticker, target: 'sector' },
-    { source: appState.ticker, target: 'industry' },
-    { source: appState.ticker, target: 'filings' },
-    { source: appState.ticker, target: 'peers' }
-  ];
-
-  const typeColors = {
-    company: '#FF3C00',
-    sector: '#FFB800',
-    industry: '#00D4AA',
-    filings: '#6366F1',
-    peers: '#EC4899'
-  };
-
-  // Draw links
-  ctx.strokeStyle = 'rgba(255,255,255,0.15)';
-  ctx.lineWidth = 1.5;
-  links.forEach(link => {
-    const s = nodes.find(n => n.id === link.source);
-    const t = nodes.find(n => n.id === link.target);
-    if (s && t) {
-      ctx.beginPath();
-      ctx.moveTo(s.x, s.y);
-      ctx.lineTo(t.x, t.y);
-      ctx.stroke();
-    }
-  });
-
-  // Draw nodes
-  nodes.forEach(node => {
-    const color = typeColors[node.type] || '#888';
-    const radius = node.type === 'company' ? 28 : 22;
-
-    const gradient = ctx.createRadialGradient(node.x, node.y, 0, node.x, node.y, radius + 10);
-    gradient.addColorStop(0, color + '40');
-    gradient.addColorStop(1, 'transparent');
-    ctx.beginPath();
-    ctx.arc(node.x, node.y, radius + 10, 0, Math.PI * 2);
-    ctx.fillStyle = gradient;
-    ctx.fill();
-
-    ctx.beginPath();
-    ctx.arc(node.x, node.y, radius, 0, Math.PI * 2);
-    ctx.fillStyle = color;
-    ctx.fill();
-
-    ctx.strokeStyle = '#030303';
-    ctx.lineWidth = 2;
-    ctx.stroke();
-
-    ctx.font = '500 12px var(--font-sans)';
-    ctx.fillStyle = '#fff';
-    ctx.textAlign = 'center';
-    ctx.fillText(node.label, node.x, node.y + radius + 18);
-  });
-
-  legend.innerHTML = Object.entries(typeColors).map(([type, color]) => `
-    <span class="kg-legend-item">
-      <span class="kg-legend-color" style="background: ${color}"></span>
-      ${type.charAt(0).toUpperCase() + type.slice(1)}
-    </span>
-  `).join('');
-}
-
 function renderFilings(data) {
   const { graph_info } = data;
   const tbody = $q('#filings-body');
@@ -662,106 +584,6 @@ function renderOverview(data) {
   `;
 }
 
-function renderSegments(data) {
-  // Placeholder - segment data not in current API
-  const body = $q('#segments-body');
-  const empty = $q('#segments-empty');
-  const table = $q('#segments-table');
-
-  table.hidden = true;
-  empty.hidden = false;
-  body.innerHTML = '';
-}
-
-function renderPeers(data) {
-  const grid = $q('#peers-grid');
-  // Use companies from graph as peers
-  const peers = appState.companies.filter(c => c.ticker !== appState.ticker).slice(0, 6);
-
-  if (!peers.length) {
-    grid.innerHTML = '<p style="color:var(--color-text-muted);text-align:center;padding:48px;">No peer data available</p>';
-    return;
-  }
-
-  grid.innerHTML = peers.map(peer => `
-    <div class="peer-card">
-      <div class="peer-card__ticker">${peer.ticker}</div>
-      <div class="peer-card__name">${peer.name || peer.legal_name || ''}</div>
-      <div class="peer-card__meta">
-        <span>${peer.filings || 0} filings</span>
-        <span>${peer.latest?.form || ''} ${peer.latest?.fiscal_year || ''}</span>
-      </div>
-    </div>
-  `).join('');
-}
-
-// ===== Graph (Studio style) =====
-class CompanyGraphView {
-  constructor() {
-    this.graph = new GraphView($q('#graph-canvas'), {
-      onSelect: (node) => {
-        set({ selected: node?.id || null });
-        this.#renderEntities();
-      },
-      tooltip: $q('#graph-tooltip'),
-      tooltipHost: $q('#graph-panel'),
-      inspector: $q('#graph-inspector'),
-      sidePanel: $q('#graph-side-panel'),
-    });
-  }
-
-  async loadGraph(ticker) {
-    set({ graphLoading: true });
-    try {
-      const payload = await fetchGraph({ seed: ticker, hops: 2, limit: 150 });
-      set({ graph: payload, selected: null });
-      const counts = this.graph.setData(payload, { fresh: true });
-      $q('#graph-count').textContent = `${fmtNumber(counts.nodes)} nodes · ${fmtNumber(counts.links)} links`;
-    } catch (error) {
-      toast(`graph query failed: ${error.message}`, 'bad');
-    } finally {
-      set({ graphLoading: false });
-    }
-  }
-}
-
-// ===== Event Handlers =====
-function handleTimeframeChange(btn) {
-  const tf = btn.dataset.tf;
-  if (tf === appState.currentTimeframe) return;
-
-  $qa('.timeframe-btn').forEach(b => { b.classList.remove('active'); b.setAttribute('aria-pressed', 'false'); });
-  btn.classList.add('active');
-  btn.setAttribute('aria-pressed', 'true');
-  appState.currentTimeframe = tf;
-  renderMiniChart();
-}
-
-function handleDetailTabChange(tab) {
-  const name = tab.dataset.tab;
-  if (name === appState.activeDetailTab) return;
-
-  $qa('.tab[data-tab]').forEach(t => {
-    const on = t.dataset.tab === name;
-    t.setAttribute('aria-selected', on ? 'true' : 'false');
-    t.classList.toggle('is-on', on);
-  });
-  $qa('.tabpanel').forEach(p => {
-    p.hidden = p.id !== `tab-${name}`;
-  });
-  appState.activeDetailTab = name;
-
-  // Render tab content if needed
-  if (name === 'segments' && appState.data) renderSegments(appState.data);
-  if (name === 'peers' && appState.data) renderPeers(appState.data);
-}
-
-async function handleTickerChange(select) {
-  const ticker = select.value;
-  if (!ticker) return;
-  await loadCompanyData(ticker);
-}
-
 // ===== Live Data Sync =====
 let pollTimer = null;
 
@@ -769,11 +591,9 @@ function startPolling(ticker) {
   stopPolling();
   pollTimer = setInterval(async () => {
     try {
-      // Only refresh quote/price data (lightweight)
       const res = await fetch(`${API_BASE}/${ticker}`);
       if (res.ok) {
         const data = await res.json();
-        // Update only live elements
         if (data.quote) updateLivePrice(data.quote);
         if (data.technicals) updateTechnicals(data.technicals);
       }
@@ -802,7 +622,6 @@ function updateLivePrice(quote) {
 }
 
 function updateTechnicals(technicals) {
-  // Update technicals grid values
   $qa('.tech-item').forEach(item => {
     const label = item.querySelector('.tech-item__label')?.textContent;
     const valueEl = item.querySelector('.tech-item__value');
@@ -812,24 +631,43 @@ function updateTechnicals(technicals) {
     const keyMap = {
       'RSI (14)': 'rsi_14',
       'MACD': 'macd',
-      'Signal': 'macd_signal',
-      'Histogram': 'macd_histogram',
+      'Signal Line': 'macd_signal',
+      'MACD Histogram': 'macd_histogram',
       'SMA 20': 'sma_20',
       'SMA 50': 'sma_50',
       'SMA 200': 'sma_200',
       'BB Upper': 'bb_upper',
+      'BB Middle': 'bb_middle',
       'BB Lower': 'bb_lower',
-      'ATR (14)': 'atr_14'
+      'ATR (14)': 'atr_14',
+      'Avg Volume': 'avg_volume',
+      'Avg Vol (10d)': 'avg_volume_10d',
+      '52W High': '52wk_high',
+      '52W Low': '52wk_low',
+      '50D Avg': '50d_avg',
+      '200D Avg': '200d_avg',
+      'Beta': 'beta'
     };
     const key = keyMap[label.trim()];
     if (key && technicals[key] !== undefined) {
       const val = technicals[key];
-      if (label.includes('SMA') || label.includes('BB') || label.includes('ATR')) {
+      if (label.includes('SMA') || label.includes('BB') || label.includes('ATR') || label.includes('52W') || label.includes('50D') || label.includes('200D')) {
         valueEl.textContent = formatCurrency(val);
-      } else if (label === 'RSI (14)') {
-        valueEl.textContent = val?.toFixed(1);
+      } else if (label === 'RSI (14)' || label === 'Beta') {
+        valueEl.textContent = val?.toFixed(2);
+      } else if (label.includes('Volume')) {
+        valueEl.textContent = formatNumber(val);
       } else {
         valueEl.textContent = val?.toFixed(4);
+      }
+    }
+    // Update sub value for SMAs
+    if (subEl && label.startsWith('SMA')) {
+      const pctKey = `price_vs_sma${label.replace('SMA ', '')}`;
+      if (technicals[pctKey] !== undefined) {
+        const pct = technicals[pctKey];
+        subEl.textContent = `${pct > 0 ? '+' : ''}${pct.toFixed(2)}%`;
+        subEl.className = `tech-item__sub ${pct > 0 ? 'positive' : 'negative'}`;
       }
     }
   });
@@ -856,12 +694,8 @@ async function loadCompanyData(ticker) {
     renderTechnicals(appState.data);
     renderFundamentals(appState.data);
     renderNews(appState.data);
-    renderKnowledgeGraph(appState.data);
     renderFilings(appState.data);
     renderOverview(appState.data);
-
-    // Load graph
-    await appState.graph.loadGraph(appState.ticker);
 
     // Start live polling
     startPolling(appState.ticker);
@@ -877,26 +711,16 @@ async function loadCompanyData(ticker) {
 // ===== Initialization =====
 async function init() {
   stampLogos();
-  appState.graph = new CompanyGraphView();
 
   // Wire topbar actions
   $qa('.timeframe-btn').forEach(btn => {
     btn.addEventListener('click', () => handleTimeframeChange(btn));
   });
 
-  $qa('.tab[data-tab]').forEach(tab => {
-    tab.addEventListener('click', () => handleDetailTabChange(tab));
-  });
-
   $q('#ticker-select')?.addEventListener('change', (e) => handleTickerChange(e.target));
 
-  // Mobile nav
-  $qa('.mobile-nav [role="tab"]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const view = btn.dataset.view;
-      $qa('.mobile-nav [role="tab"]').forEach(b => b.setAttribute('aria-selected', b === btn ? 'true' : 'false'));
-      document.body.dataset.view = view;
-    });
+  $q('#refresh-btn')?.addEventListener('click', () => {
+    if (appState.ticker) loadCompanyData(appState.ticker);
   });
 
   // Theme toggle
@@ -906,12 +730,6 @@ async function init() {
     html.setAttribute('data-theme', newTheme);
     localStorage.setItem('theme', newTheme);
     renderMiniChart();
-    renderKnowledgeGraph(appState.data);
-  });
-
-  // Watchlist button
-  $q('#watchlist-btn')?.addEventListener('click', () => {
-    showToast(`${appState.ticker} added to watchlist`, 'success');
   });
 
   // Load companies for selector
@@ -953,7 +771,6 @@ async function init() {
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(() => {
       if (appState.charts.mini) renderMiniChart();
-      if (appState.charts.kg) renderKnowledgeGraph(appState.data);
     }, 150);
   });
 
@@ -965,10 +782,27 @@ async function init() {
     const path = window.location.pathname;
     const match = path.match(/\/company\/([A-Za-z]+)/);
     if (match) {
-      appState = { ...appState, data: null, charts: { mini: null, main: null, kg: null } };
+      appState = { ...appState, data: null, charts: { mini: null } };
       await loadCompanyData(match[1].toUpperCase());
     }
   });
+}
+
+function handleTimeframeChange(btn) {
+  const tf = btn.dataset.tf;
+  if (tf === appState.currentTimeframe) return;
+
+  $qa('.timeframe-btn').forEach(b => { b.classList.remove('active'); b.setAttribute('aria-pressed', 'false'); });
+  btn.classList.add('active');
+  btn.setAttribute('aria-pressed', 'true');
+  appState.currentTimeframe = tf;
+  renderMiniChart();
+}
+
+async function handleTickerChange(select) {
+  const ticker = select.value;
+  if (!ticker) return;
+  await loadCompanyData(ticker);
 }
 
 // Start
