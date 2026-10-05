@@ -1069,10 +1069,10 @@ DEV_LOGIN_ENV = "FINGRAPH_DEV_LOGIN"
 def dev_sign_in_enabled() -> bool:
     """Whether the ``dev`` provider is allowed to mint sessions.
 
-    Defaults to True for local development. Can be disabled via FINGRAPH_DEV_LOGIN=0.
+    Defaults to False. Must be explicitly enabled via FINGRAPH_DEV_LOGIN=1.
     """
     val = os.environ.get(DEV_LOGIN_ENV, "").strip().lower()
-    return val not in ("0", "false", "no", "off")
+    return val in ("1", "true", "yes", "on")
 
 #: Providers the server will issue a session for. ``dev`` is only included
 #: when ``dev_sign_in_enabled()`` returns True.

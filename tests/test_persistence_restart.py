@@ -438,6 +438,7 @@ class TestSessionPersistence:
     def test_session_cookie_survives_restart_with_fixed_secret(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Session cookie verifies with same secret across restarts."""
         monkeypatch.setenv("FINGRAPH_AUTH_SECRET", "fixed-secret-for-testing")
+        monkeypatch.setenv("FINGRAPH_DEV_LOGIN", "1")
 
         import importlib
         import ui.fingraph.server as server

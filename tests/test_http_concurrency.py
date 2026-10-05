@@ -4,6 +4,7 @@ Requirement coverage: concurrent normal requests, concurrent SSE, slow clients,
 disconnected clients, connection floods, and graceful shutdown while connections
 are active.
 
+Tests the canonical UI (``ui.fingraph``) which uses ``BoundedThreadingHTTPServer``.
 No test here opens ``sandbox_engine/_run/sandbox.lbug``: the fixture graph is
 built in ``tmp_path``, so a regression cannot touch authoritative data.
 """
@@ -875,16 +876,19 @@ class TestLimitsFromEnv:
             assert f"# {name}=" in text, f"{name} is not documented in .env.example"
 
 
-class TestGraphragWebIsAlsoBounded:
-    """``ui.graphrag_web`` ships HTTP/1.1 keep-alive and is documented in the
-    README on port 8765, so it has the same idle-socket exposure. It has no
-    streaming responses, so only the transport ceilings apply."""
+class TestFingraphIsAlsoBounded:
+    """``ui.fingraph`` ships HTTP/1.1 keep-alive and is the canonical UI
+    on port 9100, so it has the same idle-socket exposure. It has SSE
+    streaming responses, so both transport and streaming ceilings apply."""
 
     @staticmethod
     def _server(**kw):
-        from ui.graphrag_web import server as web
+        from ui.fingraph import server as fg
+        from sandbox_engine.query_ui import _listeners
 
-        return web.bind_server(web._Handler, "127.0.0.1", 0, limits=Limits(**kw))
+        handler = type("_TestHandler", (fg._NextHandler,), {})
+        servers = _listeners("127.0.0.1", [0], handler, limits=Limits(**kw))
+        return servers[0]
 
     def test_it_binds_the_bounded_server_not_the_raw_one(self) -> None:
         srv = self._server(request_timeout=2.0)
@@ -897,20 +901,21 @@ class TestGraphragWebIsAlsoBounded:
     def test_the_handler_declares_a_finite_timeout(self) -> None:
         """``timeout = None`` under HTTP/1.1 is the original defect: every idle
         keep-alive socket would pin a thread for the life of the process."""
-        from ui.graphrag_web import server as web
+        from ui.fingraph import server as fg
 
-        assert web._Handler.protocol_version == "HTTP/1.1"
-        assert web._Handler.timeout is not None
-        assert web._Handler.timeout > 0
+        assert fg._NextHandler.protocol_version == "HTTP/1.1"
+        assert fg._NextHandler.timeout is not None
+        assert fg._NextHandler.timeout > 0
 
     def test_per_server_limits_reach_the_handler_instance(self) -> None:
         """The class attribute is only the process default; ``setup`` must
         narrow it, or a tuned listener would keep the old timeout."""
-        from ui.graphrag_web import server as web
+        from ui.fingraph import server as fg
+        from sandbox_engine.query_ui import _listeners
 
         seen: list[float] = []
 
-        class _Probe(web._Handler):
+        class _Probe(fg._NextHandler):
             def setup(self) -> None:
                 super().setup()
                 seen.append(self.timeout)
@@ -920,7 +925,7 @@ class TestGraphragWebIsAlsoBounded:
                 self.send_header("Content-Length", "0")
                 self.end_headers()
 
-        srv = web.bind_server(_Probe, "127.0.0.1", 0, limits=Limits(request_timeout=6.0))
+        srv = _listeners("127.0.0.1", [0], _Probe, limits=Limits(request_timeout=6.0))[0]
         thread = threading.Thread(target=srv.serve_forever, daemon=True)
         thread.start()
         try:
@@ -937,9 +942,10 @@ class TestGraphragWebIsAlsoBounded:
     def test_idle_keepalive_sockets_are_reaped(self) -> None:
         """The end-to-end proof for this server: hold sockets open, then let go
         of the client's interest and confirm the threads come back."""
-        from ui.graphrag_web import server as web
+        from ui.fingraph import server as fg
+        from sandbox_engine.query_ui import _listeners
 
-        class _Idle(web._Handler):
+        class _Idle(fg._NextHandler):
             def do_GET(self) -> None:  # noqa: N802
                 self.send_response(200)
                 self.send_header("Content-Type", "text/plain")
@@ -947,7 +953,7 @@ class TestGraphragWebIsAlsoBounded:
                 self.end_headers()
                 self.wfile.write(b"ok")
 
-        srv = web.bind_server(_Idle, "127.0.0.1", 0, limits=Limits(request_timeout=1.0))
+        srv = _listeners("127.0.0.1", [0], _Idle, limits=Limits(request_timeout=1.0))[0]
         thread = threading.Thread(target=srv.serve_forever, daemon=True)
         thread.start()
         held: list[http.client.HTTPConnection] = []
@@ -974,10 +980,10 @@ class TestGraphragWebIsAlsoBounded:
             thread.join(timeout=5)
 
     def test_a_connection_flood_is_refused_with_a_status(self) -> None:
-        from ui.graphrag_web import server as web
+        from ui.fingraph import server as fg
+        from sandbox_engine.query_ui import _listeners
 
-        srv = web.bind_server(web._Handler, "127.0.0.1", 0,
-                              limits=Limits(max_connections=4))
+        srv = _listeners("127.0.0.1", [0], fg._NextHandler, limits=Limits(max_connections=4))[0]
         thread = threading.Thread(target=srv.serve_forever, daemon=True)
         thread.start()
         held: list[socket.socket] = []
