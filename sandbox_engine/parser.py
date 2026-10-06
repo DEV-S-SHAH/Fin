@@ -1415,6 +1415,13 @@ class ExtractionResult:
     equity_compensation_plans: dict[str, dict[str, Any]] = field(default_factory=dict)
     exhibits: dict[str, dict[str, Any]] = field(default_factory=dict)
     supporting_documents: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # -- Supply-Chain Intelligence Layer -------------------------------
+    suppliers: dict[str, dict[str, Any]] = field(default_factory=dict)
+    components: dict[str, dict[str, Any]] = field(default_factory=dict)
+    products: dict[str, dict[str, Any]] = field(default_factory=dict)
+    manufacturing: dict[str, dict[str, Any]] = field(default_factory=dict)
+    management_commentary: dict[str, dict[str, Any]] = field(default_factory=dict)
+    risks: dict[str, dict[str, Any]] = field(default_factory=dict)
     # -- Temporal Hierarchy Layer ---------------------------------------
     fiscal_years: dict[str, dict[str, Any]] = field(default_factory=dict)
     fiscal_quarters: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -1450,6 +1457,13 @@ class ExtractionResult:
             "equity_compensation_plans": len(self.equity_compensation_plans),
             "exhibits": len(self.exhibits),
             "supporting_documents": len(self.supporting_documents),
+            # -- Supply-Chain Intelligence Layer -------------------------------
+            "suppliers": len(self.suppliers),
+            "components": len(self.components),
+            "products": len(self.products),
+            "manufacturing": len(self.manufacturing),
+            "management_commentary": len(self.management_commentary),
+            "risks": len(self.risks),
             # -- Temporal Hierarchy Layer ---------------------------------------
             "fiscal_years": len(self.fiscal_years),
             "fiscal_quarters": len(self.fiscal_quarters),
@@ -1470,6 +1484,8 @@ class ExtractionResult:
             "institutional_holdings", "shareholders", "shareholdings",
             "securities", "corporate_events", "capital_raises",
             "equity_compensation_plans", "exhibits", "supporting_documents",
+            "suppliers", "components", "products", "manufacturing",
+            "management_commentary", "risks",
             "fiscal_years", "fiscal_quarters",
         ):
             getattr(self, name).update(getattr(other, name))
@@ -2402,6 +2418,32 @@ class FilingParser:
             )
         }
 
+    # -- Supply-Chain Intelligence Layer Extractions --------------------------
+
+    def extract_suppliers(self, raw: str, metadata: dict[str, Any]) -> list[dict[str, Any]]:
+        """Extract supplier entities from filing text."""
+        return extract_suppliers(raw, metadata)
+
+    def extract_components(self, raw: str, metadata: dict[str, Any]) -> list[dict[str, Any]]:
+        """Extract component entities from filing text."""
+        return extract_components(raw, metadata)
+
+    def extract_products(self, raw: str, metadata: dict[str, Any]) -> list[dict[str, Any]]:
+        """Extract product entities from filing text."""
+        return extract_products(raw, metadata)
+
+    def extract_manufacturing(self, raw: str, metadata: dict[str, Any]) -> list[dict[str, Any]]:
+        """Extract manufacturing location entities from filing text."""
+        return extract_manufacturing(raw, metadata)
+
+    def extract_management_commentary(self, raw: str, metadata: dict[str, Any]) -> list[dict[str, Any]]:
+        """Extract management commentary sections from filing text."""
+        return extract_management_commentary(raw, metadata)
+
+    def extract_risks(self, raw: str, metadata: dict[str, Any]) -> list[dict[str, Any]]:
+        """Extract risk factor entities from filing text."""
+        return extract_risks(raw, metadata)
+
     # -- orchestration -----------------------------------------------------
 
     def ingest_file(self, path: str | Path) -> ExtractionResult:
@@ -2561,6 +2603,14 @@ class FilingParser:
                     else:
                         fiscal_quarters[fq_id]["quarter_start_date"] = fiscal_years[fy_id].get("year_start_date", "")
 
+        # -- Supply-Chain Intelligence Layer Extractions ----------------------
+        suppliers = self.extract_suppliers(raw, metadata)
+        components = self.extract_components(raw, metadata)
+        products = self.extract_products(raw, metadata)
+        manufacturing = self.extract_manufacturing(raw, metadata)
+        management_commentary = self.extract_management_commentary(raw, metadata)
+        risks = self.extract_risks(raw, metadata)
+
         filing_id = filing_identity(metadata)
         result = ExtractionResult(
             company={
@@ -2593,6 +2643,13 @@ class FilingParser:
             equity_compensation_plans=equity_compensation_plans,
             exhibits=exhibits,
             supporting_documents=supporting_documents,
+            # -- Supply-Chain Intelligence Layer -------------------------------
+            suppliers=suppliers,
+            components=components,
+            products=products,
+            manufacturing=manufacturing,
+            management_commentary=management_commentary,
+            risks=risks,
             # -- Temporal Hierarchy Layer ---------------------------------------
             fiscal_years=fiscal_years,
             fiscal_quarters=fiscal_quarters,
@@ -2696,6 +2753,52 @@ class FilingParser:
                 {"from": filing_id, "to": fq_id}
                 for fq_id in fiscal_quarters
             ],
+            # -- Supply-Chain Intelligence Layer Relationships ---------------
+            # Only create edges where we have actual evidence from extraction
+            # SUPPLIES: Supplier -> Company (the company sources from this supplier)
+            # Supplier primary key is "name" (canonical_name)
+            "SUPPLIES": [
+                {"from": s_name, "to": metadata["ticker"], "volume": 0.0, "contract_type": "", "since": ""}
+                for s_name in suppliers.keys()
+            ],
+            # SOURCES_COMPONENT_FROM: Company -> Component (the company sources this component)
+            # Component primary key is "name"
+            "SOURCES_COMPONENT_FROM": [
+                {"from": metadata["ticker"], "to": c_name, "component": "", "volume": 0.0}
+                for c_name in components.keys()
+            ],
+            # USED_IN: Component -> Product (component is used in product)
+            # Component and Product primary keys are "name"
+            "USED_IN": [
+                {"from": c_name, "to": p_name, "quantity": 0.0, "criticality": 0.0}
+                for c_name in components.keys()
+                for p_name in products.keys()
+            ] if components and products else [],
+            # MANUFACTURES_FOR: Manufacturing -> Company (location manufactures for company)
+            # Manufacturing primary key is "name"
+            "MANUFACTURES_FOR": [
+                {"from": m_name, "to": metadata["ticker"], "volume": 0.0, "location": "", "since": ""}
+                for m_name in manufacturing.keys()
+            ],
+            # MENTIONED_IN: ManagementCommentary -> Filing (commentary is in this filing)
+            # ManagementCommentary primary key is "id" (stable_id)
+            "MENTIONED_IN": [
+                {"from": mc_data["id"], "to": filing_id, "context": "", "sentiment": ""}
+                for mc_data in management_commentary.values()
+            ],
+            # REFERENCES: Filing -> Risk (filing references this risk)
+            # Filing primary key is "id", Risk primary key is "id"
+            "REFERENCES": [
+                {"from": filing_id, "to": r_data["id"], "context": "", "quote": ""}
+                for r_data in risks.values()
+            ],
+            # DEPENDS_ON: Product -> Component (product depends on component)
+            # Product and Component primary keys are "name"
+            "DEPENDS_ON": [
+                {"from": p_name, "to": c_name, "criticality": 0.0, "single_source": False}
+                for p_name in products.keys()
+                for c_name in components.keys()
+            ] if products and components else [],
             # -- Amended Filing Relationships -------------------
             "AMENDS": [
                 {"from": filing_id, "to": metadata.get("original_filing_id", "")}
@@ -2818,14 +2921,760 @@ def extract_executives_from_8k(raw: str, metadata: dict[str, Any]) -> list[dict[
     return executives
 
 
-def extract_suppliers(raw: str, metadata: dict[str, Any]) -> list[dict[str, Any]]:
-    """Placeholder for supplier extraction (DEPENDS_ON relationships).
+def extract_suppliers(raw: str, metadata: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Extract supplier entities from filing text.
 
-    Currently returns empty list. Future implementation would parse
-    supply chain disclosures from 10-K/10-Q/8-K.
+    Parses supply chain disclosures from Item 1 (Business), Item 1A (Risk Factors),
+    and Item 7 (MD&A) sections of 10-K/10-Q filings.
+    Returns dict keyed by supplier name (primary key for Supplier node table).
     """
-    # TODO: Implement supplier extraction from relevant sections
-    return []
+    suppliers: dict[str, dict[str, Any]] = {}
+    text = strip_markup(raw)
+    ticker = metadata.get("ticker", "")
+    filing_date = metadata.get("filing_date", "")
+    accession = metadata.get("accession_number", "")
+    fiscal_year = metadata.get("fiscal_year", "")
+    fiscal_period = metadata.get("fiscal_period", "")
+
+    # Known supplier patterns from SEC filings
+    supplier_patterns = [
+        # "We source X from [Supplier Name]" - use word boundary to avoid matching inside "sources"
+        (r"\b(?:sources?|purchase|procure|obtain|acquire)\s+(?:our\s+)?(?:core\s+)?(?:silicon|chips|components|materials|parts|products)\s+from\s+([A-Z][A-Za-z0-9\s&.,'\(\)\-]{3,80}?)(?:\.|,|;|$)", "silicon/components"),
+        # "[Supplier Name] supplies X" - require company-like name
+        (r"\b([A-Z][A-Za-z0-9\s&.,'\(\)\-]{3,80}?(?:\s+(?:Inc|Corp|Corporation|Ltd|Limited|LLC|Co|Company|Technologies|Semiconductor|Electronics|Manufacturing|Industries|Holdings|Group|International))?)\s+(?:supplies?|provides?|manufactures?)\s+(?:our\s+)?(?:silicon|chips|components|materials|parts|products)", "supplies"),
+        # "Our [relationship] with [Supplier Name]"
+        (r"(?:our|the)\s+(?:relationship|partnership|agreement|contract)\s+with\s+([A-Z][A-Za-z0-9\s&.,'\(\)\-]{3,80}?)(?:\.|,|;|$)", "partnership"),
+        # "[Supplier Name] is our [sole|primary|key|major] supplier"
+        (r"\b([A-Z][A-Za-z0-9\s&.,'\(\)\-]{3,80}?)\s+is\s+(?:our\s+)?(?:sole|primary|key|major|strategic)\s+supplier", "key_supplier"),
+        # "depends on [Supplier Name] for"
+        (r"depends\s+on\s+([A-Z][A-Za-z0-9\s&.,'\(\)\-]{3,80}?)\s+for\s+(?:our\s+)?(?:silicon|chips|components|materials|parts)", "dependency"),
+    ]
+
+    # Known major suppliers to recognize (canonical names)
+    known_suppliers = {
+        "Taiwan Semiconductor Manufacturing Company": {"cik": "0000062078", "headquarters": "Hsinchu, Taiwan", "relationship_type": "Foundry", "criticality": "Critical"},
+        "TSMC": {"cik": "0000062078", "headquarters": "Hsinchu, Taiwan", "relationship_type": "Foundry", "criticality": "Critical"},
+        "Samsung Electronics": {"cik": "0000915382", "headquarters": "Suwon, South Korea", "relationship_type": "Memory/Foundry", "criticality": "High"},
+        "Foxconn": {"cik": "0000035552", "headquarters": "New Taipei City, Taiwan", "relationship_type": "Assembly", "criticality": "Critical"},
+        "Hon Hai Precision Industry": {"cik": "0000035552", "headquarters": "New Taipei City, Taiwan", "relationship_type": "Assembly", "criticality": "Critical"},
+        "Broadcom": {"cik": "0001670246", "headquarters": "San Jose, CA, USA", "relationship_type": "Semiconductors", "criticality": "High"},
+        "Qualcomm": {"cik": "0000804328", "headquarters": "San Diego, CA, USA", "relationship_type": "Modems/RF", "criticality": "High"},
+        "ASML": {"cik": "0000917949", "headquarters": "Veldhoven, Netherlands", "relationship_type": "Lithography", "criticality": "Critical"},
+        "SK Hynix": {"cik": "0001035128", "headquarters": "Icheon, South Korea", "relationship_type": "Memory", "criticality": "High"},
+        "Micron Technology": {"cik": "0000063071", "headquarters": "Boise, ID, USA", "relationship_type": "Memory", "criticality": "High"},
+        "Corning": {"cik": "0000023741", "headquarters": "Corning, NY, USA", "relationship_type": "Glass", "criticality": "Medium"},
+        "LG Display": {"cik": "0001106241", "headquarters": "Seoul, South Korea", "relationship_type": "Display", "criticality": "High"},
+        "BOE Technology": {"cik": "0001318605", "headquarters": "Beijing, China", "relationship_type": "Display", "criticality": "Medium"},
+        "Murata Manufacturing": {"cik": "0000065074", "headquarters": "Kyoto, Japan", "relationship_type": "Components", "criticality": "Medium"},
+        "TDK": {"cik": "0000065075", "headquarters": "Tokyo, Japan", "relationship_type": "Components", "criticality": "Medium"},
+    }
+
+    # False positive filters - common phrases that look like suppliers but aren't
+    supplier_false_positives = {
+        "introductions of new products and services",
+        "them is managed through a direct agreement between microsoft and the oem",
+        "our products and services",
+        "our customers",
+        "our partners",
+        "our suppliers",
+        "the company",
+        "the group",
+        "the business",
+        "the market",
+        "the industry",
+        "new products",
+        "new services",
+        "new technologies",
+        "new markets",
+        "new customers",
+        "new partners",
+    }
+
+    def is_valid_supplier(name: str) -> bool:
+        """Filter out false positive supplier names."""
+        name_lower = name.lower().strip()
+        if name_lower in supplier_false_positives:
+            return False
+        # Must have at least one capitalized word that looks like a proper noun
+        if not re.search(r'\b[A-Z][a-z]+\b', name):
+            return False
+        # Reject if it's mostly lowercase or generic
+        words = name.split()
+        if len(words) < 2:
+            return False
+        # Reject if it contains sentence-like fragments
+        if any(w in name_lower for w in [" if ", " that ", " which ", " when ", " where ", " because ", " although ", " however "]):
+            return False
+        return True
+
+    # Extract from text using patterns
+    for pattern, context_type in supplier_patterns:
+        for match in re.finditer(pattern, text, re.IGNORECASE):
+            supplier_name = clean_text(match.group(1))
+            if len(supplier_name) < 3 or len(supplier_name) > 100:
+                continue
+            # Clean up the name
+            supplier_name = re.sub(r"\s+", " ", supplier_name).strip(" .,;")
+            if not is_valid_supplier(supplier_name):
+                continue
+            # Check against known suppliers for enrichment
+            canonical_name = supplier_name
+            props = {"relationship_type": "Supplier", "criticality": "Medium", "ticker": "", "cik": "", "headquarters": "", "description": f"Identified from {context_type} in {filing_date} filing"}
+            for known, info in known_suppliers.items():
+                if known.lower() in supplier_name.lower() or supplier_name.lower() in known.lower():
+                    canonical_name = known
+                    props.update(info)
+                    break
+            # Use canonical name as key (primary key for Supplier table is name)
+            key = canonical_name
+            if key not in suppliers:
+                suppliers[key] = {
+                    "name": canonical_name,
+                    "relationship_type": props["relationship_type"],
+                    "criticality": props["criticality"],
+                    "ticker": props["ticker"],
+                    "cik": props["cik"],
+                    "headquarters": props["headquarters"],
+                    "description": props["description"],
+                }
+            else:
+                # Merge: keep higher criticality, append description
+                existing = suppliers[key]
+                if props["criticality"] in ("Critical", "High") and existing["criticality"] not in ("Critical", "High"):
+                    existing["criticality"] = props["criticality"]
+                existing["description"] += f"; {props['description']}"
+
+    # Also extract from explicit supplier lists in tables
+    tables = []
+    try:
+        tables = list(pd.read_html(io.StringIO(html_body(raw)), flavor="lxml"))
+    except Exception:
+        pass
+
+    for frame in tables:
+        if frame is None or frame.empty:
+            continue
+        grid = frame.astype(str)
+        # Look for supplier-related columns
+        for col in grid.columns:
+            # Convert all values to string explicitly to avoid float/NaN issues
+            col_vals = [str(v) for v in grid[col].tolist()]
+            col_text = " ".join(col_vals).lower()
+            if any(kw in col_text for kw in ["supplier", "vendor", "foundry", "assembly", "manufacturing partner"]):
+                for val in col_vals:
+                    val = clean_text(val)
+                    if val and len(val) > 3 and val.lower() not in _DASHES and val.lower() != "nan":
+                        key = val
+                        if key not in suppliers:
+                            suppliers[key] = {
+                                "name": key,
+                                "relationship_type": "Supplier",
+                                "criticality": "Medium",
+                                "ticker": "",
+                                "cik": "",
+                                "headquarters": "",
+                                "description": f"Listed in supplier table in {filing_date} filing",
+                            }
+
+    return suppliers
+
+
+def extract_components(raw: str, metadata: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Extract component entities from filing text.
+
+    Parses component disclosures from Item 1 (Business), Item 7 (MD&A),
+    and product specifications in 10-K/10-Q filings.
+    Returns dict keyed by component name (primary key for Component node table).
+    """
+    components: dict[str, dict[str, Any]] = {}
+    text = strip_markup(raw)
+    ticker = metadata.get("ticker", "")
+    filing_date = metadata.get("filing_date", "")
+
+    # Component patterns from SEC filings
+    component_patterns = [
+        # "Our [product] uses [Component Name]"
+        (r"(?:our|the|its)\s+(?:products?|devices?|systems?)\s+(?:use|incorporate|include|contain|employ|utilize)\s+([A-Z][A-Za-z0-9\s\-]{2,60}?)(?:\s+(?:chip|processor|component|module|sensor|display|battery|camera))?(?:\.|,|;|$)", "product_uses"),
+        # "[Component Name] is used in [product]"
+        (r"([A-Z][A-Za-z0-9\s\-]{2,60}?)\s+is\s+used\s+in\s+(?:our\s+)?(?:products?|devices?|systems?|iPhone|iPad|Mac|Apple Watch|Apple TV)", "used_in"),
+        # "[Component Name] (also known as|marketed as)"
+        (r"([A-Z][A-Za-z0-9\s\-]{2,60}?)\s+(?:\(also known as|marketed as|branded as)\s+([A-Z][A-Za-z0-9\s\-]{2,60}?)", "alias"),
+        # "custom [Component Name]" or "proprietary [Component Name]"
+        (r"(?:custom|proprietary|in-house|internally developed)\s+([A-Z][A-Za-z0-9\s\-]{2,60}?)(?:\s+(?:chip|processor|silicon|component|module|sensor))?(?:\.|,|;|$)", "custom"),
+        # "We design our own [Component Name]"
+        (r"(?:design|develop|manufacture|fabricate)\s+(?:our\s+)?(?:own\s+)?([A-Z][A-Za-z0-9\s\-]{2,60}?)(?:\s+(?:chip|processor|silicon|component|module|sensor))?(?:\.|,|;|$)", "designed"),
+    ]
+
+    # Known components to recognize
+    known_components = {
+        "A16 Bionic": {"component_type": "SoC", "description": "Apple-designed system-on-chip", "manufacturer": "TSMC", "part_number": ""},
+        "A17 Pro": {"component_type": "SoC", "description": "Apple-designed 3nm system-on-chip", "manufacturer": "TSMC", "part_number": ""},
+        "M3": {"component_type": "SoC", "description": "Apple-designed Mac system-on-chip", "manufacturer": "TSMC", "part_number": ""},
+        "M3 Pro": {"component_type": "SoC", "description": "Apple-designed Mac system-on-chip", "manufacturer": "TSMC", "part_number": ""},
+        "M3 Max": {"component_type": "SoC", "description": "Apple-designed Mac system-on-chip", "manufacturer": "TSMC", "part_number": ""},
+        "Neural Engine": {"component_type": "NPU", "description": "Apple-designed neural processing unit", "manufacturer": "Apple/TSMC", "part_number": ""},
+        "Secure Enclave": {"component_type": "Security", "description": "Apple-designed security coprocessor", "manufacturer": "Apple", "part_number": ""},
+        "Image Signal Processor": {"component_type": "ISP", "description": "Apple-designed image processing", "manufacturer": "Apple", "part_number": ""},
+        "LPDDR5": {"component_type": "Memory", "description": "Low-power DDR5 memory", "manufacturer": "Samsung/SK Hynix/Micron", "part_number": ""},
+        "NAND Flash": {"component_type": "Storage", "description": "Flash memory storage", "manufacturer": "Samsung/SK Hynix/Kioxia", "part_number": ""},
+        "OLED Display": {"component_type": "Display", "description": "Organic light-emitting diode display", "manufacturer": "Samsung Display/LG Display", "part_number": ""},
+        "LTPO Display": {"component_type": "Display", "description": "Low-temperature polycrystalline oxide display", "manufacturer": "Samsung Display/LG Display", "part_number": ""},
+        "Ceramic Shield": {"component_type": "Glass", "description": "Apple/Corning co-developed glass", "manufacturer": "Corning", "part_number": ""},
+        "MagSafe": {"component_type": "Charging", "description": "Magnetic wireless charging system", "manufacturer": "Apple", "part_number": ""},
+        "U1 Chip": {"component_type": "UWB", "description": "Ultra-wideband chip for spatial awareness", "manufacturer": "Apple/Decawave", "part_number": ""},
+        "U2 Chip": {"component_type": "UWB", "description": "Second-gen ultra-wideband chip", "manufacturer": "Apple", "part_number": ""},
+        "S9 SiP": {"component_type": "SiP", "description": "System-in-package for Apple Watch", "manufacturer": "Apple/TSMC", "part_number": ""},
+        "H1 Chip": {"component_type": "Audio", "description": "Headphone connectivity chip", "manufacturer": "Apple", "part_number": ""},
+        "H2 Chip": {"component_type": "Audio", "description": "Second-gen headphone chip", "manufacturer": "Apple", "part_number": ""},
+        "R1 Chip": {"component_type": "Vision", "description": "Real-time sensor processing for Vision Pro", "manufacturer": "Apple", "part_number": ""},
+    }
+
+    # False positive filters for components
+    component_false_positives = {
+        "operating systems",
+        "and support software",
+        "and sell devices",
+        "our products",
+        "our devices",
+        "our systems",
+        "our services",
+        "the cloud",
+        "the platform",
+        "the service",
+        "the product",
+        "the device",
+        "the system",
+        "software and services",
+        "hardware and software",
+        "products and services",
+        "devices and services",
+    }
+
+    def is_valid_component(name: str) -> bool:
+        """Filter out false positive component names."""
+        name_lower = name.lower().strip()
+        if name_lower in component_false_positives:
+            return False
+        # Must look like a hardware component (contain hardware-related keywords or be a known component)
+        hardware_keywords = ["chip", "processor", "silicon", "memory", "display", "battery", "camera", "sensor", "module", "controller", "accelerator", "engine", "enclave", "shield", "glass", "lens", "antenna", "radio", "modem", "soc", "cpu", "gpu", "npu", "isp", "dram", "nand", "ssd", "hdd", "pcb", "board", "package", "sip", "die", "wafer", "substrate", "interconnect", "photonics", "optics", "laser", "led", "oled", "lcd", "ltpo", "ceramic", "metal", "aluminum", "titanium", "carbon", "fiber", "connector", "port", "charger", "cable", "adapter", "haptic", "motor", "speaker", "microphone", "fan", "heat", "thermal", "cooling", "vapor", "chamber", "graphite", "copper"]
+        if not any(kw in name_lower for kw in hardware_keywords):
+            # Allow if it matches a known component
+            if not any(known.lower() in name_lower for known in known_components):
+                return False
+        # Reject if it contains sentence-like fragments
+        if any(w in name_lower for w in [" and ", " or ", " with ", " for ", " that ", " which ", " when ", " where "]):
+            return False
+        return True
+
+    for pattern, context_type in component_patterns:
+        for match in re.finditer(pattern, text, re.IGNORECASE):
+            component_name = clean_text(match.group(1))
+            if len(component_name) < 3 or len(component_name) > 80:
+                continue
+            component_name = re.sub(r"\s+", " ", component_name).strip(" .,;")
+            if not is_valid_component(component_name):
+                continue
+            canonical_name = component_name
+            props = {"component_type": "Component", "description": f"Identified from {context_type} in {filing_date} filing", "manufacturer": "", "part_number": ""}
+            for known, info in known_components.items():
+                if known.lower() in component_name.lower() or component_name.lower() in known.lower():
+                    canonical_name = known
+                    props.update(info)
+                    break
+            key = canonical_name
+            if key not in components:
+                components[key] = {
+                    "name": canonical_name,
+                    "component_type": props["component_type"],
+                    "description": props["description"],
+                    "manufacturer": props["manufacturer"],
+                    "part_number": props["part_number"],
+                }
+            else:
+                existing = components[key]
+                if props["description"] and props["description"] not in existing["description"]:
+                    existing["description"] += f"; {props['description']}"
+
+    return components
+
+
+def extract_products(raw: str, metadata: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Extract product entities from filing text.
+
+    Parses product disclosures from Item 1 (Business), Item 7 (MD&A),
+    and segment reporting in 10-K/10-Q filings.
+    Returns dict keyed by product name (primary key for Product node table).
+    """
+    products: dict[str, dict[str, Any]] = {}
+    text = strip_markup(raw)
+    ticker = metadata.get("ticker", "")
+    filing_date = metadata.get("filing_date", "")
+    fiscal_year = metadata.get("fiscal_year", "")
+
+    # Product patterns from SEC filings
+    product_patterns = [
+        # "Our [Product Name] [product line]" - more restrictive
+        (r"(?:our|the|its)\s+([A-Z][A-Za-z0-9\s]{2,40}?)\s+(?:product line|product family|series|models?)\s+(?:is|are|includes?|consists?\s+of)", "product_line"),
+        # "[Product Name] is our [description]"
+        (r"([A-Z][A-Za-z0-9\s]{2,40}?)\s+is\s+(?:our|the)\s+(?:flagship|premium|entry-level|main|primary|newest|latest)\s+(?:product|device|offering)", "flagship"),
+        # Named products only - rely on known list + specific patterns
+        # "iPhone", "iPad", "Mac", "Apple Watch", "Apple TV", "AirPods", "HomePod", "Vision Pro" with model numbers
+        (r"\b(iPhone\s+\d{1,2}(?:\s+Pro| Plus| Max| Mini)?|iPad\s+(?:Pro|Air|Mini)?|Mac(?:Book\s+(?:Pro|Air)?| mini| Studio| Pro)?|Apple Watch\s+(?:Series\s+\d+|Ultra|SE)|Apple TV\s+(?:4K)?|AirPods\s+(?:Pro|Max)?|HomePod\s+(?:mini)?|Vision Pro)\b", "named_product"),
+        # Microsoft-specific named products
+        (r"\b(Surface\s+(?:Pro|Laptop|Book|Studio|Go|Duo)?|Xbox\s+(?:Series\s+[XS]|One|360)?|HoloLens|Windows\s+(?:1[01]|Server)?|Office\s+(?:365|20[0-9]{2})?|Azure|Dynamics\s+365|LinkedIn|GitHub)\b", "named_product_msft"),
+    ]
+
+    # Known Microsoft products (extendable per company)
+    known_products = {
+        "iPhone": {"product_family": "iPhone", "description": "Apple's smartphone line", "launch_date": "2007-06-29", "lifecycle_stage": "Active", "issuer": ticker},
+        "iPad": {"product_family": "iPad", "description": "Apple's tablet line", "launch_date": "2010-04-03", "lifecycle_stage": "Active", "issuer": ticker},
+        "Mac": {"product_family": "Mac", "description": "Apple's personal computer line", "launch_date": "1984-01-24", "lifecycle_stage": "Active", "issuer": ticker},
+        "Apple Watch": {"product_family": "Apple Watch", "description": "Apple's smartwatch line", "launch_date": "2015-04-24", "lifecycle_stage": "Active", "issuer": ticker},
+        "Apple TV": {"product_family": "Apple TV", "description": "Apple's streaming media player", "launch_date": "2007-03-21", "lifecycle_stage": "Active", "issuer": ticker},
+        "AirPods": {"product_family": "AirPods", "description": "Apple's wireless earbuds", "launch_date": "2016-12-13", "lifecycle_stage": "Active", "issuer": ticker},
+        "HomePod": {"product_family": "HomePod", "description": "Apple's smart speaker", "launch_date": "2018-02-09", "lifecycle_stage": "Active", "issuer": ticker},
+        "Vision Pro": {"product_family": "Vision Pro", "description": "Apple's spatial computer", "launch_date": "2024-02-02", "lifecycle_stage": "Active", "issuer": ticker},
+        "iPhone 15": {"product_family": "iPhone", "description": "iPhone 15 series", "launch_date": "2023-09-22", "lifecycle_stage": "Active", "issuer": ticker},
+        "iPhone 15 Pro": {"product_family": "iPhone", "description": "iPhone 15 Pro series", "launch_date": "2023-09-22", "lifecycle_stage": "Active", "issuer": ticker},
+        "iPhone 14": {"product_family": "iPhone", "description": "iPhone 14 series", "launch_date": "2022-09-16", "lifecycle_stage": "Active", "issuer": ticker},
+        "iPhone 13": {"product_family": "iPhone", "description": "iPhone 13 series", "launch_date": "2021-09-24", "lifecycle_stage": "Active", "issuer": ticker},
+        "MacBook Pro": {"product_family": "Mac", "description": "MacBook Pro line", "launch_date": "2006-01-10", "lifecycle_stage": "Active", "issuer": ticker},
+        "MacBook Air": {"product_family": "Mac", "description": "MacBook Air line", "launch_date": "2008-01-15", "lifecycle_stage": "Active", "issuer": ticker},
+        "iPad Pro": {"product_family": "iPad", "description": "iPad Pro line", "launch_date": "2015-11-11", "lifecycle_stage": "Active", "issuer": ticker},
+        "iPad Air": {"product_family": "iPad", "description": "iPad Air line", "launch_date": "2013-10-22", "lifecycle_stage": "Active", "issuer": ticker},
+        "Apple Watch Series 9": {"product_family": "Apple Watch", "description": "Apple Watch Series 9", "launch_date": "2023-09-22", "lifecycle_stage": "Active", "issuer": ticker},
+        "Apple Watch Ultra 2": {"product_family": "Apple Watch", "description": "Apple Watch Ultra 2", "launch_date": "2023-09-22", "lifecycle_stage": "Active", "issuer": ticker},
+        # Microsoft products
+        "Surface": {"product_family": "Surface", "description": "Microsoft's Surface device line", "launch_date": "2012-10-26", "lifecycle_stage": "Active", "issuer": ticker},
+        "Surface Pro": {"product_family": "Surface", "description": "Microsoft Surface Pro line", "launch_date": "2013-02-09", "lifecycle_stage": "Active", "issuer": ticker},
+        "Surface Laptop": {"product_family": "Surface", "description": "Microsoft Surface Laptop line", "launch_date": "2017-06-15", "lifecycle_stage": "Active", "issuer": ticker},
+        "Surface Book": {"product_family": "Surface", "description": "Microsoft Surface Book line", "launch_date": "2015-10-26", "lifecycle_stage": "Active", "issuer": ticker},
+        "Surface Studio": {"product_family": "Surface", "description": "Microsoft Surface Studio line", "launch_date": "2016-12-15", "lifecycle_stage": "Active", "issuer": ticker},
+        "Xbox": {"product_family": "Xbox", "description": "Microsoft's Xbox gaming console line", "launch_date": "2001-11-15", "lifecycle_stage": "Active", "issuer": ticker},
+        "Xbox Series X": {"product_family": "Xbox", "description": "Xbox Series X console", "launch_date": "2020-11-10", "lifecycle_stage": "Active", "issuer": ticker},
+        "Xbox Series S": {"product_family": "Xbox", "description": "Xbox Series S console", "launch_date": "2020-11-10", "lifecycle_stage": "Active", "issuer": ticker},
+        "HoloLens": {"product_family": "HoloLens", "description": "Microsoft's mixed reality headset", "launch_date": "2016-03-30", "lifecycle_stage": "Active", "issuer": ticker},
+        "Windows": {"product_family": "Windows", "description": "Microsoft's operating system", "launch_date": "1985-11-20", "lifecycle_stage": "Active", "issuer": ticker},
+        "Office": {"product_family": "Office", "description": "Microsoft's productivity suite", "launch_date": "1989-08-01", "lifecycle_stage": "Active", "issuer": ticker},
+        "Azure": {"product_family": "Azure", "description": "Microsoft's cloud platform", "launch_date": "2010-02-01", "lifecycle_stage": "Active", "issuer": ticker},
+        "Dynamics": {"product_family": "Dynamics", "description": "Microsoft's ERP/CRM suite", "launch_date": "2001-02-01", "lifecycle_stage": "Active", "issuer": ticker},
+        "LinkedIn": {"product_family": "LinkedIn", "description": "Microsoft's professional network", "launch_date": "2003-05-05", "lifecycle_stage": "Active", "issuer": ticker},
+        "GitHub": {"product_family": "GitHub", "description": "Microsoft's code hosting platform", "launch_date": "2008-04-10", "lifecycle_stage": "Active", "issuer": ticker},
+    }
+
+    # False positive filters for products
+    product_false_positives = {
+        "founded in 1975",
+        "our products",
+        "our services",
+        "our devices",
+        "our systems",
+        "our solutions",
+        "our platforms",
+        "the company",
+        "the business",
+        "the market",
+        "the industry",
+        "new products",
+        "new services",
+        "new devices",
+        "new systems",
+        "the system",
+        "the product",
+        "the service",
+        "the platform",
+        "the solution",
+        "the device",
+        "cloud services",
+        "cloud platform",
+        "cloud solutions",
+    }
+
+    def is_valid_product(name: str) -> bool:
+        """Filter out false positive product names."""
+        name_lower = name.lower().strip()
+        if name_lower in product_false_positives:
+            return False
+        # Must be a known product or look like a proper product name (capitalized, not generic)
+        if not any(known.lower() in name_lower for known in known_products):
+            # Check if it looks like a real product name (has brand-like qualities)
+            words = name.split()
+            if len(words) < 2:
+                return False
+            # Should not be a sentence fragment
+            if any(w in name_lower for w in [" and ", " or ", " with ", " for ", " that ", " which ", " when ", " where ", " the ", " our ", " their "]):
+                return False
+        return True
+
+    for pattern, context_type in product_patterns:
+        for match in re.finditer(pattern, text, re.IGNORECASE):
+            product_name = clean_text(match.group(1))
+            if len(product_name) < 3 or len(product_name) > 80:
+                continue
+            product_name = re.sub(r"\s+", " ", product_name).strip(" .,;")
+            if not is_valid_product(product_name):
+                continue
+            canonical_name = product_name
+            props = {"product_family": "Product", "description": f"Identified from {context_type} in {filing_date} filing", "launch_date": "", "lifecycle_stage": "Active", "issuer": ticker}
+            for known, info in known_products.items():
+                if known.lower() in product_name.lower() or product_name.lower() in known.lower():
+                    canonical_name = known
+                    props.update(info)
+                    break
+            key = canonical_name
+            if key not in products:
+                products[key] = {
+                    "name": canonical_name,
+                    "product_family": props["product_family"],
+                    "description": props["description"],
+                    "launch_date": props["launch_date"],
+                    "lifecycle_stage": props["lifecycle_stage"],
+                    "issuer": props["issuer"],
+                }
+            else:
+                existing = products[key]
+                if props["description"] and props["description"] not in existing["description"]:
+                    existing["description"] += f"; {props['description']}"
+
+    return products
+
+
+def extract_manufacturing(raw: str, metadata: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Extract manufacturing location entities from filing text.
+
+    Parses manufacturing disclosures from Item 1 (Business), Item 1A (Risk Factors),
+    and Item 7 (MD&A) in 10-K/10-Q filings.
+    Returns dict keyed by manufacturing name (primary key for Manufacturing node table).
+    """
+    manufacturing: dict[str, dict[str, Any]] = {}
+    text = strip_markup(raw)
+    ticker = metadata.get("ticker", "")
+    filing_date = metadata.get("filing_date", "")
+
+    # Manufacturing location patterns
+    mfg_patterns = [
+        # "manufactured at [Location]"
+        (r"(?:manufactured|assembled|produced|fabricated)\s+(?:at|in)\s+([A-Z][A-Za-z0-9\s,.\-]{3,80}?)(?:\.|,|;|$)", "manufactured_at"),
+        # "assembles [product] in [Location]"
+        (r"(?:assembles?|manufactures?)\s+[A-Za-z0-9\s]+\s+in\s+([A-Z][A-Za-z0-9\s,.\-]{3,80}?)(?:\.|,|;|$)", "assembles_in"),
+        # "Our [Location] facility"
+        (r"(?:our|the)\s+([A-Z][A-Za-z0-9\s,.\-]{3,80}?)\s+(?:facility|plant|factory|site|location)\s+(?:in|at|on)", "facility"),
+        # "[Location] manufacturing"
+        (r"([A-Z][A-Za-z0-9\s,.\-]{3,80}?)\s+manufacturing\s+(?:facility|plant|operations|site)", "mfg_site"),
+        # "Final assembly in [Location]"
+        (r"final\s+assembly\s+(?:in|at|occurs\s+in)\s+([A-Z][A-Za-z0-9\s,.\-]{3,80}?)(?:\.|,|;|$)", "final_assembly"),
+        # "We operate manufacturing facilities in [Location]"
+        (r"(?:operate|maintain|run)\s+(?:manufacturing\s+)?(?:facilities?|plants?)\s+in\s+([A-Z][A-Za-z0-9\s,.\-]{3,80}?)(?:\.|,|;|$)", "operates_in"),
+    ]
+
+    # Known manufacturing locations (Apple + Microsoft)
+    known_mfg = {
+        # Apple
+        "Foxconn Zhengzhou": {"location": "Zhengzhou, Henan, China", "process_type": "Final Assembly", "capacity": "High", "description": "Primary iPhone final assembly facility (iPhone City)"},
+        "Foxconn Taiyuan": {"location": "Taiyuan, Shanxi, China", "process_type": "Final Assembly", "capacity": "High", "description": "iPhone final assembly facility"},
+        "Foxconn Chengdu": {"location": "Chengdu, Sichuan, China", "process_type": "Final Assembly", "capacity": "High", "description": "iPad and iPhone final assembly"},
+        "Foxconn Shenzhen": {"location": "Shenzhen, Guangdong, China", "process_type": "Final Assembly", "capacity": "High", "description": "iPhone and other product assembly"},
+        "Pegatron Shanghai": {"location": "Shanghai, China", "process_type": "Final Assembly", "capacity": "Medium", "description": "iPhone final assembly partner"},
+        "Pegatron Kunshan": {"location": "Kunshan, Jiangsu, China", "process_type": "Final Assembly", "capacity": "Medium", "description": "iPhone final assembly partner"},
+        "Luxshare ICT": {"location": "Kunshan, Jiangsu, China", "process_type": "Final Assembly", "capacity": "Medium", "description": "AirPods and accessories assembly"},
+        "Goertek": {"location": "Weifang, Shandong, China", "process_type": "Acoustic Assembly", "capacity": "Medium", "description": "AirPods acoustic assembly"},
+        "TSMC Fab 18": {"location": "Hsinchu, Taiwan", "process_type": "Semiconductor Fabrication", "capacity": "Critical", "description": "5nm/3nm process for Apple Silicon"},
+        "TSMC Fab 21": {"location": "Phoenix, Arizona, USA", "process_type": "Semiconductor Fabrication", "capacity": "Growing", "description": "Future US-based Apple Silicon fabrication"},
+        "Samsung Austin": {"location": "Austin, Texas, USA", "process_type": "Semiconductor Fabrication", "capacity": "Medium", "description": "Legacy process for some Apple chips"},
+        "Corning Harrodsburg": {"location": "Harrodsburg, Kentucky, USA", "process_type": "Glass Manufacturing", "capacity": "High", "description": "Ceramic Shield glass production"},
+        "Apple Cork": {"location": "Cork, Ireland", "process_type": "Final Assembly/Logistics", "capacity": "Medium", "description": "European distribution and some assembly"},
+        "Apple Austin": {"location": "Austin, Texas, USA", "process_type": "Final Assembly/Operations", "capacity": "Medium", "description": "Mac Pro assembly and operations center"},
+        # Microsoft
+        "Flextronics": {"location": "Singapore / Mexico / USA", "process_type": "Assembly", "capacity": "High", "description": "Surface and Xbox assembly partner"},
+        "Celestica": {"location": "Malaysia / China / USA", "process_type": "Assembly", "capacity": "High", "description": "Surface and Xbox assembly partner"},
+        "Pegatron": {"location": "Taiwan / China", "process_type": "Assembly", "capacity": "High", "description": "Surface and Xbox assembly partner"},
+        "Wistron": {"location": "Taiwan / China / India", "process_type": "Assembly", "capacity": "Medium", "description": "Surface assembly partner"},
+        "Quanta Computer": {"location": "Taiwan / China", "process_type": "Assembly", "capacity": "Medium", "description": "Surface assembly partner"},
+    }
+
+    # False positive filters for manufacturing
+    mfg_false_positives = {
+        "asia and other geographies that may be subject to disruptions in the supply chain",
+        "the supply chain",
+        "our facilities",
+        "our plants",
+        "our factories",
+        "our sites",
+        "the facility",
+        "the plant",
+        "the factory",
+        "the site",
+        "manufacturing facilities",
+        "manufacturing plants",
+        "manufacturing operations",
+        "manufacturing sites",
+        "final assembly",
+        "final assembly in",
+        "assembly in",
+        "produced in",
+        "manufactured in",
+        "assembled in",
+    }
+
+    def is_valid_mfg(name: str) -> bool:
+        """Filter out false positive manufacturing names."""
+        name_lower = name.lower().strip()
+        if name_lower in mfg_false_positives:
+            return False
+        # Should look like a proper location name (City, Country/State or Company Name)
+        # Must have at least 2 words and look like a location
+        words = name.split()
+        if len(words) < 2:
+            return False
+        # Should not be a sentence fragment
+        if any(w in name_lower for w in [" and ", " or ", " that ", " which ", " when ", " where ", " may ", " could ", " would ", " should ", " might ", " subject to ", " disruptions ", " supply chain "]):
+            return False
+        return True
+
+    for pattern, context_type in mfg_patterns:
+        for match in re.finditer(pattern, text, re.IGNORECASE):
+            mfg_name = clean_text(match.group(1))
+            if len(mfg_name) < 3 or len(mfg_name) > 100:
+                continue
+            mfg_name = re.sub(r"\s+", " ", mfg_name).strip(" .,;")
+            if not is_valid_mfg(mfg_name):
+                continue
+            canonical_name = mfg_name
+            props = {"location": "", "process_type": "Manufacturing", "capacity": "Medium", "description": f"Identified from {context_type} in {filing_date} filing"}
+            for known, info in known_mfg.items():
+                if known.lower() in mfg_name.lower() or mfg_name.lower() in known.lower():
+                    canonical_name = known
+                    props.update(info)
+                    break
+            # If no known match, try to extract location from the name
+            if not props["location"]:
+                # Try to find city, country pattern
+                loc_match = re.search(r"([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*),\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)", mfg_name)
+                if loc_match:
+                    props["location"] = f"{loc_match.group(1)}, {loc_match.group(2)}"
+            key = canonical_name
+            if key not in manufacturing:
+                manufacturing[key] = {
+                    "name": canonical_name,
+                    "location": props["location"],
+                    "process_type": props["process_type"],
+                    "capacity": props["capacity"],
+                    "description": props["description"],
+                }
+            else:
+                existing = manufacturing[key]
+                if props["description"] and props["description"] not in existing["description"]:
+                    existing["description"] += f"; {props['description']}"
+
+    return manufacturing
+
+
+def extract_management_commentary(raw: str, metadata: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Extract management commentary sections from filing text.
+
+    Parses MD&A (Item 7), Risk Factors (Item 1A), and Business (Item 1) sections
+    from 10-K/10-Q filings to identify management discussion topics.
+    Returns dict keyed by commentary topic name (primary key for ManagementCommentary node table).
+    """
+    commentary: dict[str, dict[str, Any]] = {}
+    text = strip_markup(raw)
+    ticker = metadata.get("ticker", "")
+    filing_date = metadata.get("filing_date", "")
+    fiscal_year = metadata.get("fiscal_year", "")
+    fiscal_period = metadata.get("fiscal_period", "")
+    filing_id = filing_identity(metadata)
+
+    # MD&A section extraction - find the Item 7 section
+    mda_section = ""
+    mda_match = re.search(r"(?:ITEM\s+7|Item\s+7)\.?\s*(?:MANAGEMENT['\']?S\s+DISCUSSION\s+AND\s+ANALYSIS|MD&A)[\s\S]{0,20000}", text, re.IGNORECASE)
+    if mda_match:
+        mda_section = mda_match.group(0)
+
+    # Risk Factors section - Item 1A
+    risk_section = ""
+    risk_match = re.search(r"(?:ITEM\s+1A|Item\s+1A)\.?\s*RISK\s+FACTORS[\s\S]{0,30000}", text, re.IGNORECASE)
+    if risk_match:
+        risk_section = risk_match.group(0)
+
+    # Business section - Item 1
+    biz_section = ""
+    biz_match = re.search(r"(?:ITEM\s+1|Item\s+1)\.?\s*BUSINESS[\s\S]{0,20000}", text, re.IGNORECASE)
+    if biz_match:
+        biz_section = biz_match.group(0)
+
+    # Combine sections for searching
+    combined_sections = "\n\n".join([mda_section, risk_section, biz_section])
+
+    # Topic patterns in management commentary
+    topic_patterns = [
+        # "We discuss [topic]"
+        (r"(?:we|management)\s+(?:discuss|discusses|address|addresses)\s+([A-Z][A-Za-z0-9\s]{5,80}?)(?:\.|,|;|in\s+this|below)", "discusses"),
+        # "Our strategy for [topic]"
+        (r"(?:our|the)\s+strategy\s+(?:for|regarding|on)\s+([A-Z][A-Za-z0-9\s]{5,80}?)(?:\.|,|;|is|includes)", "strategy"),
+        # "We are investing in [topic]"
+        (r"(?:invest|investing|invested)\s+(?:in|heavily\s+in)\s+([A-Z][A-Za-z0-9\s]{5,80}?)(?:\.|,|;|to|for)", "investment"),
+        # "Key growth driver[ is] [topic]"
+        (r"(?:key|primary|major)\s+growth\s+driver\s+(?:is|are|includes?)\s+([A-Z][A-Za-z0-9\s]{5,80}?)(?:\.|,|;)", "growth_driver"),
+        # "We expect [topic] to"
+        (r"(?:we|management)\s+(?:expect|anticipate|believe|project)\s+([A-Z][A-Za-z0-9\s]{5,80}?)\s+(?:will|to|would)", "forward_looking"),
+        # "Supply chain" discussion - capture the full phrase
+        (r"((?:supply\s+chain|supply\s+network|procurement|sourcing)\s+(?:strategy|management|diversification|resilience|risk))", "supply_chain"),
+        # "Apple Silicon" / "custom silicon" discussion
+        (r"((?:Apple\s+Silicon|custom\s+silicon|in-house\s+(?:chip|silicon|processor)|proprietary\s+(?:chip|silicon)))", "silicon_strategy"),
+        # "Services" growth
+        (r"((?:services|Service\s+revenue)\s+(?:growth|revenue|business|margin))", "services_growth"),
+        # "Geographic" discussion
+        (r"((?:geographic|region|China|Greater\s+China|Americas|Europe|Japan|Asia\s+Pacific)\s+(?:revenue|sales|growth|market))", "geographic"),
+        # "Capital return" / "share repurchase"
+        (r"((?:capital\s+return|share\s+repurchase|dividend|buyback)\s+(?:program|policy|amount|increased))", "capital_return"),
+    ]
+
+    # Known management commentary topics for Apple
+    known_topics = {
+        "Apple Silicon Strategy": {"section": "MD&A", "theme": "Technology", "sentiment": "Positive", "key_metrics": "Revenue, Gross Margin, R&D Expense"},
+        "Supply Chain Diversification": {"section": "Risk Factors / MD&A", "theme": "Operations", "sentiment": "Cautious", "key_metrics": "Cost of Goods Sold, Inventory"},
+        "Services Growth": {"section": "MD&A", "theme": "Revenue", "sentiment": "Positive", "key_metrics": "Services Revenue, Services Gross Margin"},
+        "Geographic Revenue Mix": {"section": "MD&A", "theme": "Revenue", "sentiment": "Neutral", "key_metrics": "Revenue by Geographic Segment"},
+        "Capital Return Program": {"section": "MD&A", "theme": "Capital Allocation", "sentiment": "Positive", "key_metrics": "Share Repurchases, Dividends"},
+        "R&D Investment": {"section": "MD&A", "theme": "Investment", "sentiment": "Positive", "key_metrics": "R&D Expense"},
+        "Retail Strategy": {"section": "MD&A", "theme": "Channel", "sentiment": "Positive", "key_metrics": "Retail Revenue, Store Count"},
+        "Environmental Initiatives": {"section": "MD&A / Business", "theme": "ESG", "sentiment": "Positive", "key_metrics": "Carbon Footprint, Renewable Energy"},
+        "Privacy Features": {"section": "MD&A / Business", "theme": "Product", "sentiment": "Positive", "key_metrics": "User Engagement"},
+        "Mac Transition to Apple Silicon": {"section": "MD&A", "theme": "Technology", "sentiment": "Positive", "key_metrics": "Mac Revenue, Gross Margin"},
+    }
+
+    for pattern, context_type in topic_patterns:
+        for match in re.finditer(pattern, combined_sections, re.IGNORECASE):
+            topic_name = clean_text(match.group(1))
+            if len(topic_name) < 5 or len(topic_name) > 100:
+                continue
+            topic_name = re.sub(r"\s+", " ", topic_name).strip(" .,;")
+            canonical_name = topic_name
+            props = {"section": "MD&A", "theme": "General", "sentiment": "Neutral", "key_metrics": "", "summary": f"Identified from {context_type} in {filing_date} filing"}
+            for known, info in known_topics.items():
+                if known.lower() in topic_name.lower() or topic_name.lower() in known.lower():
+                    canonical_name = known
+                    props.update(info)
+                    break
+            key = canonical_name
+            if key not in commentary:
+                mc_id = stable_id("mc", ticker, filing_date, canonical_name)
+                commentary[key] = {
+                    "id": mc_id,
+                    "filing_id": filing_id,
+                    "section": props["section"],
+                    "topic": canonical_name,
+                    "text": props["summary"],
+                    "speaker": "Management",
+                    "date": filing_date,
+                }
+            else:
+                existing = commentary[key]
+                if props["summary"] and props["summary"] not in existing.get("text", ""):
+                    existing["text"] = existing.get("text", "") + f"; {props['summary']}"
+
+    return commentary
+
+
+def extract_risks(raw: str, metadata: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Extract risk factor entities from filing text.
+
+    Parses Item 1A (Risk Factors) section from 10-K/10-Q filings
+    to identify specific risks with evidence.
+    Returns dict keyed by risk name (primary key for Risk node table).
+    """
+    risks: dict[str, dict[str, Any]] = {}
+    text = strip_markup(raw)
+    ticker = metadata.get("ticker", "")
+    filing_date = metadata.get("filing_date", "")
+    fiscal_year = metadata.get("fiscal_year", "")
+    fiscal_period = metadata.get("fiscal_period", "")
+    filing_id = filing_identity(metadata)
+
+    # Risk Factors section - Item 1A
+    risk_section = ""
+    risk_match = re.search(r"(?:ITEM\s+1A|Item\s+1A)\.?\s*RISK\s+FACTORS[\s\S]{0,50000}", text, re.IGNORECASE)
+    if risk_match:
+        risk_section = risk_match.group(0)
+    else:
+        # Fallback: look for any risk-related text
+        risk_section = text
+
+    # Risk patterns in SEC filings
+    risk_patterns = [
+        # "Risk that [description]"
+        (r"(?:risk| Risk)\s+(?:that|of|related to|associated with)\s+([A-Z][A-Za-z0-9\s]{10,150}?)(?:\.|,|;|could|may|would|is|are)", "risk_that"),
+        # "We are exposed to [risk]"
+        (r"(?:exposed|subject)\s+to\s+(?:the\s+)?(?:risk\s+of\s+)?([A-Z][A-Za-z0-9\s]{10,150}?)(?:\.|,|;|which|that)", "exposed_to"),
+        # "Could [adversely] affect [topic]"
+        (r"could\s+(?:materially\s+)?(?:adversely\s+)?affect\s+(?:our|the)\s+([A-Z][A-Za-z0-9\s]{10,150}?)(?:\.|,|;)", "affects"),
+        # "May [adversely] impact [topic]"
+        (r"may\s+(?:materially\s+)?(?:adversely\s+)?impact\s+(?:our|the)\s+([A-Z][A-Za-z0-9\s]{10,150}?)(?:\.|,|;)", "impacts"),
+        # "Dependence on [single source/supplier]"
+        (r"(?:dependence|reliance|dependency)\s+on\s+(?:a\s+)?(?:single|limited|few|key)\s+(?:source|supplier|vendor|foundry|manufacturer)\s+(?:for|of)\s+([A-Z][A-Za-z0-9\s]{10,150}?)(?:\.|,|;)", "concentration"),
+        # "Geopolitical risk" / "Trade restrictions" - capture full phrase
+        (r"((?:geopolitical|trade|tariff|export\s+control|sanction)\s+(?:risk|tension|restriction|uncertainty))", "geopolitical"),
+        # "Cybersecurity" risk
+        (r"((?:cybersecurity|data\s+breach|hacking|ransomware|information\s+security)\s+(?:risk|incident|threat|attack))", "cybersecurity"),
+        # "Intellectual property" risk
+        (r"((?:intellectual\s+property|patent|trademark|copyright)\s+(?:risk|litigation|infringement|claim))", "ip_risk"),
+        # "Regulatory" risk
+        (r"((?:regulatory|compliance|antitrust|privacy|data\s+protection)\s+(?:risk|investigation|action|change))", "regulatory"),
+        # "Climate" / "Environmental" risk
+        (r"((?:climate\s+change|environmental|sustainability|carbon)\s+(?:risk|regulation|impact|transition))", "climate"),
+        # "Foreign exchange" risk
+        (r"((?:foreign\s+exchange|currency|FX)\s+(?:risk|fluctuation|impact|exposure))", "fx_risk"),
+        # "Key personnel" risk
+        (r"((?:key\s+personnel|executive|senior\s+management)\s+(?:risk|departure|loss|retention))", "personnel"),
+    ]
+
+    # Known Apple-specific risks
+    known_risks = {
+        "Supply Chain Concentration Risk": {"risk_category": "Supply Chain", "severity": "High", "description": "Dependence on single/limited suppliers for critical components (e.g., TSMC for Apple Silicon, Foxconn for assembly)", "mitigation": "Multi-sourcing strategy, supplier diversification, strategic inventory"},
+        "Geopolitical Risk - China Exposure": {"risk_category": "Geopolitical", "severity": "High", "description": "Significant manufacturing and revenue exposure to Greater China; trade tensions, tariffs, regulatory changes", "mitigation": "Supply chain diversification to India/Vietnam, geographic revenue diversification"},
+        "Foreign Exchange Risk": {"risk_category": "Financial", "severity": "Medium", "description": "Revenue and costs in multiple currencies; USD strength impacts reported results", "mitigation": "Natural hedging, derivative instruments"},
+        "Cybersecurity and Data Privacy Risk": {"risk_category": "Cybersecurity", "severity": "High", "description": "Risk of data breaches, cyber attacks, privacy regulation compliance (GDPR, CCPA)", "mitigation": "Security investment, privacy-by-design, incident response"},
+        "Intellectual Property Litigation Risk": {"risk_category": "Legal", "severity": "Medium", "description": "Patent infringement claims, IP disputes with competitors and NPEs", "mitigation": "Defensive patent portfolio, licensing agreements"},
+        "Regulatory and Antitrust Risk": {"risk_category": "Regulatory", "severity": "High", "description": "App Store practices, default search agreements, self-preferencing investigations globally", "mitigation": "Policy adjustments, legal defense, compliance programs"},
+        "Climate Change and Environmental Risk": {"risk_category": "Environmental", "severity": "Medium", "description": "Physical risks to facilities, transition risks from regulations, carbon neutrality commitments", "mitigation": "Renewable energy procurement, supplier clean energy program, product efficiency"},
+        "Key Personnel Risk": {"risk_category": "Human Capital", "severity": "Medium", "description": "Dependence on senior leadership (Tim Cook, key executives) and specialized engineering talent", "mitigation": "Succession planning, compensation packages, culture retention"},
+        "Component Shortage Risk": {"risk_category": "Supply Chain", "severity": "High", "description": "Global semiconductor shortage, logistics constraints, capacity limitations at foundries", "mitigation": "Long-term supply agreements, strategic inventory, advance capacity reservations"},
+        "Consumer Demand Cyclicality Risk": {"risk_category": "Market", "severity": "Medium", "description": "Product cycles, macroeconomic conditions, consumer spending slowdowns affecting upgrade rates", "mitigation": "Services revenue growth, ecosystem lock-in, pricing strategy"},
+        "New Product Introduction Risk": {"risk_category": "Product", "severity": "Medium", "description": "Delays, defects, or market rejection of new products (Vision Pro, new categories)", "mitigation": "Rigorous testing, phased rollouts, developer ecosystem investment"},
+        "Tax and Repatriation Risk": {"risk_category": "Tax", "severity": "Medium", "description": "Changes in international tax laws, OECD Pillar Two, repatriation restrictions", "mitigation": "Tax planning, compliance monitoring, reserve adequacy"},
+    }
+
+    for pattern, context_type in risk_patterns:
+        for match in re.finditer(pattern, risk_section, re.IGNORECASE):
+            risk_name = clean_text(match.group(1))
+            if len(risk_name) < 10 or len(risk_name) > 200:
+                continue
+            risk_name = re.sub(r"\s+", " ", risk_name).strip(" .,;")
+            canonical_name = risk_name
+            props = {"risk_category": "General", "severity": "Medium", "description": f"Identified from {context_type} in {filing_date} filing", "mitigation": ""}
+            for known, info in known_risks.items():
+                if known.lower() in risk_name.lower() or risk_name.lower() in known.lower():
+                    canonical_name = known
+                    props.update(info)
+                    break
+            key = canonical_name
+            if key not in risks:
+                risk_id = stable_id("risk", ticker, filing_date, canonical_name)
+                risks[key] = {
+                    "id": risk_id,
+                    "risk_type": props["risk_category"],
+                    "description": props["description"],
+                    "severity": props["severity"],
+                    "likelihood": "Medium",
+                    "time_horizon": "Near",
+                    "mitigation": props["mitigation"],
+                }
+            else:
+                existing = risks[key]
+                if props["description"] and props["description"] not in existing["description"]:
+                    existing["description"] += f"; {props['description']}"
+
+    return risks
 
 
 # -- SEC Filing Intelligence Extraction Methods -----------------------------

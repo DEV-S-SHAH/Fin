@@ -28,6 +28,7 @@ than just being refused.
 from __future__ import annotations
 
 import re
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
@@ -39,12 +40,16 @@ __all__ = [
     "GAP",
     "Source",
     "Evidence",
+    "EvidenceRef",
     "Verdict",
     "GradedAnswer",
     "SourceResolver",
     "build_evidence",
+    "build_evidence_refs",
     "serialise_evidence",
+    "serialise_evidence_refs",
     "grade_answer",
+    "grade_answer_with_refs",
     "render_gap",
     "normalise_number",
     "extract_figures",
@@ -56,6 +61,8 @@ __all__ = [
     "QUALIFIED",
     "REFUSED",
     "provenance_verdict",
+    "EvidenceGrader",
+    "SECGradingAdapter",
 ]
 
 STATED = "STATED"
@@ -357,6 +364,214 @@ class Evidence:
     def block(self) -> str:
         """The line as it appears in the prompt: tag first, then fact, then Source."""
         return f"[{self.tag}] {self.provenance} · {self.text}  ⟵ {self.source.cite()}"
+
+
+# ---------------------------------------------------------------------------
+# EvidenceRef — serializable cross-pipeline evidence reference
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class EvidenceRef:
+    """A serializable reference to evidence for cross-pipeline sharing.
+
+    This contract exists so that evidence can flow from sandbox_engine (SEC
+    ingestion) to graphrag (generic PDF) and back without losing provenance.
+    The model may ONLY cite tags that appear in the EvidenceRefs it is given.
+
+    Fields mirror Evidence but are JSON-serializable and carry no live objects.
+    """
+
+    tag: str
+    text: str
+    provenance: str
+    kind: str
+    # Source fields flattened for serialization
+    source_node_id: str
+    source_label: str
+    source_form_type: str
+    source_filing_date: str
+    source_accession: str
+    source_item_code: str
+    source_section: str
+    source_period_end: str
+    source_fiscal_year: str
+    source_fiscal_period: str
+    source_ticker: str
+    source_cik: str
+
+    @classmethod
+    def from_evidence(cls, ev: Evidence) -> "EvidenceRef":
+        """Create an EvidenceRef from an Evidence object."""
+        s = ev.source
+        return cls(
+            tag=ev.tag,
+            text=ev.text,
+            provenance=ev.provenance,
+            kind=ev.kind,
+            source_node_id=s.node_id,
+            source_label=s.label,
+            source_form_type=s.form_type,
+            source_filing_date=s.filing_date,
+            source_accession=s.accession,
+            source_item_code=s.item_code,
+            source_section=s.section,
+            source_period_end=s.period_end,
+            source_fiscal_year=s.fiscal_year,
+            source_fiscal_period=s.fiscal_period,
+            source_ticker=s.ticker,
+            source_cik=s.cik,
+        )
+
+    def to_source(self) -> Source:
+        """Reconstruct a Source from this EvidenceRef."""
+        return Source(
+            node_id=self.source_node_id,
+            label=self.source_label,
+            form_type=self.source_form_type,
+            filing_date=self.source_filing_date,
+            accession=self.source_accession,
+            item_code=self.source_item_code,
+            section=self.source_section,
+            period_end=self.source_period_end,
+            fiscal_year=self.source_fiscal_year,
+            fiscal_period=self.source_fiscal_period,
+            ticker=self.source_ticker,
+            cik=self.source_cik,
+        )
+
+    def to_evidence(self) -> Evidence:
+        """Reconstruct an Evidence from this EvidenceRef."""
+        return Evidence(
+            tag=self.tag,
+            text=self.text,
+            source=self.to_source(),
+            provenance=self.provenance,
+            kind=self.kind,
+        )
+
+    def cite(self) -> str:
+        """One-line citation string for UI rendering."""
+        return self.to_source().cite()
+
+    def block(self) -> str:
+        """The line as it appears in the prompt."""
+        return f"[{self.tag}] {self.provenance} · {self.text}  ⟵ {self.cite()}"
+
+
+def build_evidence_refs(
+    nodes: list[dict[str, Any]],
+    kg: Any,
+    tag_map: dict[str, str] | None = None,
+    edges: list[dict[str, Any]] | None = None,
+) -> list[EvidenceRef]:
+    """Wrap build_evidence() to produce serializable EvidenceRefs.
+
+    This is the *only* way EvidenceRefs should be created in sandbox_engine.
+    Provenance is assigned by retrieval here, never by the model.
+    """
+    evidence = build_evidence(nodes, kg, tag_map, edges)
+    return [EvidenceRef.from_evidence(ev) for ev in evidence]
+
+
+def serialise_evidence_refs(evidence_refs: list[EvidenceRef], max_chars: int = 60000) -> str:
+    """The evidence block handed to the model, from EvidenceRefs.
+
+    Every line carries its own tag and Source, because the model's only
+    permitted move is to cite a tag that is already here. A tag it has not been
+    given does not exist, and inventing one is caught downstream.
+    """
+    lines = [
+        "EVIDENCE — every line below is quoted from a filing and carries a tag.",
+        "You may ONLY cite tags that appear here. Do not invent a tag.",
+        "",
+    ]
+    by_source: dict[str, list[EvidenceRef]] = {}
+    for ev in evidence_refs:
+        by_source.setdefault(ev.to_source().short or "untraced", []).append(ev)
+    for source_key, group in by_source.items():
+        lines.append(f"--- {source_key} ---")
+        for ev in group:
+            lines.append(ev.block())
+        lines.append("")
+    text = "\n".join(lines)
+    if len(text) > max_chars:
+        text = text[:max_chars] + "\n[evidence truncated]\n"
+    return text
+
+
+def grade_answer_with_refs(
+    answer: str,
+    evidence_refs: list[EvidenceRef],
+    question: str = "",
+) -> GradedAnswer:
+    """Grade an answer using EvidenceRefs (reconstructs Evidence internally)."""
+    evidence = [ref.to_evidence() for ref in evidence_refs]
+    return grade_answer(answer, evidence, question)
+
+
+# ---------------------------------------------------------------------------
+# EvidenceGrader ABC — cross-pipeline grading interface
+# ---------------------------------------------------------------------------
+
+class EvidenceGrader(ABC):
+    """Abstract base class for grading evidence across pipelines.
+
+    The contract: provenance is assigned by retrieval, never by the model.
+    Implementations must enforce this invariant.
+    """
+
+    @abstractmethod
+    def grade(
+        self,
+        answer: str,
+        evidence: list[EvidenceRef],
+        question: str = "",
+    ) -> GradedAnswer:
+        """Grade an answer against evidence refs.
+
+        Args:
+            answer: The model's answer text
+            evidence: EvidenceRefs the model was given to cite
+            question: The original question (for misattribution context)
+
+        Returns:
+            GradedAnswer with per-sentence verdicts and overall verdict
+        """
+        ...
+
+    @abstractmethod
+    def serialise(self, evidence: list[EvidenceRef], max_chars: int = 60000) -> str:
+        """Serialise evidence refs for model consumption."""
+        ...
+
+
+class SECGradingAdapter(EvidenceGrader):
+    """SEC-specific grader wrapper preserving all provenance invariants.
+
+    This adapter wraps the existing SEC grade_answer logic and ensures:
+    - Provenance assigned by retrieval (never by model)
+    - Company attribution enforced (misattribution → GAP)
+    - Source authority hierarchy preserved
+    - grade_answer checks figures against ONLY cited evidence
+    - GAP is first-class answer naming what/where missing
+    """
+
+    def __init__(self) -> None:
+        # No internal state — grading is pure function of inputs
+        pass
+
+    def grade(
+        self,
+        answer: str,
+        evidence: list[EvidenceRef],
+        question: str = "",
+    ) -> GradedAnswer:
+        """Grade using SEC provenance rules."""
+        return grade_answer_with_refs(answer, evidence, question)
+
+    def serialise(self, evidence: list[EvidenceRef], max_chars: int = 60000) -> str:
+        """Serialise SEC evidence for model prompt."""
+        return serialise_evidence_refs(evidence, max_chars)
 
 
 # ---------------------------------------------------------------------------

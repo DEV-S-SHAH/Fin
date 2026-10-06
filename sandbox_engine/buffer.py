@@ -154,7 +154,12 @@ NODE_TABLES: dict[str, tuple[str, ...]] = {
     "ProductFamily": ("name", "issuer", "launch_date", "lifecycle_stage"),
     "GeographicMarket": ("name", "iso_code"),
     "Competitor": ("name", "ticker", "relation_strength"),
-    "Supplier": ("name", "relationship_type", "criticality"),
+    "Supplier": ("name", "relationship_type", "criticality", "ticker", "cik", "headquarters", "description"),
+    "Component": ("name", "component_type", "description", "manufacturer", "part_number"),
+    "Product": ("name", "product_family", "description", "launch_date", "lifecycle_stage", "issuer"),
+    "Manufacturing": ("name", "location", "process_type", "capacity", "description"),
+    "ManagementCommentary": ("id", "filing_id", "section", "topic", "text", "speaker", "date"),
+    "Risk": ("id", "risk_type", "description", "severity", "likelihood", "time_horizon", "mitigation"),
     "Customer": ("name", "concentration_pct"),
     "RegulatoryBody": ("name", "jurisdiction", "scope"),
     "MacroVariable": ("name", "variable_type"),
@@ -207,6 +212,11 @@ PRIMARY_KEYS: dict[str, str] = {
     "GeographicMarket": "name",
     "Competitor": "name",
     "Supplier": "name",
+    "Component": "name",
+    "Product": "name",
+    "Manufacturing": "name",
+    "ManagementCommentary": "id",
+    "Risk": "id",
     "Customer": "name",
     "RegulatoryBody": "name",
     "MacroVariable": "name",
@@ -289,6 +299,22 @@ REL_TABLES: dict[str, tuple[str, str, tuple[str, ...]]] = {
     "SUBJECT_CUSTOMER": ("Customer", "CausalRelation", ()),
     "SUBJECT_REGULATORY_BODY": ("RegulatoryBody", "CausalRelation", ()),
     "SUBJECT_MACRO_VARIABLE": ("MacroVariable", "CausalRelation", ()),
+    # -- Supply-Chain Intelligence Layer -------------------------------
+    "SUPPLIES": ("Supplier", "Company", ("volume", "contract_type", "since")),
+    "PROVIDES_COMPONENT": ("Supplier", "Component", ("component", "volume", "since")),
+    "USED_IN": ("Component", "Product", ("quantity", "criticality")),
+    "MANUFACTURES_FOR": ("Manufacturing", "Company", ("volume", "location", "since")),
+    "ASSEMBLES": ("Supplier", "Product", ("assembly_type", "since")),
+    "PARTNERS_WITH": ("Supplier", "Supplier", ("partnership_type", "since", "scope")),
+    "MENTIONED_IN": ("ManagementCommentary", "Filing", ("context", "sentiment")),
+    "HAS_METRIC": ("Supplier", "Metric", ("metric_type", "period", "value")),
+    "AFFECTED_BY": ("Supplier", "Risk", ("impact_level", "time_horizon")),
+    "HAS_RISK": ("Component", "Risk", ("risk_type", "severity", "mitigation")),
+    "EXPOSES": ("Product", "Risk", ("exposure_level", "mitigation")),
+    "DISCUSSES": ("ManagementCommentary", "Risk", ("topic", "sentiment")),
+    "REFERENCES": ("Filing", "Risk", ("context", "quote")),
+    "SOURCES_COMPONENT_FROM": ("Company", "Component", ("component", "volume")),
+    "DEPENDS_ON": ("Product", "Component", ("criticality", "single_source")),
     # -- SEC Filing Intelligence Layer ----------------------------------
     "INSIDER_OF": ("Insider", "Company", ()),
     "FILED_INSIDER_FORM": ("Insider", "Filing", ("form_type",)),
@@ -322,12 +348,14 @@ _INT_COLUMNS = frozenset({
     "period_days", "period_cumulative",
     "shares", "voting_authority", "shares_authorized", "shares_outstanding",
     "quarter_number",
+    "volume", "impact_level", "exposure_level", "severity", "likelihood",
 })
 _DATE_COLUMNS = frozenset({
     "filing_date", "period_start", "period_end", "period_end_date",
     "effective_date", "disposal_date", "launch_date",
     "transaction_date", "event_date", "retrieved_at",
     "year_start_date", "year_end_date", "quarter_start_date", "quarter_end_date",
+    "since", "date",
 })
 #: Node columns stored as DOUBLE. Separate from ``_DOUBLE_PROPS`` because that
 #: set types rel-table properties; a fact's reported value is a node column and
@@ -338,7 +366,7 @@ _DOUBLE_COLUMNS = frozenset({
     "percent_outstanding",
 })
 #: Rel-table properties stored as DOUBLE.
-_DOUBLE_PROPS = frozenset({"value", "weight", "magnitude", "concentration_pct"})
+_DOUBLE_PROPS = frozenset({"value", "weight", "magnitude", "concentration_pct", "volume", "impact_level", "exposure_level", "severity", "likelihood"})
 
 #: ``(table, ExtractionResult attribute)`` for the UFGS node collections.
 #: Listed here rather than in :meth:`StageBuffer.add_result` so the table
@@ -369,6 +397,13 @@ RESULT_NODE_SOURCES: tuple[tuple[str, str], ...] = (
     ("EquityCompensationPlan", "equity_compensation_plans"),
     ("Exhibit", "exhibits"),
     ("SupportingDocument", "supporting_documents"),
+    # -- Supply-Chain Intelligence Layer -------------------------------
+    ("Supplier", "suppliers"),
+    ("Component", "components"),
+    ("Product", "products"),
+    ("Manufacturing", "manufacturing"),
+    ("ManagementCommentary", "management_commentary"),
+    ("Risk", "risks"),
     # -- Temporal Hierarchy Layer ---------------------------------------
     ("FiscalYear", "fiscal_years"),
     ("FiscalQuarter", "fiscal_quarters"),

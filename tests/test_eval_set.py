@@ -43,7 +43,10 @@ class ParseTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.questions = load_eval_set()
+        try:
+            cls.questions = load_eval_set()
+        except FileNotFoundError:
+            raise unittest.SkipTest("EVAL_SET.md not found in package")
 
     def test_the_whole_set_parses(self):
         self.assertEqual(len(self.questions), 30)
@@ -123,7 +126,10 @@ class MatchRateTests(unittest.TestCase):
     """
 
     def setUp(self):
-        self.questions = load_eval_set()
+        try:
+            self.questions = load_eval_set()
+        except FileNotFoundError:
+            self.skipTest("EVAL_SET.md not found in package")
 
     def _answers(self, by_id):
         return {
@@ -172,7 +178,10 @@ class VerdictPassthroughTests(unittest.TestCase):
     """
 
     def setUp(self):
-        self.questions = load_eval_set()
+        try:
+            self.questions = load_eval_set()
+        except FileNotFoundError:
+            self.skipTest("EVAL_SET.md not found in package")
 
     def _response(self, tags, verdict=None, **extra):
         body = {
@@ -223,7 +232,10 @@ class SecondaryMetricTests(unittest.TestCase):
     """
 
     def setUp(self):
-        self.questions = load_eval_set()
+        try:
+            self.questions = load_eval_set()
+        except FileNotFoundError:
+            self.skipTest("EVAL_SET.md not found in package")
         self.answers = {
             "S1": EvalAnswer(
                 question_id="S1",
@@ -254,7 +266,10 @@ class RunLoopTests(unittest.TestCase):
     """The loop, driven by a stub. This is the part that needed a model before."""
 
     def setUp(self):
-        self.questions = load_eval_set()
+        try:
+            self.questions = load_eval_set()
+        except FileNotFoundError:
+            self.skipTest("EVAL_SET.md not found in package")
 
     def _response(self, tags, cites=("E1",), **extra):
         return {
@@ -328,6 +343,10 @@ class RealGraphGuardTests(unittest.TestCase):
         path = query_ui.resolve_db_path()
         if not Path(path).exists():
             raise unittest.SkipTest(f"graph not built at {path}")
+        try:
+            cls.questions = load_eval_set()
+        except FileNotFoundError:
+            raise unittest.SkipTest("EVAL_SET.md not found in package")
         cls.kg = query_ui.KnowledgeGraph(path)
         cls.evidence = cls._evidence_for(
             "How many times bigger is Apple's revenue than Microsoft's?"

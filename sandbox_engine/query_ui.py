@@ -50,10 +50,14 @@ from .provenance import (
     issuer_forms,
     issuer_in_text,
     build_evidence,
+    build_evidence_refs,
     citation_tags,
     grade_answer,
     render_gap,
     serialise_evidence,
+    serialise_evidence_refs,
+    EvidenceRef,
+    SECGradingAdapter,
 )
 from .router import EntityRoute, route_query
 from .http_limits import (
@@ -2601,7 +2605,21 @@ def ask_rag(
                 traverser = HybridGraphTraverser(overlay)
                 subgraph = traverser.traverse_neighborhood(ticker, max_hops=2)
 
-            # Step 6: Synthesize full 5-section investment analysis
+            # Step 6: Build EvidenceRefs from retrieved subgraph nodes/edges
+            with timer.stage("evidence"):
+                # Convert subgraph nodes to the format expected by build_evidence_refs
+                evidence_nodes = subgraph.get("nodes", [])
+                evidence_edges = [
+                    hop
+                    for path in subgraph.get("paths", [])
+                    for hop in path
+                ]
+                # Build a tag_map from the evidence nodes (positional)
+                tag_map = {f"E{i+1}": node.get("id", "") for i, node in enumerate(evidence_nodes)}
+                evidence_refs = build_evidence_refs(evidence_nodes, kg, tag_map, evidence_edges)
+                evidence_block = serialise_evidence_refs(evidence_refs)
+
+            # Step 7: Synthesize full 5-section investment analysis with EvidenceRefs
             with timer.stage("synthesis"):
                 synthesizer = ColdStartSynthesizer()
                 context = {
@@ -2609,20 +2627,26 @@ def ask_rag(
                     "query": question,
                     "paths": subgraph.get("paths", []),
                     "filing_text": cleaned_text,
+                    "evidence_refs": evidence_refs,
                 }
                 tokens: list[str] = list(synthesizer.stream_synthesis(context))
                 answer_text = "".join(tokens)
 
-            from .traversal import format_provenance_ledger
-            provenance_text = format_provenance_ledger(subgraph.get("paths", []))
+            # Step 8: Grade the synthesis using SEC provenance rules
+            with timer.stage("grading"):
+                grader = SECGradingAdapter()
+                graded = grader.grade(answer_text, evidence_refs, question)
+                provenance_text = "\n".join(
+                    f"[{v.provenance}] {v.text}" for v in graded.verdicts
+                )
 
-            # Step 7: Kick off background full ingestion (non-blocking, fire-and-forget)
+            # Step 9: Kick off background full ingestion (non-blocking, fire-and-forget)
             if ticker:
                 background_queue.enqueue_coldstart_sync(ticker)
 
             latency_ms = round((time.perf_counter() - t0) * 1000, 2)
 
-            # Step 8: Return structured response.
+            # Step 10: Return structured response.
             # Include all GRADER_KEYS so the AST-based payload-consistency test
             # (test_provenance_ui) can verify that every key in this dict also
             # exists in the main success payload returned at the bottom of ask_rag.
@@ -2630,20 +2654,16 @@ def ask_rag(
                 "answer": answer_text,
                 "text": answer_text,
                 "provenance": provenance_text,
-                "provenance_mix": {},
-                "violations": [],
-                "ungrounded_figures": [],
-                "misattributed": [],
-                "invented_tags": [],
-                "gap": False,
-                "verdict": "COLD_START",
+                "provenance_mix": graded.mix,
+                "violations": graded.violations(),
+                "ungrounded_figures": graded.ungrounded_figures,
+                "misattributed": graded.misattributed,
+                "invented_tags": graded.invented_tags,
+                "gap": graded.gap,
+                "verdict": graded.verdict,
                 "graph": {
                     "nodes": subgraph.get("nodes", []),
-                    "edges": [
-                        hop
-                        for path in subgraph.get("paths", [])
-                        for hop in path
-                    ],
+                    "edges": evidence_edges,
                 },
                 "route": "COLD_START",
                 "ticker": ticker,
@@ -2654,15 +2674,17 @@ def ask_rag(
                         subgraph.get("paths", [])
                     ),
                     node_count=len(subgraph.get("nodes", [])),
-                    edge_count=sum(
-                        len(path) for path in subgraph.get("paths", [])
-                    ),
+                    edge_count=len(evidence_edges),
                 ),
                 "background_task_scheduled": True,
                 "question": question,
-                "grounded": bool(answer_text),
-                "used_tags": [],
-                "tag_map": {},
+                "grounded": not graded.gap and bool(answer_text),
+                "used_tags": sorted(
+                    {t for t in citation_tags(answer_text) if t in tag_map},
+                    key=lambda x: int(x[1:]),
+                ),
+                "tag_map": tag_map,
+                "evidence_refs": [e.block() for e in evidence_refs],
             }
 
         except Exception as exc:
@@ -2706,7 +2728,8 @@ def ask_rag(
     # create one, which is the whole point -- a fabricated figure must not be
     # able to label itself STATED.
     evidence = build_evidence(nodes, kg, tag_map, edges)
-    evidence_block = serialise_evidence(evidence)
+    evidence_refs = [EvidenceRef.from_evidence(ev) for ev in evidence]
+    evidence_block = serialise_evidence_refs(evidence_refs)
 
     log.info("Retrieved %d entities and %d relationships for: %s", len(nodes), len(edges), question)
 
@@ -2856,6 +2879,7 @@ def ask_rag(
                 node_count=len(nodes),
                 edge_count=len(edges),
             ),
+            "evidence_refs": [e.block() for e in evidence_refs],
         }
 
     # Extract cited tags. The grammar is the grader's, so a citation the grader
@@ -2873,9 +2897,10 @@ def ask_rag(
     # sentence fails, the corpus does not support the answer, so a GAP is
     # rendered instead of the unsupported prose -- with a pointer to where the
     # fact would live rather than a bare refusal.
-    graded = grade_answer(content, evidence, question)
+    grader = SECGradingAdapter()
+    graded = grader.grade(content, evidence_refs, question)
     if content and graded.gap:
-        content = render_gap(question, evidence, _where_to_look(question))
+        content = render_gap(question, [e.to_evidence() for e in evidence_refs], _where_to_look(question))
         used_tags = []
 
     # Flow trace
@@ -2947,6 +2972,7 @@ def ask_rag(
         ),
         "background_task_scheduled": False,
         "latency_ms": round(elapsed * 1000, 2),
+        "evidence_refs": [e.block() for e in evidence_refs],
     }
 
 

@@ -956,334 +956,151 @@ mark.hit {
 .graph-tooltip__rel { margin-top: var(--sp-2); display: grid; gap: 2px; }
 .graph-tooltip__rel div { color: var(--amber); font-size: var(--text-xs); }
 
-/* --- graph: connections and the citation glow --------------------------------
- * Two jobs, deliberately kept apart.
- *
- * The shape of the subgraph is carried by hairlines: thin, low-contrast,
- * uniformly curved. Anything louder and forty relationships read as forty
- * headlines.
- *
- * The answer is carried by light. When an answer arrives, the relationships it
- * leaned on are the only ones that gain colour, weight, a flowing dash and a
- * soft bloom — and everything else drops far enough back that the two are never
- * in competition. A reader should be able to answer "what did this rest on?"
- * without reading a single word of the answer panel. */
+/* --- graph: connections ----------------------------------------------------
+  * Two jobs, deliberately kept apart.
+  *
+  * The shape of the subgraph is carried by hairlines: thin, low-contrast,
+  * uniformly curved. Anything louder and forty relationships read as forty
+  * headlines.
+  *
+  * The answer is carried by colour and weight. When an answer arrives, the
+  * relationships it leaned on are the only ones that gain weight and opacity —
+  * everything else drops far enough back that the two are never in
+  * competition. */
 
-.g-edges, .g-edge-glows, .g-edge-labels { pointer-events: none; }
+.g-clusters,
+.g-edges,
+.g-edge-glows,
+.g-edge-labels { pointer-events: none; }
 
-/* The underlay. A wide, faint copy of the same curve is what makes a cited edge
- * look lit rather than merely recoloured, and it costs one extra path per edge
- * instead of an SVG filter whose region would have to be guessed before the
- * graph has been laid out. */
+/* Company territory. A hairline ring, no fill: it tells you which blob a node
+ * belongs to without adding a shape to read through. */
+.g-cluster {
+  fill: none;
+  stroke-width: 1px;
+  opacity: 0.18;
+  transition: opacity var(--dur) var(--ease), stroke-width var(--dur) var(--ease);
+}
+.g-cluster[data-answer="true"] { opacity: 0.34; stroke-width: 1.5px; }
+
+/* Halo behind answer-path edges only. The JS binds this layer to a handful of
+ * edges, so the blur filter is affordable here — it is not applied graph-wide. */
 .g-edge-glow {
   fill: none;
-  stroke: var(--primary);
   stroke-width: 4px;
   stroke-linecap: round;
-  opacity: 0;
-  filter: blur(2px);
+  opacity: 0.14;
+  filter: blur(2.5px);
   transition: opacity var(--dur) var(--ease), stroke var(--dur) var(--ease);
 }
-/* Connected subgraph: seeds/cited (hop0) + direct connections (hop1/incident) */
-.g-edge-glow.is-cited,
-.g-edge-glow.is-incident,
-.g-edge-glow.is-hop1 { opacity: 0.03; stroke: var(--primary-3); }
-/* Unrelated: hop2+ and dim */
-.g-edge-glow.is-hop1to2,
-.g-edge-glow.is-hop2,
-.g-edge-glow.is-hop2to3,
-.g-edge-glow.is-hop3 { opacity: 0; }
-.g-edge-glow.is-hot { stroke: var(--text-muted); opacity: 0.05; }
 
 .g-edge {
   fill: none;
-  stroke: var(--primary);
-  stroke-width: 0.7px;
+  stroke: var(--border-strong, #3a3f4d);
   stroke-linecap: round;
-  opacity: 0.35;
   transition: stroke var(--dur) var(--ease), stroke-width var(--dur) var(--ease),
               opacity var(--dur) var(--ease);
 }
-/* Connected subgraph: highlight answer/provenance path in FinGraph red/orange */
-.g-edge.is-answer-path {
-  stroke: #FF3C00 !important;
-  stroke-width: 2.6px !important;
-  opacity: 0.95 !important;
-  filter: drop-shadow(0 0 4px rgba(255, 60, 0, 0.5)) !important;
-}
-.g-edge.is-cited,
-.g-edge.is-incident,
-.g-edge.is-hop1 {
-  stroke: #d14d00;
-  stroke-width: 1.3px;
-  opacity: 0.65;
-}
-/* Unrelated/dimmed: visible subtle grey connections */
-.g-edge.is-hop1to2,
-.g-edge.is-hop2,
-.g-edge.is-hop2to3,
-.g-edge.is-hop3 {
-  stroke: #5a6070;
-  stroke-width: 1px;
-  opacity: 0.45;
-}
-.g-edge.is-dim,
-.g-edge.is-unrelated { stroke: #4a5060 !important; stroke-width: 1px !important; opacity: 0.5 !important; }
-.g-edge.is-hot { stroke: var(--text-muted); stroke-width: 1.2px; opacity: 0.7; }
+/* Answer path: the company's own accent, thicker and solid. */
+.g-edge.is-answer-path { opacity: 0.9; }
+.g-edge.is-cited { opacity: 0.6; }
+/* Unrelated edges stay visible but recede. */
+.g-edge.is-dim { opacity: 0.22; }
+.g-edge.is-hot { opacity: 0.85; }
 
 @keyframes edge-flow { to { stroke-dashoffset: -20; } }
 
 /* --- graph: the dots that run along answer path edges -------------------
- * Smooth flowing particles on answer path edges, continuously looping.
- * Red/orange for answer path, subtle grey for context edges.
- */
-
+  * A two-second flourish on the answer path only. `edge-dots` never loops
+  * indefinitely: `#stopFlow` removes the elements, so the repaint cost ends
+  * two seconds after the answer lands. */
 .g-edge-flow {
   fill: none;
-  stroke: #FF3C00;
   stroke-width: 1.4px;
   stroke-linecap: round;
-  stroke-dasharray: 0.1 24;
+  stroke-dasharray: 0.1 22;
   pointer-events: none;
   opacity: 0;
   filter: blur(0.2px);
   animation: edge-dots 4s linear var(--flow-delay, 0ms) infinite;
 }
-/* Show flow continuously on answer path edges (red/orange) */
-.g-edge-flow.is-answer-path {
-  opacity: 0.95;
-  stroke: #FF3C00;
-  stroke-width: 2px;
-  display: block;
-}
-.g-edge-flow.is-cited,
-.g-edge-flow.is-incident,
-.g-edge-flow.is-hop1 {
-  opacity: 0.55;
-  stroke: #d14d00;
-  stroke-width: 1px;
-}
-
-/* Show flow on context edges (subtle grey) */
-.g-edge-flow.is-hop1to2,
-.g-edge-flow.is-hop2,
-.g-edge-flow.is-hop2to3,
-.g-edge-flow.is-hop3 {
-  opacity: 0.3;
-  stroke: #5a6070;
-  stroke-width: 0.8px;
-  display: block;
-}
-.g-edge-flow.is-dim,
-.g-edge-flow.is-unrelated {
-  opacity: 0.22 !important;
-  stroke: #4a5060 !important;
-  stroke-width: 0.7px !important;
-  display: block !important;
-}
-@keyframes edge-dots {
-  0%   { stroke-dashoffset: 0px;     opacity: 0.25; }
-  50%  { opacity: 0.8; }
-  100% { stroke-dashoffset: -80px; opacity: 0.25; }
-}
-
 .g-edge-flows { pointer-events: none; }
+.g-edge-flow.is-cited,
+.g-edge-flow.is-answer-path { opacity: 0.85; }
+
+@keyframes edge-dots {
+  0%   { stroke-dashoffset: 0px;    opacity: 0.2; }
+  50%  { opacity: 0.7; }
+  100% { stroke-dashoffset: -80px; opacity: 0.2; }
+}
 
 .g-edge-label {
-  font-size: 9px;
+  font-size: 8.5px;
   fill: var(--text-faint);
   pointer-events: none;
   paint-order: stroke;
   stroke: var(--graph-bg);
   stroke-width: 1.5px;
   stroke-linejoin: round;
-  opacity: 0.4;
+  opacity: 0.5;
 }
-
-.g-edge-label.is-cited,
-.g-edge-label.is-incident,
-.g-edge-label.is-hop1 {
-  fill: var(--primary-3);
-  font-weight: 550;
-  opacity: 0.7;
-}
-.g-edge-label.is-answer-path {
-  fill: #FF3C00 !important;
-  font-weight: 700 !important;
-  opacity: 0.95 !important;
-  text-shadow: 0 0 3px rgba(255, 60, 0, 0.4);
-}
-.g-edge-label.is-hop1to2,
-.g-edge-label.is-hop2,
-.g-edge-label.is-hop3 { opacity: 0.45; fill: #7a8090; }
-.g-edge-label.is-hot { fill: var(--text); opacity: 1; }
-.g-edge-label.is-dim,
-.g-edge-label.is-unrelated { opacity: 0.4 !important; fill: #8a92a0 !important; display: block !important; }
+.g-edge-label.is-hot,
+.g-edge-label.is-answer-path { opacity: 0.95; }
 
 .g-node { cursor: pointer; }
 .g-node circle {
-  stroke: var(--graph-bg);
-  stroke-width: 2px;
-  transition: r var(--dur) var(--ease), opacity var(--dur) var(--ease), stroke var(--dur) var(--ease);
+  transition: opacity var(--dur) var(--ease), stroke var(--dur) var(--ease);
 }
 
-/* bloom → halo → core: soft light behind a crisp ring behind the dot */
-.g-node .bloom {
-  stroke: none;
-  filter: url(#g-bloom);
-  opacity: 0;
-  transition: opacity var(--dur) var(--ease), r var(--dur) var(--ease);
-}
-.g-node .halo { fill: none; stroke-width: 2px; opacity: 0; transform-box: fill-box; transform-origin: center; transition: opacity var(--dur) var(--ease), stroke-width var(--dur) var(--ease), stroke var(--dur) var(--ease); }
+/* --- Answer Path Highlight (Company → Filing → Metric → Evidence) ---------
+  * Answer nodes keep their own company colour. An earlier version overrode the
+  * fill to near-black and ringed it in the brand orange, which threw away the
+  * one thing that identifies the company at a glance; the answer state is now
+  * expressed by which nodes are on screen at all, so the fill stays put. */
+.g-node.is-answer-path .core { stroke: var(--text) !important; stroke-width: 1.75px !important; }
+.g-node.is-answer-path text.g-node-label { opacity: 1 !important; font-weight: 600 !important; }
 
-/* --- Answer Path Highlight (Company → Filing → Metric → Evidence) --------- */
-/* FinGraph red/orange highlight for answer path */
-.g-node.is-answer-path .core {
-  stroke: #FF3C00 !important;
-  stroke-width: 2.6px !important;
-  opacity: 1 !important;
-  fill: #1a1a1a !important;
-}
-.g-node.is-answer-path .halo {
-  opacity: 0.9 !important;
-  stroke: #FF3C00 !important;
-  stroke-width: 3px !important;
-  filter: drop-shadow(0 0 8px rgba(255, 60, 0, 0.6)) !important;
-  animation: halo-breathe 3s var(--ease) infinite;
-}
-.g-node.is-answer-path .bloom {
-  fill: #FF3C00 !important;
-  opacity: 0.4 !important;
-}
-.g-node.is-answer-path text.g-node-label {
-  fill: #FFD6CC !important;
-  font-weight: 700 !important;
-  opacity: 1 !important;
-  display: block !important;
-  text-shadow: 0 0 4px rgba(255, 60, 0, 0.3);
-}
-
-/* Seed nodes (entry points) - subtle orange */
-.g-node.is-seed .bloom { fill: #FF3C00; opacity: 0.2; }
-.g-node.is-seed .halo { opacity: 0.7; stroke: #FF3C00; stroke-width: 2px; }
-
-/* Dominant Company nodes - red accent for company type */
-.g-node.is-root .bloom,
-.g-node.type-company .bloom { fill: #FF3C00; opacity: 0.25; }
-.g-node.is-root .halo,
-.g-node.type-company .halo {
-  opacity: 0.85;
-  stroke: #FF3C00;
-  stroke-width: 2.5px;
-}
-.g-node.is-root .core,
-.g-node.type-company .core {
-  stroke: #FF3C00;
-  stroke-width: 2.5px;
-}
-.g-node.type-company text {
-  fill: var(--text);
+/* Company nodes read slightly larger, and their label is the loudest one. */
+.g-node.is-root .core { stroke-width: 2px; }
+.g-node.type-company text.g-node-label,
+.g-node.is-root text.g-node-label {
+  font-size: 12.5px;
   font-weight: 700;
-  font-size: 12px;
+  fill: var(--text);
+  letter-spacing: 0.02em;
 }
 
-/* Selected state - red accent */
-.g-node.is-selected .bloom { opacity: 0.5; fill: #FF3C00; }
-.g-node.is-selected .halo {
-  opacity: 0.95;
-  stroke: #FF3C00;
-  stroke-width: 3px;
-  filter: drop-shadow(0 0 8px rgba(255, 60, 0, 0.5));
-}
-.g-node.is-selected .core { stroke: #fff; stroke-width: 2.5px; }
-.g-node.is-selected text { fill: #FFD6CC; font-weight: 700; }
+/* Selected / hovered */
+.g-node.is-selected .core { stroke: var(--text); stroke-width: 2.5px; }
+.g-node.is-selected text.g-node-label { font-weight: 700; }
+.g-node.is-hovered .core { stroke: var(--text); stroke-width: 2px; }
 
-/* Cited state - red accent */
-.g-node.is-cited .bloom { fill: #FF3C00; opacity: 0.25; }
-.g-node.is-cited .halo {
-  opacity: 0.8;
-  stroke: #FF3C00;
-  stroke-width: 2px;
-  animation: halo-breathe 4s var(--ease) infinite;
-}
-.g-node.is-cited .core { stroke: #FF3C00; stroke-width: 2px; }
-.g-node.is-cited text { fill: #FFD6CC; font-weight: 600; }
-@keyframes halo-breathe {
-  0%, 100% { opacity: 0.6; transform: scale(1); stroke-width: 2px; stroke: #FF3C00; }
-  50%      { opacity: 0.3; transform: scale(1.1); stroke-width: 2.8px; stroke: #FF3C00; }
+/* Cited state: the outline is enough. The fill already says "this company". */
+.g-node.is-cited .core { stroke-width: 2px; }
+
+/* Fresh state - one-shot flare */
+.g-node.is-fresh .core { animation: fresh-flare 1.5s var(--ease-out) 1; }
+@keyframes fresh-flare {
+  0%   { stroke-width: 1px; }
+  40%  { stroke-width: 3px; }
+  100% { stroke-width: 2px; }
 }
 
-/* One-shot, when the answer first lands - red/orange */
-.g-node.is-fresh .bloom { opacity: 0.5; fill: #FF3C00; }
-.g-node.is-fresh .halo { animation: cite-flare 1.5s var(--ease-out) 1; }
-@keyframes cite-flare {
-  0%   { opacity: 0;   transform: scale(0.2); stroke-width: 1px; }
-  40%  { opacity: 0.5; transform: scale(1.3); stroke-width: 3px; stroke: #FF3C00; }
-  100% { opacity: 0.35; transform: scale(1); stroke-width: 2px; stroke: #FF3C00; }
-}
-
-/* Hover state - red accent */
-.g-node.is-hovered .halo,
-.g-node.is-hot .halo { opacity: 0.8; stroke: #FF3C00; stroke-width: 2.5px; }
-.g-node.is-hovered .core,
-.g-node.is-hot .core { stroke: #FFD6CC; stroke-width: 1.5px; }
-.g-node.is-hovered text,
-.g-node.is-hot text { fill: #FFD6CC; opacity: 1; }
-
-/* Dimmed / Unrelated nodes: muted but clearly visible */
-.g-node.is-dim,
-.g-node.is-unrelated {
-  opacity: 0.6 !important;
-}
-.g-node.is-dim .core,
-.g-node.is-unrelated .core {
-  fill: #252932 !important;
-  stroke: #4a5060 !important;
-  stroke-width: 1px !important;
-}
-.g-node.is-dim .halo,
-.g-node.is-unrelated .halo,
-.g-node.is-dim .bloom,
-.g-node.is-unrelated .bloom {
-  opacity: 0.12 !important;
-  display: block !important;
-}
-.g-node.is-dim text,
-.g-node.is-unrelated text {
-  opacity: 0.65 !important;
-  display: block !important;
-  fill: #8a92a0 !important;
-}
-
-/* Selected state for unrelated / muted nodes */
+/* Dimmed / unrelated nodes: still legible, clearly backgrounded. In answer
+  * state these are filtered out of the render entirely, so this only applies
+  * to hover and selection focus while exploring. */
+.g-node.is-dim { opacity: 0.45 !important; }
+.g-node.is-dim text.g-node-label { opacity: 0.5 !important; }
 .g-node.is-dim.is-selected,
-.g-node.is-unrelated.is-selected {
-  opacity: 0.98 !important;
-}
-.g-node.is-dim.is-selected .core,
-.g-node.is-unrelated.is-selected .core {
-  fill: #2b303e !important;
-  stroke: #ffffff !important;
-  stroke-width: 2px !important;
-}
-.g-node.is-dim.is-selected .halo,
-.g-node.is-unrelated.is-selected .halo {
-  opacity: 0.8 !important;
-  display: block !important;
-  stroke: #ffffff !important;
-}
-.g-node.is-dim.is-selected text,
-.g-node.is-unrelated.is-selected text {
-  opacity: 1 !important;
-  display: block !important;
-  fill: #ffffff !important;
-}
+.g-node.is-dim.is-hovered { opacity: 1 !important; }
+.g-node.is-dim.is-selected text.g-node-label,
+.g-node.is-dim.is-hovered text.g-node-label { opacity: 1 !important; }
 
 .g-node text,
 .g-node text.g-node-label {
   font-size: 10.5px;
   font-weight: 500;
-  fill: rgba(255, 255, 255, 0.9);
+  fill: var(--text-muted);
   pointer-events: none;
   paint-order: stroke;
   stroke: var(--label-stroke, #050505);
@@ -1294,31 +1111,13 @@ mark.hit {
   transition: opacity var(--dur-fast) var(--ease), fill var(--dur-fast) var(--ease);
 }
 
-.g-node.type-company text.g-node-label,
-.g-node.is-root text.g-node-label {
-  font-size: 12px;
-  font-weight: 700;
-  fill: #ffffff;
-  letter-spacing: 0.02em;
-}
-
 .g-node.type-filing text.g-node-label {
   font-size: 11px;
   font-weight: 600;
-  fill: rgba(255, 255, 255, 0.95);
 }
 
-.g-node.is-selected text.g-node-label {
-  fill: var(--primary);
-  font-weight: 700;
-}
-
-.g-node.is-hovered text.g-node-label,
-.g-node.is-hot text.g-node-label {
-  fill: #ffffff;
-  font-weight: 600;
-  opacity: 1;
-}
+.g-node.is-selected text.g-node-label,
+.g-node.is-hovered text.g-node-label { fill: var(--text); opacity: 1; }
 
 /* --- Floating Node Details Inspector -------------------------------------- */
 

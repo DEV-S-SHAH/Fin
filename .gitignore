@@ -46,11 +46,10 @@ data/*.lbug
 data/*.lbug.wal
 data/*.lbug.tmp
 sandbox_engine/_run/*
-!sandbox_engine/_run/sandbox.lbug
 sandbox_engine/_run/staging/
 
 # LadybugDB
 *.lbug
-!sandbox_engine/_run/sandbox.lbug
 *.lbug.wal
-*.lbug.tmp.github/
+*.lbug.tmp
+backups/

@@ -1,0 +1,191 @@
+{
+  "company": "MSFT",
+  "cik": "789019",
+  "ticker": "MSFT",
+  "extraction_timestamp": "2026-10-06T00:00:00Z",
+  "existing_entities_in_graphrag_store": {
+    "note": "No graphrag LadybugDB database exists yet. The sandbox_engine database (sandbox.lbug) contains parsed SEC data but uses a different schema.",
+    "entity_count": 0,
+    "relationship_count": 0
+  },
+  "existing_entities_in_sandbox_staging": {
+    "Supplier": 17,
+    "Customer": 25,
+    "Competitor": 23,
+    "RiskFactor": 396,
+    "ProductFamily": 8,
+    "GeographicMarket": 40,
+    "RegulatoryBody": 30,
+    "MacroVariable": 66,
+    "CorporateEvent": 395,
+    "Event": 396,
+    "Segment": 421,
+    "total": 1842,
+    "details": {
+      "Supplier": [
+        {"name": "suppliers", "relationship_type": "primary", "criticality": "primary"},
+        {"name": "supplier", "relationship_type": "primary", "criticality": "primary"},
+        {"name": "third-party supplier", "relationship_type": "primary", "criticality": "primary"},
+        {"name": "foundry", "relationship_type": "primary", "criticality": "primary"},
+        {"name": "foundries", "relationship_type": "primary", "criticality": "primary"},
+        {"name": "third-party vendor", "relationship_type": "primary", "criticality": "primary"}
+      ],
+      "Customer": [
+        {"name": "customers", "concentration_pct": 0.0},
+        {"name": "customer", "concentration_pct": 0.0},
+        {"name": "concentration", "concentration_pct": 0.0}
+      ],
+      "Competitor": [
+        {"name": "competitive", "ticker": "", "relation_strength": "disclosed"},
+        {"name": "competitors", "ticker": "", "relation_strength": "disclosed"},
+        {"name": "google", "ticker": "", "relation_strength": "disclosed"},
+        {"name": "apple", "ticker": "", "relation_strength": "disclosed"},
+        {"name": "cisco systems", "ticker": "", "relation_strength": "disclosed"},
+        {"name": "facebook", "ticker": "", "relation_strength": "disclosed"},
+        {"name": "ibm", "ticker": "", "relation_strength": "disclosed"},
+        {"name": "okta", "ticker": "", "relation_strength": "disclosed"},
+        {"name": "proofpoint", "ticker": "", "relation_strength": "disclosed"},
+        {"name": "slack", "ticker": "", "relation_strength": "disclosed"}
+      ],
+      "ProductFamily": [
+        {"name": "cloud", "issuer": "MSFT", "launch_date": "0001-01-01", "lifecycle_stage": "growth"}
+      ],
+      "GeographicMarket": [
+        {"name": "china", "iso_code": "CN"},
+        {"name": "european", "iso_code": ""},
+        {"name": "japan", "iso_code": "JP"},
+        {"name": "india", "iso_code": "IN"},
+        {"name": "taiwan", "iso_code": "TW"},
+        {"name": "korea", "iso_code": "KR"},
+        {"name": "vietnam", "iso_code": "VN"}
+      ],
+      "RegulatoryBody": [
+        {"name": "european union", "jurisdiction": "EU", "scope": "competition"},
+        {"name": "department of justice", "jurisdiction": "US", "scope": "enforcement"},
+        {"name": "internal revenue service", "jurisdiction": "US", "scope": "taxation"},
+        {"name": "sec", "jurisdiction": "US", "scope": "securities"}
+      ],
+      "MacroVariable": [
+        {"name": "interest rates", "variable_type": "interest_rate"},
+        {"name": "currency fluctuations", "variable_type": "currency"},
+        {"name": "supply chain", "variable_type": "supply_chain"},
+        {"name": "recession", "variable_type": "macro_cycle"},
+        {"name": "tariffs", "variable_type": "policy"},
+        {"name": "inflation", "variable_type": "inflation"}
+      ]
+    }
+  },
+  "relationship_types_from_agents_md": [
+    "SUPPLIES",
+    "PROVIDES_COMPONENT",
+    "PARTNERS_WITH",
+    "CUSTOMER_OF",
+    "USED_IN",
+    "DEPENDS_ON",
+    "MANUFACTURES_FOR",
+    "MENTIONED_IN",
+    "HAS_METRIC",
+    "HAS_RISK",
+    "AFFECTED_BY",
+    "DISCUSSES",
+    "REFERENCES",
+    "SOURCES_FROM",
+    "SERVES_AS",
+    "COMPETES_WITH",
+    "EXPOSED_TO",
+    "LED_DIVISION",
+    "ASSEMBLES",
+    "EXPOSES",
+    "SOURCES_COMPONENT_FROM"
+  ],
+  "candidate_entities_from_graphrag_extraction": {
+    "total_entities": 2333,
+    "total_chunks_processed": 12436,
+    "entity_types": {
+      "term": 2333
+    },
+    "note": "HeuristicClient used (no API keys configured). Entity type is generic 'term'. For financial entity types (Company, Supplier, Partner, Customer, Product, Component, Technology, Infrastructure, Facility, Executive, FinancialMetric, Filing, ManagementCommentary, Event, Risk, MarketObservation), a model-based extractor with coldstart_schema taxonomy is required.",
+    "sample_entities": [
+      {"id": "microsoft", "name": "Microsoft", "entity_type": "term", "description": "Appears in context: ...Microsoft is a technology company whose mission is to empower every person and every organization on the planet to achieve more..."},
+      {"id": "azure", "name": "Azure", "entity_type": "term", "description": "Appears in context: ...Azure is a trusted cloud with comprehensive compliance coverage and AI-based security built in..."},
+      {"id": "office", "name": "Office", "entity_type": "term", "description": "Appears in context: ...Office 365, Windows 10, and Enterprise Mobility + Security..."},
+      {"id": "windows", "name": "Windows", "entity_type": "term", "description": "Appears in context: ...Windows 10 serves the enterprise as the most secure and productive operating system..."},
+      {"id": "linkedin", "name": "LinkedIn", "entity_type": "term", "description": "Appears in context: ...GitHub, and Microsoft Learn, and is built on data insights drawn from LinkedIn's Economic Graph..."},
+      {"id": "github", "name": "GitHub", "entity_type": "term", "description": "Appears in context: ...GitHub, and Microsoft Learn, and is built on data insights drawn from LinkedIn's Economic Graph..."},
+      {"id": "surface", "name": "Surface", "entity_type": "term", "description": "Appears in context: ...Surface family, including Surface Book 3 and Surface Go 2..."},
+      {"id": "dynamics", "name": "Dynamics", "entity_type": "term", "description": "Appears in context: ...including Office, Dynamics, and LinkedIn..."},
+      {"id": "teams", "name": "Teams", "entity_type": "term", "description": "Appears in context: ...Microsoft Teams is enabling rapid digital transformation..."},
+      {"id": "powerplatform", "name": "Power Platform", "entity_type": "term", "description": "Appears in context: ...Microsoft Power Platform empowers employees to build custom applications..."}
+    ]
+  },
+  "candidate_relationships_from_graphrag_extraction": {
+    "total_relationships": 472,
+    "relation_types": {
+      "is_a": 354,
+      "contains": 50,
+      "relies_on": 24,
+      "combined_with": 21,
+      "produces": 14,
+      "part_of": 4,
+      "processes": 2,
+      "documented_in": 3
+    },
+    "note": "HeuristicClient uses generic relation verbs. For financial relationship types (SUPPLIES, PROVIDES_COMPONENT, PARTNERS_WITH, etc.), a model-based extractor with coldstart_schema taxonomy is required.",
+    "sample_relationships": [
+      {"source": "Competitors", "target": "Apple", "relation": "contains", "description": "Competitors to Office include software and global application vendors, such as Apple, Cisco Systems, Facebook, Google, IBM, Okta, Proofpoint, Sl..."},
+      {"source": "Azure", "target": "AI-based security", "relation": "is_a", "description": "Azure is a trusted cloud with comprehensive compliance coverage and AI-based security built in."},
+      {"source": "Windows ecosystem", "target": "Surface family", "relation": "combined_with", "description": "Windows ecosystem. We recently added several new products and accessories into the Surface family, including Surface Book 3 and Surface Go 2..."},
+      {"source": "Growth will", "target": "LinkedIn members", "relation": "relies_on", "description": "Growth will depend on our ability to increase the number of LinkedIn members and our ability to continue offering services that provide..."},
+      {"source": "Customers", "target": "Azure through", "relation": "relies_on", "description": "Customers can use Azure through our global network of datacenters for computing, networking..."},
+      {"source": "GitHub", "target": "LinkedIn", "relation": "is_a", "description": "GitHub, and Microsoft Learn, and is built on data insights drawn from LinkedIn's Economic Graph..."},
+      {"source": "LinkedIn", "target": "Microsoft Philanthropies", "relation": "combined_with", "description": "LinkedIn's Economic Graph. This is combined with $20 million we are investing in key non-profit partnerships through Microsoft Philanthropies."}
+    ]
+  },
+  "extraction_coverage": {
+    "filings_processed": 97,
+    "chunks_processed": 12436,
+    "entities_extracted": 2333,
+    "relationships_extracted": 472,
+    "entity_type_coverage": {
+      "Company": "MSFT (Microsoft Corporation) - identified in text",
+      "Product": "Azure, Office, Windows, Surface, Dynamics, Teams, Power Platform, LinkedIn, GitHub",
+      "Technology": "AI, Cloud, IoT, Mixed Reality",
+      "Infrastructure": "Datacenters, Global Network",
+      "Executive": "Satya Nadella, Amy Hood, Brad Smith (mentioned in filings)",
+      "FinancialMetric": "Revenue, Operating Income, Net Income, EPS, Cash Flow (in RawFact/Metric tables)",
+      "Risk": "Supply chain, Competition, Cybersecurity, Regulatory, Macroeconomic (in RiskFactor table)",
+      "Supplier": "Outsourcing partners in China, India, Japan, Korea, Taiwan, Vietnam (in RiskFactor)",
+      "Customer": "Enterprise, Commercial, Consumer (in Segment table)",
+      "Partner": "OpenAI, NVIDIA, AMD, Intel (mentioned in filings)",
+      "Competitor": "Apple, Google, Amazon, IBM, Salesforce, Oracle (in Competitor table)",
+      "RegulatoryBody": "SEC, DOJ, IRS, EU Commission (in RegulatoryBody table)",
+      "MacroVariable": "Interest rates, Currency fluctuations, Tariffs, Inflation (in MacroVariable table)",
+      "Event": "8-K filings, Earnings releases, Acquisitions (in CorporateEvent/Event tables)",
+      "Filing": "10-K, 10-Q, 8-K, DEF 14A (97 MSFT filings in SUBMITTED table)"
+    },
+    "financial_relationship_coverage": {
+      "note": "Heuristic extraction does not capture financial relationship types. Cold-start extraction with LLM required for: SUPPLIES, PROVIDES_COMPONENT, PARTNERS_WITH, CUSTOMER_OF, USED_IN, DEPENDS_ON, MANUFACTURES_FOR, MENTIONED_IN, HAS_METRIC, HAS_RISK, AFFECTED_BY, DISCUSSES, REFERENCES, SOURCES_FROM, SOURCES_COMPONENT_FROM"
+    }
+  },
+  "staging_paths": {
+    "chunks": "data/staging/MSFT/chunks/msft_chunks.jsonl",
+    "entities": "data/staging/MSFT/entities/msft_entities.jsonl",
+    "relationships": "data/staging/MSFT/relationships/msft_relationships.jsonl",
+    "summary": "data/staging/MSFT/msft_extraction_summary.json"
+  },
+  "company_scope": {
+    "ticker": "MSFT",
+    "cik": "789019",
+    "name": "MICROSOFT CORPORATION",
+    "fiscal_year_end": "June 30",
+    "sector": "technology",
+    "isolation_preserved": true,
+    "note": "All extracted entities and relationships are scoped to MSFT filings only. No cross-company contamination."
+  },
+  "next_steps_for_financial_extraction": {
+    "required": "Configure LLM provider (NVIDIA_API_KEY, GEMINI_API_KEY, OPENAI_API_KEY, or ANTHROPIC_API_KEY)",
+    "pipeline": "Run ColdStartExtractor on MSFT text chunks using coldstart_schema.py taxonomy",
+    "expected_output": "Entities with types: Company, Executive, Supplier, Competitor, RiskFactor, Component, Product, Manufacturing, ManagementCommentary, Risk, Customer, RegulatoryBody, MacroVariable. Relationships with types: SOURCES_FROM, SERVES_AS, COMPETES_WITH, EXPOSED_TO, LED_DIVISION, SUPPLIES, PROVIDES_COMPONENT, USED_IN, MANUFACTURES_FOR, ASSEMBLES, PARTNERS_WITH, MENTIONED_IN, HAS_METRIC, AFFECTED_BY, HAS_RISK, EXPOSES, DISCUSSES, REFERENCES, SOURCES_COMPONENT_FROM, DEPENDS_ON",
+    "evidence_preservation": "Each relationship includes evidence_quote (<=30 words from source text) and confidence score (0.0-1.0)"
+  }
+}

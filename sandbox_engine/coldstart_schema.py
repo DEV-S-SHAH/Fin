@@ -16,6 +16,14 @@ EntityType = Literal[
     "Supplier",
     "Competitor",
     "RiskFactor",
+    "Component",
+    "Product",
+    "Manufacturing",
+    "ManagementCommentary",
+    "Risk",
+    "Customer",
+    "RegulatoryBody",
+    "MacroVariable",
 ]
 
 RelationType = Literal[
@@ -24,6 +32,21 @@ RelationType = Literal[
     "COMPETES_WITH",
     "EXPOSED_TO",
     "LED_DIVISION",
+    "SUPPLIES",
+    "PROVIDES_COMPONENT",
+    "USED_IN",
+    "MANUFACTURES_FOR",
+    "ASSEMBLES",
+    "PARTNERS_WITH",
+    "MENTIONED_IN",
+    "HAS_METRIC",
+    "AFFECTED_BY",
+    "HAS_RISK",
+    "EXPOSES",
+    "DISCUSSES",
+    "REFERENCES",
+    "SOURCES_COMPONENT_FROM",
+    "DEPENDS_ON",
 ]
 
 

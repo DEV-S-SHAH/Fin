@@ -23,22 +23,24 @@ MAX_RELATIONSHIPS = 30
 EXTRACTION_SYSTEM_PROMPT = """You are a precise financial knowledge graph extractor.
 Analyze the provided SEC filing text and extract structured financial triples.
 Target:
-- Entity Types: "Company", "Executive", "Supplier", "Competitor", "RiskFactor"
-- Relation Types: "SOURCES_FROM", "SERVES_AS", "COMPETES_WITH", "EXPOSED_TO", "LED_DIVISION"
+- Entity Types: "Company", "Executive", "Supplier", "Competitor", "RiskFactor", "Component", "Product", "Manufacturing", "ManagementCommentary", "Risk", "Customer", "RegulatoryBody", "MacroVariable"
+- Relation Types: "SOURCES_FROM", "SERVES_AS", "COMPETES_WITH", "EXPOSED_TO", "LED_DIVISION", "SUPPLIES", "PROVIDES_COMPONENT", "USED_IN", "MANUFACTURES_FOR", "ASSEMBLES", "PARTNERS_WITH", "MENTIONED_IN", "HAS_METRIC", "AFFECTED_BY", "HAS_RISK", "EXPOSES", "DISCUSSES", "REFERENCES", "SOURCES_COMPONENT_FROM", "DEPENDS_ON"
 
 Requirements:
 - Target 15 to 30 highly confident relationships.
 - Each relationship must include a concise evidence quote (<= 30 words) taken directly from the text.
 - Do NOT generate self-loops (source_id must not equal target_id).
 - Assign confidence score between 0.0 and 1.0.
+- Extract supply-chain relationships: suppliers providing components, products using components, manufacturing locations, management commentary on supply chain, and supply-chain risks.
+- Preserve temporal information: include dates, periods, fiscal years in properties.
 
 Return ONLY a valid JSON object matching this schema:
 {
   "entities": [
-    {"id": "e1", "name": "Taiwan Semiconductor", "entity_type": "Supplier", "properties": {}}
+    {"id": "e1", "name": "Taiwan Semiconductor", "entity_type": "Supplier", "properties": {"cik": "0000062078", "headquarters": "Hsinchu, Taiwan"}}
   ],
   "relationships": [
-    {"source_id": "e1", "target_id": "e2", "relation": "SOURCES_FROM", "confidence": 0.95, "evidence_quote": "...", "properties": {}}
+    {"source_id": "e1", "target_id": "e2", "relation": "SOURCES_FROM", "confidence": 0.95, "evidence_quote": "We source our core silicon from Taiwan Semiconductor.", "properties": {"component": "Silicon", "since": "2020", "volume": "high"}}
   ]
 }
 """
@@ -113,8 +115,13 @@ class ColdStartExtractor:
         if self.provider == "mock" or self.client is None:
             return json.dumps({
                 "entities": [
-                    {"id": "c1", "name": target_ticker or "Target Corp", "entity_type": "Company"},
-                    {"id": "s1", "name": "Taiwan Semiconductor", "entity_type": "Supplier"},
+                    {"id": "c1", "name": target_ticker or "Target Corp", "entity_type": "Company", "properties": {}},
+                    {"id": "s1", "name": "Taiwan Semiconductor", "entity_type": "Supplier", "properties": {"cik": "0000062078", "headquarters": "Hsinchu, Taiwan"}},
+                    {"id": "c2", "name": "A16 Bionic", "entity_type": "Component", "properties": {"component_type": "SoC", "manufacturer": "TSMC"}},
+                    {"id": "p1", "name": "iPhone 15 Pro", "entity_type": "Product", "properties": {"product_family": "iPhone", "launch_date": "2023-09-22"}},
+                    {"id": "m1", "name": "Foxconn Zhengzhou", "entity_type": "Manufacturing", "properties": {"location": "Zhengzhou, China", "process_type": "Final Assembly"}},
+                    {"id": "mc1", "name": "Supply Chain Commentary FY2024", "entity_type": "ManagementCommentary", "properties": {"filing_id": "AAPL_10K_2024", "section": "Management Discussion", "speaker": "Tim Cook", "date": "2024-11-01"}},
+                    {"id": "r1", "name": "Single Source Dependency Risk", "entity_type": "Risk", "properties": {"risk_type": "Supply Chain", "severity": "High", "likelihood": "Medium", "time_horizon": "Near Term"}},
                 ],
                 "relationships": [
                     {
@@ -123,7 +130,56 @@ class ColdStartExtractor:
                         "relation": "SOURCES_FROM",
                         "confidence": 0.95,
                         "evidence_quote": "We source our core silicon components from Taiwan Semiconductor.",
-                    }
+                        "properties": {"component": "Silicon", "since": "2020", "volume": "high"}
+                    },
+                    {
+                        "source_id": "s1",
+                        "target_id": "c2",
+                        "relation": "SUPPLIES",
+                        "confidence": 0.92,
+                        "evidence_quote": "TSMC manufactures the A16 Bionic chip for Apple.",
+                        "properties": {"volume": "high", "contract_type": "Exclusive", "since": "2022"}
+                    },
+                    {
+                        "source_id": "c2",
+                        "target_id": "p1",
+                        "relation": "USED_IN",
+                        "confidence": 0.94,
+                        "evidence_quote": "The A16 Bionic powers the iPhone 15 Pro.",
+                        "properties": {"quantity": "1", "criticality": "Critical"}
+                    },
+                    {
+                        "source_id": "m1",
+                        "target_id": "p1",
+                        "relation": "MANUFACTURES_FOR",
+                        "confidence": 0.90,
+                        "evidence_quote": "Final assembly of iPhone 15 Pro occurs at Foxconn Zhengzhou.",
+                        "properties": {"volume": "high", "location": "Zhengzhou, China", "since": "2023"}
+                    },
+                    {
+                        "source_id": "mc1",
+                        "target_id": "s1",
+                        "relation": "MENTIONED_IN",
+                        "confidence": 0.88,
+                        "evidence_quote": "We continue to deepen our partnership with TSMC for advanced silicon.",
+                        "properties": {"context": "Supply Chain Resilience", "sentiment": "Positive"}
+                    },
+                    {
+                        "source_id": "r1",
+                        "target_id": "p1",
+                        "relation": "EXPOSES",
+                        "confidence": 0.85,
+                        "evidence_quote": "Single-source dependency on TSMC for advanced nodes creates concentration risk.",
+                        "properties": {"exposure_level": "High", "mitigation": "Multi-sourcing strategy"}
+                    },
+                    {
+                        "source_id": "p1",
+                        "target_id": "c2",
+                        "relation": "DEPENDS_ON",
+                        "confidence": 0.93,
+                        "evidence_quote": "iPhone 15 Pro depends on the A16 Bionic for all compute.",
+                        "properties": {"criticality": "Critical", "single_source": "true"}
+                    },
                 ],
             })
 

@@ -938,7 +938,7 @@ class ProvenanceApp {
       button.addEventListener("click", () => this.setView(button.dataset.view));
     }
 
-    $("palette-btn").addEventListener("click", () => this.palette.open());
+    $("palette-btn")?.addEventListener("click", () => this.palette.open());
 
     document.addEventListener("keydown", (event) => {
       if (event.key === "/" && event.target.tagName !== "INPUT" && event.target.tagName !== "TEXTAREA" && !event.metaKey && !event.ctrlKey) {
@@ -1139,10 +1139,10 @@ function highlightTerm(text, term) {
 
 function escapeHtml(text) {
   return String(text)
-    .replace(/&/g, "&")
-    .replace(/</g, "<")
-    .replace(/>/g, ">")
-    .replace(/"/g, """)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
     .replace(/'/g, "&#039;");
 }
 

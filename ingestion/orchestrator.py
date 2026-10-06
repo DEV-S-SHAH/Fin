@@ -55,8 +55,16 @@ class IngestionConfig:
     pgvector_db: str = "postgresql://localhost:5432/fingraph"
     neo4j_uri: str = "bolt://localhost:7687"
     neo4j_user: str = "neo4j"
-    neo4j_password: str = "password"
+    neo4j_password: str = ""
     ladybug_db: Path = FINGRAPH_DATA_DIR / "graphrag.lbug"
+    
+    def __post_init__(self) -> None:
+        if not self.neo4j_password:
+            import os
+            env_pass = os.environ.get("NEO4J_PASSWORD")
+            if not env_pass:
+                raise ValueError("neo4j_password must be set via NEO4J_PASSWORD environment variable")
+            object.__setattr__(self, "neo4j_password", env_pass)
     
     # Processing
     chunk_tokens: int = 800

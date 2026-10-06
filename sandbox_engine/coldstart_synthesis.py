@@ -8,6 +8,13 @@ from __future__ import annotations
 
 from typing import Any, Generator, Optional
 from .traversal import format_provenance_ledger
+from .provenance import (
+    EvidenceRef,
+    SECGradingAdapter,
+    serialise_evidence_refs,
+    grade_answer_with_refs,
+    GradedAnswer,
+)
 
 SYNTHESIS_SYSTEM_PROMPT = """You are a senior financial analyst and investigative research director.
 You synthesize investment insights by traversing financial knowledge graphs and analyzing primary SEC filings.
@@ -23,29 +30,45 @@ Rules:
 - Be rigorous, dense, and factual.
 - Ground all claims in the provided graph paths and SEC filing excerpts.
 - In Section 5, quote the exact graph traversal chains from the Provenance Ledger.
+- You may ONLY cite tags that appear in the evidence block. Do not invent a tag.
+- Cite every factual claim using bracketed tags like [E1] or [E2].
+- If you compute a value from cited facts, show the arithmetic so the derivation is visible.
+- Never state a number that is not in the evidence and not derived from it.
+- Do not use outside knowledge. If a fact is not in the evidence, treat it as unknown rather than supplying it.
 """
 
 
 class ColdStartSynthesizer:
     """Generates structured synthesis prompts and streams investment reports."""
 
-    def __init__(self, system_prompt: str = SYNTHESIS_SYSTEM_PROMPT) -> None:
+    def __init__(
+        self,
+        system_prompt: str = SYNTHESIS_SYSTEM_PROMPT,
+        grader: Optional[SECGradingAdapter] = None,
+    ) -> None:
         self.system_prompt = system_prompt
+        self._grader = grader or SECGradingAdapter()
 
     def generate_prompts(
         self,
         target_ticker: str,
         query: str,
         paths: list[list[dict[str, Any]]],
+        evidence_refs: list[EvidenceRef] | None = None,
         filing_text: str = "",
     ) -> tuple[str, str]:
         """Generate system and user prompts injecting hybrid paths and SEC text."""
         ledger = format_provenance_ledger(paths)
+        evidence_block = ""
+        if evidence_refs:
+            evidence_block = f"\n=== EVIDENCE BLOCK ===\n{serialise_evidence_refs(evidence_refs)}\n"
+
         user_content = (
             f"TARGET ENTITY: {target_ticker}\n"
             f"INVESTOR QUERY: {query}\n\n"
             f"=== MULTI-HOP GRAPH PROVENANCE LEDGER ===\n"
-            f"{ledger}\n\n"
+            f"{ledger}\n"
+            f"{evidence_block}"
             f"=== PRIMARY SEC NARRATIVE EXCERPTS ===\n"
             f"{filing_text[:12000]}\n\n"
             f"Synthesize your investment report addressing the investor query using the required 5-section structure:\n"
@@ -68,11 +91,13 @@ class ColdStartSynthesizer:
         query = context_dict.get("query", "")
         paths = context_dict.get("paths", [])
         filing_text = context_dict.get("filing_text", "")
+        evidence_refs = context_dict.get("evidence_refs", [])
 
         system_msg, user_msg = self.generate_prompts(
             target_ticker=target_ticker,
             query=query,
             paths=paths,
+            evidence_refs=evidence_refs,
             filing_text=filing_text,
         )
 
@@ -103,6 +128,9 @@ class ColdStartSynthesizer:
 
         # Default structured fallback token stream
         ledger = format_provenance_ledger(paths)
+        evidence_preview = ""
+        if evidence_refs:
+            evidence_preview = f"\n=== EVIDENCE (first 3) ===\n" + "\n".join(e.block() for e in evidence_refs[:3])
         mock_response = (
             f"### 1. Executive Summary & Thesis\n"
             f"{target_ticker} demonstrates critical operational dependencies uncovered through cold-start graph analysis.\n\n"
@@ -113,8 +141,22 @@ class ColdStartSynthesizer:
             f"### 4. Capital Allocation & Margin Outlook\n"
             f"Capital expenditure intensity reflects ongoing commitments to resilient sourcing.\n\n"
             f"### 5. Verifiable Evidence Chain\n"
-            f"{ledger}\n"
+            f"{ledger}"
+            f"{evidence_preview}\n"
         )
         words = mock_response.split(" ")
         for i, word in enumerate(words):
             yield word + (" " if i < len(words) - 1 else "")
+
+    def grade_synthesis(
+        self,
+        answer: str,
+        evidence_refs: list[EvidenceRef],
+        question: str = "",
+    ) -> GradedAnswer:
+        """Grade a synthesized answer against evidence refs using SEC provenance rules.
+
+        This enforces the provenance contract: provenance assigned by retrieval,
+        never by model. Returns a GradedAnswer with per-sentence verdicts.
+        """
+        return self._grader.grade(answer, evidence_refs, question)

@@ -703,7 +703,7 @@ class HeuristicClient(LLMClient):
     """
 
     name = "heuristic"
-    is_model = True
+    is_model = False
 
     # Word tokens keep internal hyphens/apostrophes so "Mid-Atlantic" and
     # "Bell's" survive as single units; punctuation is separate.

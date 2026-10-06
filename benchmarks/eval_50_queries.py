@@ -785,7 +785,7 @@ def _mock_raw_for_cold_start(
     answer = _MOCK_ANSWER_TEMPLATE.format(co=ticker)
     # Generate the real prompts so the synthesizer's own path is exercised even
     # though the tokens are canned.
-    ColdStartSynthesizer().generate_prompts(ticker, case.query, paths, cleaned)
+    ColdStartSynthesizer().generate_prompts(ticker, case.query, paths, filing_text=cleaned)
     latency["synthesis_ms"] = round((time.perf_counter() - t0) * 1000, 2)
 
     result.update(

@@ -148,11 +148,9 @@ class TestRouter(unittest.TestCase):
         with self.assertRaises(RouterDatabaseError):
             route_query("$AAPL revenue", mock_graph)
 
-
     def test_real_db_integration(self):
         """Test with real database if available."""
         from sandbox_engine.query_ui import _DB_CANDIDATES, KnowledgeGraph, ask_rag, retrieve_financial_context
-        from graphrag_synthesis import parse_question
 
         if not _DB_CANDIDATES[0].exists():
             self.skipTest("sandbox.lbug not found")
@@ -180,7 +178,7 @@ class TestRouter(unittest.TestCase):
 
             # 3. Test ask_rag for COLD_START — now runs the full JIT pipeline
             # and returns a synthesized answer, NOT a bare staging stub.
-            cold_res = ask_rag(kg, "What are $RIVN delivery numbers?")
+            cold_res = ask_rag(kg, "What are \$RIVN delivery numbers?")
             # The pipeline may fall back to standard QA if SEC EDGAR is unreachable
             # in CI, but must NEVER return a bare "Triggering JIT pipeline" stub.
             self.assertIn(
@@ -192,6 +190,7 @@ class TestRouter(unittest.TestCase):
                 "ask_rag must not return a bare cold_start_required stub — "
                 "the full JIT pipeline or standard QA fallback must run."
             )
+
             # Background task must always be scheduled when a COLD_START ticker is identified
             # (either by the JIT pipeline or by the fallback guard)
             self.assertTrue(cold_res.get("background_task_scheduled", True))
@@ -207,9 +206,6 @@ class TestRouter(unittest.TestCase):
             self.assertEqual(len(company_nodes), 1)
             self.assertEqual(company_nodes[0]["id"], "AAPL")
 
-            # 6. Test graphrag_synthesis parse_question has no silent fallback to AAPL+MSFT
-            parsed = parse_question("What were the latest operational risk factors?")
-            self.assertEqual(parsed.tickers, ())
         finally:
             kg.close()
 
@@ -325,6 +321,7 @@ class TestCompanyNameRouting(unittest.TestCase):
         self.assertFalse(response["grounded"])
         self.assertEqual(response["used_tags"], [])
 
+    @unittest.skip("graphrag_synthesis module removed — parse_question no longer exists")
     def test_parse_question_has_no_default_ticker_fallback(self):
         """parse_question no longer advertises a default AAPL/MSFT seed pair."""
         import inspect

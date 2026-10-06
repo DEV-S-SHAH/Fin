@@ -4,36 +4,67 @@
     "A01": {
       "actual_route": "KNOWN",
       "actual_ticker": "NVDA",
-      "answer": "1. Executive Summary & Thesis\nNVDA designs and sells advanced compute products and cloud software services.\nThe issuer is exposed to SUPPLY CONCENTRATION RISK through a narrow supplier base.\n\n2. Direct Dependencies (1-hop)\nThe company SOURCES_FROM ADVANCED PACKAGING SUPPLIER for advanced packaging capacity.\n\n3. Second-Order Contagion (Supply Chain / Competitors / Key Talent)\nADVANCED PACKAGING SUPPLIER in turn SOURCES_FROM LEADING EDGE FOUNDRY PARTNER, so a\nfoundry-level disruption reaches NVDA two hops out. Export controls and key personnel\ndependence are the filed transmission channels.\n\n4. Capital Allocation & Margin Outlook\nConcentration in a single foundry partner and a limited set of suppliers is the\ndominant margin risk, alongside regulatory capital and liquidity requirements.\n\n5. Verifiable Evidence Chain\ntarget -> SOURCES_FROM -> supplier -> SOURCES_FROM -> foundry\ntarget -> EXPOSED_TO -> SUPPLY CONCENTRATION RISK\n",
+      "answer": "**GAP \u2014 the corpus does not cover this.**\n\nQuestion: *How do TSMC advanced packaging yield constraints impact Nvidia's datacenter gross margins?*\n\nRetrieved evidence is tagged below, and none of it states the answer. Nothing here supports a figure, so none is given:\n\n- `[E1]` NVIDIA CORPORATION \u2014 Ticker: NVDA, CIK: 0001045810  \u27f5 NVIDIA CORPORATION\n- `[E2]` 10-K FY2026 (FY) \u2014 Form 10-K, Fiscal Year 2026, Period Ended 2026-02-25; Company filed report with the SEC  \u27f5 NVDA, 10-K FY2026 (FY), filed 2026-02-25\n- `[E3]` Net Sales (%) (FY-2026-01-25) \u2014 Statement: income_statement, Class: income_statement; Reported Jan 25, 2026: v  \u27f5 NVDA, 10-K FY2026 (FY), filed 2026-02-25\n- `[E4]` Net Sales (FY-2026-01-25) \u2014 Statement: income_statement, Class: income_statement; Reported Jan 25, 2026: value  \u27f5 NVDA, 10-K FY2026 (FY), filed 2026-02-25\n- `[E5]` Net Sales (%) (FY2025) \u2014 Statement: income_statement, Class: income_statement; Reported Jan 26, 2025: value=13  \u27f5 NVDA, 10-K FY2026 (FY), filed 2026-02-25\n- `[E6]` Gross Margin (%) (FY-2026-01-25) \u2014 Statement: income_statement, Class: income_statement; Reported Jan 25, 2026  \u27f5 NVDA, 10-K FY2026 (FY), filed 2026-02-25\n- `[E7]` Gross Margin (FY-2026-01-25) \u2014 Statement: income_statement, Class: income_statement; Reported Jan 25, 2026: va  \u27f5 NVDA, 10-K FY2026 (FY), filed 2026-02-25\n- `[E8]` Gross Margin (%) (FY2025) \u2014 Statement: income_statement, Class: income_statement; Reported Jan 26, 2025: value  \u27f5 NVDA, 10-K FY2026 (FY), filed 2026-02-25\n\nForms available in this corpus: 10-K. Nothing in 10-K carries it, which is why this is a GAP rather than a low-confidence answer.\n\nThis is a provenance limit, not a failure to read the filings. Answering it would require a source outside the corpus.",
       "apple_accessions": [],
       "concept_ok": true,
-      "content_scored": false,
+      "content_scored": true,
       "degraded": false,
       "depth_measured": true,
-      "edge_count": 0,
-      "error": "",
-      "figures_grounded": 132,
-      "figures_total": 132,
+      "edge_count": 89,
+      "error": "AttributeError: 'list' object has no attribute 'lower'",
+      "figures_grounded": 0,
+      "figures_total": 0,
       "groundedness_ok": true,
       "hops_ok": true,
       "isolation_ok": true,
       "latency_ms": {
-        "routing_ms": 0.04,
-        "stitch_ms": 0.35,
-        "synthesis_ms": 0.0,
-        "total_ms": 52.23,
-        "traversal_ms": 0.03
+        "client_total_ms": 23767.35,
+        "routing_ms": 0.21,
+        "synthesis_ms": 23356.99,
+        "total_ms": 23766.34,
+        "traversal_ms": 42.93,
+        "ttft_ms": 23766.11
       },
       "leaked_terms": [],
-      "missing_concepts": [
-        "TSMC"
-      ],
+      "missing_concepts": [],
       "missing_personnel": [],
-      "node_count": 0,
-      "path_count": 3,
-      "path_depth": 2,
+      "node_count": 128,
+      "path_count": 0,
+      "path_depth": 1,
       "personnel_ok": true,
-      "provenance": "[NVDA] --(EXPOSED_TO: The Company is subject to supply concentration risk)--> [SUPPLY CONCENTRATION RISK]\n[NVDA] --(SOURCES_FROM: depends on a limited number of suppliers for advanced pac...)--> [ADVANCED PACKAGING SUPPLIER]\n[NVDA] --(SOURCES_FROM: depends on a limited number of suppliers for advanced pac...)--> [ADVANCED PACKAGING SUPPLIER] --(SOURCES_FROM: sources most of its semiconductor fabrication from a sing...)--> [LEADING EDGE FOUNDRY PARTNER]",
+      "provenance": [
+        {
+          "cites": [],
+          "figures": [],
+          "misattributed": [],
+          "provenance": "GAP",
+          "reason": "no citation and no figure tying it to the corpus",
+          "text": "The supplied evidence does not contain any information about TSMC advanced packaging yield constraints or their impact on Nvidia's datacenter gross margins.",
+          "ungrounded": [],
+          "unknown_cites": []
+        },
+        {
+          "cites": [
+            "E6",
+            "E116",
+            "E115"
+          ],
+          "figures": [
+            "71.10%",
+            "120",
+            "121"
+          ],
+          "misattributed": [],
+          "provenance": "GAP",
+          "reason": "figure(s) not present in any cited source and no arithmetic shown: 120, 121",
+          "text": "The Nvidia 10\u2011K filing excerpts discuss gross margin figures (e.g., 71.10% for FY2026 [E6]), customer concentration in the Compute & Networking segment [E116], geopolitical risks in Taiwan [E115], and general supply\u2011chain risks [E120\u2011E121], but they do not mention TSMC, advanced packaging, yield constraints, or a specific link to datacenter gross margins.",
+          "ungrounded": [
+            "120",
+            "121"
+          ],
+          "unknown_cites": []
+        }
+      ],
       "refusal": false,
       "routing_ok": true,
       "ungrounded": []
@@ -41,34 +72,92 @@
     "A02": {
       "actual_route": "KNOWN",
       "actual_ticker": "AAPL",
-      "answer": "1. Executive Summary & Thesis\nAAPL designs and sells advanced compute products and cloud software services.\nThe issuer is exposed to SUPPLY CONCENTRATION RISK through a narrow supplier base.\n\n2. Direct Dependencies (1-hop)\nThe company SOURCES_FROM ADVANCED PACKAGING SUPPLIER for advanced packaging capacity.\n\n3. Second-Order Contagion (Supply Chain / Competitors / Key Talent)\nADVANCED PACKAGING SUPPLIER in turn SOURCES_FROM LEADING EDGE FOUNDRY PARTNER, so a\nfoundry-level disruption reaches AAPL two hops out. Export controls and key personnel\ndependence are the filed transmission channels.\n\n4. Capital Allocation & Margin Outlook\nConcentration in a single foundry partner and a limited set of suppliers is the\ndominant margin risk, alongside regulatory capital and liquidity requirements.\n\n5. Verifiable Evidence Chain\ntarget -> SOURCES_FROM -> supplier -> SOURCES_FROM -> foundry\ntarget -> EXPOSED_TO -> SUPPLY CONCENTRATION RISK\n",
+      "answer": "The supplied evidence does not contain any information about Apple's iPhone supply chain concentration or the identity or exposure of tier\u20111 suppliers. The AAPL 10\u2011K excerpts provide iPhone revenue by fiscal year [E3][E4][E5] and list geographic and product dimensions [E6][E7][E13][E24][E30][E31][E34], while the document chunks discuss competition, market share, product defects, R&D, and developer support [E35]\u2013[E42]. The untraced risk\u2011factor lines [E43]\u2013[E58] describe generic supply\u2011chain risks but do not name Apple suppliers or quantify concentration. \n\n**Missing:** Any disclosure of supplier names, tier\u20111 supplier lists, concentration metrics (e.g., percentage of spend with top suppliers), or specific exposure assessments for Apple\u2019s iPhone supply chain.",
       "apple_accessions": [],
       "concept_ok": true,
-      "content_scored": false,
+      "content_scored": true,
       "degraded": false,
       "depth_measured": true,
-      "edge_count": 0,
-      "error": "",
-      "figures_grounded": 132,
-      "figures_total": 132,
+      "edge_count": 12,
+      "error": "AttributeError: 'list' object has no attribute 'lower'",
+      "figures_grounded": 0,
+      "figures_total": 0,
       "groundedness_ok": true,
       "hops_ok": true,
       "isolation_ok": true,
       "latency_ms": {
-        "routing_ms": 0.02,
-        "stitch_ms": 0.2,
-        "synthesis_ms": 0.0,
-        "total_ms": 0.26,
-        "traversal_ms": 0.02
+        "client_total_ms": 53151.31,
+        "routing_ms": 0.24,
+        "synthesis_ms": 53022.33,
+        "total_ms": 53150.13,
+        "traversal_ms": 35.97,
+        "ttft_ms": 53150.62
       },
       "leaked_terms": [],
       "missing_concepts": [],
       "missing_personnel": [],
-      "node_count": 0,
-      "path_count": 3,
-      "path_depth": 2,
+      "node_count": 58,
+      "path_count": 0,
+      "path_depth": 1,
       "personnel_ok": true,
-      "provenance": "[AAPL] --(EXPOSED_TO: The Company is subject to supply concentration risk)--> [SUPPLY CONCENTRATION RISK]\n[AAPL] --(SOURCES_FROM: depends on a limited number of suppliers for advanced pac...)--> [ADVANCED PACKAGING SUPPLIER]\n[AAPL] --(SOURCES_FROM: depends on a limited number of suppliers for advanced pac...)--> [ADVANCED PACKAGING SUPPLIER] --(SOURCES_FROM: sources most of its semiconductor fabrication from a sing...)--> [LEADING EDGE FOUNDRY PARTNER]",
+      "provenance": [
+        {
+          "cites": [],
+          "figures": [],
+          "misattributed": [],
+          "provenance": "GAP",
+          "reason": "no citation and no figure tying it to the corpus",
+          "text": "The supplied evidence does not contain any information about Apple's iPhone supply chain concentration or the identity or exposure of tier\u20111 suppliers.",
+          "ungrounded": [],
+          "unknown_cites": []
+        },
+        {
+          "cites": [
+            "E3",
+            "E4",
+            "E5",
+            "E6",
+            "E7",
+            "E13",
+            "E24",
+            "E30",
+            "E31",
+            "E34",
+            "E35",
+            "E42"
+          ],
+          "figures": [],
+          "misattributed": [],
+          "provenance": "EXTERNAL",
+          "reason": "asserts something outside the filed corpus",
+          "text": "The AAPL 10\u2011K excerpts provide iPhone revenue by fiscal year [E3][E4][E5] and list geographic and product dimensions [E6][E7][E13][E24][E30][E31][E34], while the document chunks discuss competition, market share, product defects, R&D, and developer support [E35]\u2013[E42].",
+          "ungrounded": [],
+          "unknown_cites": []
+        },
+        {
+          "cites": [
+            "E43",
+            "E58"
+          ],
+          "figures": [],
+          "misattributed": [],
+          "provenance": "STATED",
+          "reason": "cited to a source that carries the claim",
+          "text": "The untraced risk\u2011factor lines [E43]\u2013[E58] describe generic supply\u2011chain risks but do not name Apple suppliers or quantify concentration.",
+          "ungrounded": [],
+          "unknown_cites": []
+        },
+        {
+          "cites": [],
+          "figures": [],
+          "misattributed": [],
+          "provenance": "GAP",
+          "reason": "no citation and no figure tying it to the corpus",
+          "text": "**Missing:** Any disclosure of supplier names, tier\u20111 supplier lists, concentration metrics (e.g., percentage of spend with top suppliers), or specific exposure assessments for Apple\u2019s iPhone supply chain.",
+          "ungrounded": [],
+          "unknown_cites": []
+        }
+      ],
       "refusal": false,
       "routing_ok": true,
       "ungrounded": []
@@ -76,36 +165,75 @@
     "A03": {
       "actual_route": "KNOWN",
       "actual_ticker": "MSFT",
-      "answer": "1. Executive Summary & Thesis\nMSFT designs and sells advanced compute products and cloud software services.\nThe issuer is exposed to SUPPLY CONCENTRATION RISK through a narrow supplier base.\n\n2. Direct Dependencies (1-hop)\nThe company SOURCES_FROM ADVANCED PACKAGING SUPPLIER for advanced packaging capacity.\n\n3. Second-Order Contagion (Supply Chain / Competitors / Key Talent)\nADVANCED PACKAGING SUPPLIER in turn SOURCES_FROM LEADING EDGE FOUNDRY PARTNER, so a\nfoundry-level disruption reaches MSFT two hops out. Export controls and key personnel\ndependence are the filed transmission channels.\n\n4. Capital Allocation & Margin Outlook\nConcentration in a single foundry partner and a limited set of suppliers is the\ndominant margin risk, alongside regulatory capital and liquidity requirements.\n\n5. Verifiable Evidence Chain\ntarget -> SOURCES_FROM -> supplier -> SOURCES_FROM -> foundry\ntarget -> EXPOSED_TO -> SUPPLY CONCENTRATION RISK\n",
+      "answer": "The provided evidence does not contain specific information linking Azure datacenter capital expenditure to pressure on Intelligent Cloud operating margins.\n\nThe evidence includes:\n- Intelligent Cloud segment revenue figures for FY2024\u2013FY2026 [E18, E19, E20]\n- Consolidated operating income, cost of sales, and sales & marketing expenses [E24, E25, E26, E31, E32, E37, E38]\n- General risk-factor language across multiple 10\u2011Ks stating that significant investments in new technology (including Azure) are speculative and that \u201coperating margins for some new products and businesses will not be as high as the margins we have experienced historically\u201d [E164, E165, E166, E167]\n- Discussion of a vertically\u2011integrated model potentially increasing cost of revenue and reducing operating margins [E168, E169, E170, E171]\n\nHowever, none of the retrieved lines break out Intelligent Cloud operating margins, quantify Azure datacenter capex, or directly attribute margin pressure in the Intelligent Cloud segment to datacenter capital spending.",
       "apple_accessions": [],
       "concept_ok": true,
-      "content_scored": false,
+      "content_scored": true,
       "degraded": false,
       "depth_measured": true,
-      "edge_count": 0,
-      "error": "",
-      "figures_grounded": 132,
-      "figures_total": 132,
+      "edge_count": 216,
+      "error": "AttributeError: 'list' object has no attribute 'lower'",
+      "figures_grounded": 0,
+      "figures_total": 0,
       "groundedness_ok": true,
       "hops_ok": true,
       "isolation_ok": true,
       "latency_ms": {
-        "routing_ms": 0.02,
-        "stitch_ms": 0.07,
-        "synthesis_ms": 0.0,
-        "total_ms": 0.11,
-        "traversal_ms": 0.01
+        "client_total_ms": 43755.31,
+        "routing_ms": 0.19,
+        "synthesis_ms": 43620.11,
+        "total_ms": 43753.93,
+        "traversal_ms": 92.48,
+        "ttft_ms": 43754.1
       },
       "leaked_terms": [],
-      "missing_concepts": [
-        "Azure"
-      ],
+      "missing_concepts": [],
       "missing_personnel": [],
-      "node_count": 0,
-      "path_count": 3,
-      "path_depth": 2,
+      "node_count": 181,
+      "path_count": 0,
+      "path_depth": 3,
       "personnel_ok": true,
-      "provenance": "[MSFT] --(EXPOSED_TO: The Company is subject to supply concentration risk)--> [SUPPLY CONCENTRATION RISK]\n[MSFT] --(SOURCES_FROM: depends on a limited number of suppliers for advanced pac...)--> [ADVANCED PACKAGING SUPPLIER]\n[MSFT] --(SOURCES_FROM: depends on a limited number of suppliers for advanced pac...)--> [ADVANCED PACKAGING SUPPLIER] --(SOURCES_FROM: sources most of its semiconductor fabrication from a sing...)--> [LEADING EDGE FOUNDRY PARTNER]",
+      "provenance": [
+        {
+          "cites": [],
+          "figures": [],
+          "misattributed": [],
+          "provenance": "GAP",
+          "reason": "no citation and no figure tying it to the corpus",
+          "text": "The provided evidence does not contain specific information linking Azure datacenter capital expenditure to pressure on Intelligent Cloud operating margins.",
+          "ungrounded": [],
+          "unknown_cites": []
+        },
+        {
+          "cites": [
+            "E18",
+            "E19",
+            "E20",
+            "E24",
+            "E25",
+            "E26",
+            "E31",
+            "E32",
+            "E37",
+            "E38",
+            "E164",
+            "E165",
+            "E166",
+            "E167",
+            "E168",
+            "E169",
+            "E170",
+            "E171"
+          ],
+          "figures": [],
+          "misattributed": [],
+          "provenance": "STATED",
+          "reason": "cited to a source that carries the claim",
+          "text": "The evidence includes:\n- Intelligent Cloud segment revenue figures for FY2024\u2013FY2026 [E18, E19, E20]\n- Consolidated operating income, cost of sales, and sales & marketing expenses [E24, E25, E26, E31, E32, E37, E38]\n- General risk-factor language across multiple 10\u2011Ks stating that significant investments in new technology (including Azure) are speculative and that \u201coperating margins for some new products and businesses will not be as high as the margins we have experienced historically\u201d [E164, E165, E166, E167]\n- Discussion of a vertically\u2011integrated model potentially increasing cost of revenue and reducing operating margins [E168, E169, E170, E171]\n\nHowever, none of the retrieved lines break out Intelligent Cloud operating margins, quantify Azure datacenter capex, or directly attribute margin pressure in the Intelligent Cloud segment to datacenter capital spending.",
+          "ungrounded": [],
+          "unknown_cites": []
+        }
+      ],
       "refusal": false,
       "routing_ok": true,
       "ungrounded": []
@@ -127,11 +255,11 @@
       "hops_ok": true,
       "isolation_ok": true,
       "latency_ms": {
-        "routing_ms": 0.02,
-        "stitch_ms": 0.07,
+        "routing_ms": 0.03,
+        "stitch_ms": 0.11,
         "synthesis_ms": 0.0,
-        "total_ms": 0.11,
-        "traversal_ms": 0.01
+        "total_ms": 0.17,
+        "traversal_ms": 0.02
       },
       "leaked_terms": [],
       "missing_concepts": [
@@ -165,9 +293,9 @@
       "isolation_ok": true,
       "latency_ms": {
         "routing_ms": 0.02,
-        "stitch_ms": 0.06,
+        "stitch_ms": 0.08,
         "synthesis_ms": 0.0,
-        "total_ms": 0.09,
+        "total_ms": 0.13,
         "traversal_ms": 0.01
       },
       "leaked_terms": [],
@@ -200,9 +328,9 @@
       "isolation_ok": true,
       "latency_ms": {
         "routing_ms": 0.02,
-        "stitch_ms": 0.06,
+        "stitch_ms": 0.07,
         "synthesis_ms": 0.0,
-        "total_ms": 0.09,
+        "total_ms": 0.11,
         "traversal_ms": 0.01
       },
       "leaked_terms": [],
@@ -236,11 +364,11 @@
       "hops_ok": true,
       "isolation_ok": true,
       "latency_ms": {
-        "routing_ms": 0.01,
-        "stitch_ms": 0.06,
+        "routing_ms": 0.03,
+        "stitch_ms": 0.1,
         "synthesis_ms": 0.0,
-        "total_ms": 0.09,
-        "traversal_ms": 0.01
+        "total_ms": 0.16,
+        "traversal_ms": 0.02
       },
       "leaked_terms": [],
       "missing_concepts": [
@@ -274,11 +402,11 @@
       "hops_ok": true,
       "isolation_ok": true,
       "latency_ms": {
-        "routing_ms": 0.02,
-        "stitch_ms": 0.08,
+        "routing_ms": 0.03,
+        "stitch_ms": 0.13,
         "synthesis_ms": 0.0,
-        "total_ms": 0.13,
-        "traversal_ms": 0.01
+        "total_ms": 0.21,
+        "traversal_ms": 0.03
       },
       "leaked_terms": [],
       "missing_concepts": [
@@ -351,7 +479,7 @@
         "routing_ms": 0.02,
         "stitch_ms": 0.07,
         "synthesis_ms": 0.0,
-        "total_ms": 0.11,
+        "total_ms": 0.12,
         "traversal_ms": 0.01
       },
       "leaked_terms": [],
@@ -383,13 +511,13 @@
       "hops_ok": true,
       "isolation_ok": true,
       "latency_ms": {
-        "extract_ms": 0.01,
-        "fetch_ms": 0.08,
+        "extract_ms": 0.02,
+        "fetch_ms": 0.1,
         "routing_ms": 0.02,
-        "stitch_ms": 0.07,
+        "stitch_ms": 0.09,
         "synthesis_ms": 0.01,
-        "total_ms": 3.23,
-        "traversal_ms": 0.01
+        "total_ms": 6.41,
+        "traversal_ms": 0.02
       },
       "leaked_terms": [],
       "missing_concepts": [],
@@ -421,12 +549,12 @@
       "isolation_ok": true,
       "latency_ms": {
         "extract_ms": 0.01,
-        "fetch_ms": 0.04,
+        "fetch_ms": 0.05,
         "routing_ms": 0.01,
-        "stitch_ms": 0.05,
-        "synthesis_ms": 0.0,
-        "total_ms": 0.14,
-        "traversal_ms": 0.01
+        "stitch_ms": 0.07,
+        "synthesis_ms": 0.01,
+        "total_ms": 0.19,
+        "traversal_ms": 0.02
       },
       "leaked_terms": [],
       "missing_concepts": [],
@@ -458,11 +586,11 @@
       "isolation_ok": true,
       "latency_ms": {
         "extract_ms": 0.01,
-        "fetch_ms": 0.03,
-        "routing_ms": 0.0,
-        "stitch_ms": 0.06,
+        "fetch_ms": 0.04,
+        "routing_ms": 0.01,
+        "stitch_ms": 0.07,
         "synthesis_ms": 0.01,
-        "total_ms": 0.13,
+        "total_ms": 0.15,
         "traversal_ms": 0.01
       },
       "leaked_terms": [],
@@ -499,10 +627,10 @@
         "extract_ms": 0.01,
         "fetch_ms": 0.05,
         "routing_ms": 0.01,
-        "stitch_ms": 0.07,
+        "stitch_ms": 0.08,
         "synthesis_ms": 0.01,
-        "total_ms": 0.16,
-        "traversal_ms": 0.01
+        "total_ms": 0.18,
+        "traversal_ms": 0.02
       },
       "leaked_terms": [],
       "missing_concepts": [
@@ -538,9 +666,9 @@
         "extract_ms": 0.01,
         "fetch_ms": 0.04,
         "routing_ms": 0.01,
-        "stitch_ms": 0.06,
+        "stitch_ms": 0.07,
         "synthesis_ms": 0.01,
-        "total_ms": 0.15,
+        "total_ms": 0.16,
         "traversal_ms": 0.01
       },
       "leaked_terms": [],
@@ -576,10 +704,10 @@
       "latency_ms": {
         "extract_ms": 0.01,
         "fetch_ms": 0.04,
-        "routing_ms": 0.0,
-        "stitch_ms": 0.05,
-        "synthesis_ms": 0.0,
-        "total_ms": 0.13,
+        "routing_ms": 0.01,
+        "stitch_ms": 0.06,
+        "synthesis_ms": 0.01,
+        "total_ms": 0.14,
         "traversal_ms": 0.01
       },
       "leaked_terms": [],
@@ -613,13 +741,13 @@
       "hops_ok": true,
       "isolation_ok": true,
       "latency_ms": {
-        "extract_ms": 0.01,
+        "extract_ms": 0.02,
         "fetch_ms": 0.05,
-        "routing_ms": 0.0,
-        "stitch_ms": 0.07,
-        "synthesis_ms": 0.0,
-        "total_ms": 0.16,
-        "traversal_ms": 0.01
+        "routing_ms": 0.01,
+        "stitch_ms": 0.09,
+        "synthesis_ms": 0.02,
+        "total_ms": 0.22,
+        "traversal_ms": 0.02
       },
       "leaked_terms": [],
       "missing_concepts": [
@@ -653,12 +781,12 @@
       "isolation_ok": true,
       "latency_ms": {
         "extract_ms": 0.01,
-        "fetch_ms": 0.04,
-        "routing_ms": 0.01,
-        "stitch_ms": 0.05,
-        "synthesis_ms": 0.0,
-        "total_ms": 0.24,
-        "traversal_ms": 0.11
+        "fetch_ms": 0.05,
+        "routing_ms": 0.02,
+        "stitch_ms": 0.07,
+        "synthesis_ms": 0.01,
+        "total_ms": 0.19,
+        "traversal_ms": 0.02
       },
       "leaked_terms": [],
       "missing_concepts": [],
@@ -690,12 +818,12 @@
       "isolation_ok": true,
       "latency_ms": {
         "extract_ms": 0.01,
-        "fetch_ms": 0.03,
-        "routing_ms": 0.02,
-        "stitch_ms": 0.05,
-        "synthesis_ms": 0.0,
-        "total_ms": 0.14,
-        "traversal_ms": 0.01
+        "fetch_ms": 0.04,
+        "routing_ms": 0.03,
+        "stitch_ms": 0.06,
+        "synthesis_ms": 0.01,
+        "total_ms": 0.17,
+        "traversal_ms": 0.02
       },
       "leaked_terms": [],
       "missing_concepts": [
@@ -729,11 +857,11 @@
       "isolation_ok": true,
       "latency_ms": {
         "extract_ms": 0.01,
-        "fetch_ms": 0.03,
-        "routing_ms": 0.0,
-        "stitch_ms": 0.05,
-        "synthesis_ms": 0.0,
-        "total_ms": 0.11,
+        "fetch_ms": 0.04,
+        "routing_ms": 0.01,
+        "stitch_ms": 0.07,
+        "synthesis_ms": 0.01,
+        "total_ms": 0.16,
         "traversal_ms": 0.01
       },
       "leaked_terms": [],
@@ -766,10 +894,10 @@
       "isolation_ok": true,
       "latency_ms": {
         "extract_ms": 0.01,
-        "fetch_ms": 0.05,
+        "fetch_ms": 0.04,
         "routing_ms": 0.01,
         "stitch_ms": 0.06,
-        "synthesis_ms": 0.0,
+        "synthesis_ms": 0.01,
         "total_ms": 0.15,
         "traversal_ms": 0.01
       },
@@ -806,10 +934,10 @@
       "latency_ms": {
         "extract_ms": 0.01,
         "fetch_ms": 0.04,
-        "routing_ms": 0.0,
-        "stitch_ms": 0.05,
-        "synthesis_ms": 0.0,
-        "total_ms": 0.13,
+        "routing_ms": 0.01,
+        "stitch_ms": 0.06,
+        "synthesis_ms": 0.01,
+        "total_ms": 0.15,
         "traversal_ms": 0.01
       },
       "leaked_terms": [],
@@ -844,11 +972,11 @@
       "isolation_ok": true,
       "latency_ms": {
         "extract_ms": 0.01,
-        "fetch_ms": 0.03,
-        "routing_ms": 0.0,
-        "stitch_ms": 0.05,
-        "synthesis_ms": 0.0,
-        "total_ms": 0.11,
+        "fetch_ms": 0.04,
+        "routing_ms": 0.01,
+        "stitch_ms": 0.06,
+        "synthesis_ms": 0.01,
+        "total_ms": 0.15,
         "traversal_ms": 0.01
       },
       "leaked_terms": [],
@@ -880,13 +1008,13 @@
       "hops_ok": true,
       "isolation_ok": true,
       "latency_ms": {
-        "extract_ms": 0.01,
-        "fetch_ms": 0.04,
-        "routing_ms": 0.0,
-        "stitch_ms": 0.07,
+        "extract_ms": 0.02,
+        "fetch_ms": 0.05,
+        "routing_ms": 0.01,
+        "stitch_ms": 0.08,
         "synthesis_ms": 0.01,
-        "total_ms": 0.15,
-        "traversal_ms": 0.01
+        "total_ms": 0.2,
+        "traversal_ms": 0.02
       },
       "leaked_terms": [],
       "missing_concepts": [],
@@ -918,11 +1046,11 @@
       "isolation_ok": true,
       "latency_ms": {
         "extract_ms": 0.01,
-        "fetch_ms": 0.03,
-        "routing_ms": 0.0,
-        "stitch_ms": 0.05,
-        "synthesis_ms": 0.0,
-        "total_ms": 0.12,
+        "fetch_ms": 0.04,
+        "routing_ms": 0.01,
+        "stitch_ms": 0.07,
+        "synthesis_ms": 0.01,
+        "total_ms": 0.16,
         "traversal_ms": 0.01
       },
       "leaked_terms": [],
@@ -954,10 +1082,10 @@
       "hops_ok": true,
       "isolation_ok": true,
       "latency_ms": {
-        "routing_ms": 0.02,
+        "routing_ms": 0.03,
         "stitch_ms": 0.07,
         "synthesis_ms": 0.0,
-        "total_ms": 0.11,
+        "total_ms": 0.12,
         "traversal_ms": 0.01
       },
       "leaked_terms": [],
@@ -997,7 +1125,7 @@
         "routing_ms": 0.02,
         "stitch_ms": 0.06,
         "synthesis_ms": 0.0,
-        "total_ms": 0.1,
+        "total_ms": 0.11,
         "traversal_ms": 0.01
       },
       "leaked_terms": [],
@@ -1031,10 +1159,10 @@
       "hops_ok": true,
       "isolation_ok": true,
       "latency_ms": {
-        "routing_ms": 0.01,
-        "stitch_ms": 0.08,
+        "routing_ms": 0.02,
+        "stitch_ms": 0.07,
         "synthesis_ms": 0.0,
-        "total_ms": 0.12,
+        "total_ms": 0.1,
         "traversal_ms": 0.01
       },
       "leaked_terms": [],
@@ -1068,7 +1196,7 @@
       "hops_ok": true,
       "isolation_ok": true,
       "latency_ms": {
-        "routing_ms": 0.01,
+        "routing_ms": 0.02,
         "stitch_ms": 0.06,
         "synthesis_ms": 0.0,
         "total_ms": 0.1,
@@ -1107,10 +1235,10 @@
       "hops_ok": true,
       "isolation_ok": true,
       "latency_ms": {
-        "routing_ms": 0.01,
+        "routing_ms": 0.02,
         "stitch_ms": 0.06,
         "synthesis_ms": 0.0,
-        "total_ms": 0.09,
+        "total_ms": 0.1,
         "traversal_ms": 0.01
       },
       "leaked_terms": [],
@@ -1142,10 +1270,10 @@
       "hops_ok": true,
       "isolation_ok": true,
       "latency_ms": {
-        "routing_ms": 0.01,
-        "stitch_ms": 0.07,
+        "routing_ms": 0.02,
+        "stitch_ms": 0.06,
         "synthesis_ms": 0.0,
-        "total_ms": 0.1,
+        "total_ms": 0.09,
         "traversal_ms": 0.01
       },
       "leaked_terms": [],
@@ -1180,7 +1308,7 @@
         "routing_ms": 0.02,
         "stitch_ms": 0.07,
         "synthesis_ms": 0.0,
-        "total_ms": 0.1,
+        "total_ms": 0.11,
         "traversal_ms": 0.01
       },
       "leaked_terms": [],
@@ -1251,10 +1379,10 @@
       "hops_ok": true,
       "isolation_ok": true,
       "latency_ms": {
-        "routing_ms": 0.01,
-        "stitch_ms": 0.06,
+        "routing_ms": 0.02,
+        "stitch_ms": 0.08,
         "synthesis_ms": 0.0,
-        "total_ms": 0.09,
+        "total_ms": 0.12,
         "traversal_ms": 0.01
       },
       "leaked_terms": [],
@@ -1288,10 +1416,10 @@
       "hops_ok": true,
       "isolation_ok": true,
       "latency_ms": {
-        "routing_ms": 0.01,
+        "routing_ms": 0.02,
         "stitch_ms": 0.06,
         "synthesis_ms": 0.0,
-        "total_ms": 0.09,
+        "total_ms": 0.1,
         "traversal_ms": 0.01
       },
       "leaked_terms": [],
@@ -1329,10 +1457,10 @@
       "latency_ms": {
         "extract_ms": 0.01,
         "fetch_ms": 0.04,
-        "routing_ms": 0.0,
+        "routing_ms": 0.01,
         "stitch_ms": 0.05,
-        "synthesis_ms": 0.0,
-        "total_ms": 0.13,
+        "synthesis_ms": 0.01,
+        "total_ms": 0.14,
         "traversal_ms": 0.01
       },
       "leaked_terms": [],
@@ -1366,11 +1494,11 @@
       "hops_ok": true,
       "isolation_ok": true,
       "latency_ms": {
-        "routing_ms": 0.01,
-        "stitch_ms": 0.06,
+        "routing_ms": 0.03,
+        "stitch_ms": 0.1,
         "synthesis_ms": 0.0,
-        "total_ms": 0.09,
-        "traversal_ms": 0.01
+        "total_ms": 0.17,
+        "traversal_ms": 0.02
       },
       "leaked_terms": [],
       "missing_concepts": [
@@ -1403,10 +1531,10 @@
       "hops_ok": true,
       "isolation_ok": true,
       "latency_ms": {
-        "routing_ms": 0.01,
-        "stitch_ms": 0.06,
+        "routing_ms": 0.03,
+        "stitch_ms": 0.09,
         "synthesis_ms": 0.0,
-        "total_ms": 0.09,
+        "total_ms": 0.14,
         "traversal_ms": 0.01
       },
       "leaked_terms": [],
@@ -1440,10 +1568,10 @@
       "hops_ok": true,
       "isolation_ok": true,
       "latency_ms": {
-        "routing_ms": 0.01,
-        "stitch_ms": 0.07,
+        "routing_ms": 0.02,
+        "stitch_ms": 0.08,
         "synthesis_ms": 0.0,
-        "total_ms": 0.11,
+        "total_ms": 0.12,
         "traversal_ms": 0.01
       },
       "leaked_terms": [],
@@ -1478,11 +1606,11 @@
       "isolation_ok": true,
       "latency_ms": {
         "extract_ms": 0.01,
-        "fetch_ms": 0.04,
+        "fetch_ms": 0.05,
         "routing_ms": 0.01,
-        "stitch_ms": 0.06,
-        "synthesis_ms": 0.0,
-        "total_ms": 0.14,
+        "stitch_ms": 0.07,
+        "synthesis_ms": 0.01,
+        "total_ms": 0.18,
         "traversal_ms": 0.01
       },
       "leaked_terms": [],
@@ -1515,11 +1643,11 @@
       "isolation_ok": true,
       "latency_ms": {
         "extract_ms": 0.01,
-        "fetch_ms": 0.03,
-        "routing_ms": 0.0,
-        "stitch_ms": 0.05,
-        "synthesis_ms": 0.0,
-        "total_ms": 0.11,
+        "fetch_ms": 0.04,
+        "routing_ms": 0.01,
+        "stitch_ms": 0.06,
+        "synthesis_ms": 0.01,
+        "total_ms": 0.15,
         "traversal_ms": 0.01
       },
       "leaked_terms": [],
@@ -1555,8 +1683,8 @@
       "latency_ms": {
         "extract_ms": 0.01,
         "fetch_ms": 0.04,
-        "routing_ms": 0.0,
-        "stitch_ms": 0.05,
+        "routing_ms": 0.01,
+        "stitch_ms": 0.06,
         "synthesis_ms": 0.0,
         "total_ms": 0.13,
         "traversal_ms": 0.01
@@ -1592,10 +1720,10 @@
       "latency_ms": {
         "extract_ms": 0.01,
         "fetch_ms": 0.03,
-        "routing_ms": 0.0,
-        "stitch_ms": 0.05,
-        "synthesis_ms": 0.0,
-        "total_ms": 0.11,
+        "routing_ms": 0.01,
+        "stitch_ms": 0.06,
+        "synthesis_ms": 0.01,
+        "total_ms": 0.13,
         "traversal_ms": 0.01
       },
       "leaked_terms": [],
@@ -1631,10 +1759,10 @@
       "latency_ms": {
         "extract_ms": 0.01,
         "fetch_ms": 0.04,
-        "routing_ms": 0.0,
+        "routing_ms": 0.01,
         "stitch_ms": 0.06,
-        "synthesis_ms": 0.0,
-        "total_ms": 0.13,
+        "synthesis_ms": 0.01,
+        "total_ms": 0.15,
         "traversal_ms": 0.01
       },
       "leaked_terms": [],
@@ -1667,11 +1795,11 @@
       "isolation_ok": true,
       "latency_ms": {
         "extract_ms": 0.01,
-        "fetch_ms": 0.04,
-        "routing_ms": 0.0,
+        "fetch_ms": 0.03,
+        "routing_ms": 0.01,
         "stitch_ms": 0.06,
         "synthesis_ms": 0.0,
-        "total_ms": 0.14,
+        "total_ms": 0.13,
         "traversal_ms": 0.01
       },
       "leaked_terms": [],
@@ -1705,7 +1833,7 @@
       "hops_ok": true,
       "isolation_ok": true,
       "latency_ms": {
-        "routing_ms": 0.12
+        "routing_ms": 0.14
       },
       "leaked_terms": [],
       "missing_concepts": [],
@@ -1736,7 +1864,7 @@
       "hops_ok": true,
       "isolation_ok": true,
       "latency_ms": {
-        "routing_ms": 0.06
+        "routing_ms": 0.07
       },
       "leaked_terms": [],
       "missing_concepts": [],
@@ -1798,7 +1926,7 @@
       "hops_ok": true,
       "isolation_ok": true,
       "latency_ms": {
-        "routing_ms": 0.06
+        "routing_ms": 0.05
       },
       "leaked_terms": [],
       "missing_concepts": [],
@@ -1844,6 +1972,6 @@
       "ungrounded": []
     }
   },
-  "updated_at": "2026-10-04 19:13:57",
+  "updated_at": "2026-10-06 07:51:20",
   "version": 2
 }
