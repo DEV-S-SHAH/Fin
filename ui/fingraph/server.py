@@ -46,6 +46,13 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+# Load .env file for local development
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parents[2] / ".env")
+except Exception:
+    pass
+
 from sandbox_engine import query_ui as _legacy
 from sandbox_engine.query_ui import (
     KnowledgeGraph,
@@ -1226,13 +1233,16 @@ class _NextHandler(_legacy._Handler):
 
     server_version = "graphrag-ui-next"
 
-    # CORS configuration
-    _CORS_ORIGIN = os.environ.get("FINGRAPH_CORS_ORIGIN", "http://127.0.0.1:9100").strip()
-    _CORS_ALLOW_CREDENTIALS = "true"
-
     def _send_cors_headers(self) -> None:
-        self.send_header("Access-Control-Allow-Origin", self._CORS_ORIGIN)
-        self.send_header("Access-Control-Allow-Credentials", self._CORS_ALLOW_CREDENTIALS)
+        # Use the request's Origin header for CORS, allowing any origin from loopback.
+        # This works across different ports without hardcoding.
+        origin = self.headers.get("Origin", "")
+        if origin and ("127.0.0.1" in origin or "localhost" in origin):
+            allow_origin = origin
+        else:
+            allow_origin = os.environ.get("FINGRAPH_CORS_ORIGIN", "http://127.0.0.1:9100").strip()
+        self.send_header("Access-Control-Allow-Origin", allow_origin)
+        self.send_header("Access-Control-Allow-Credentials", "true")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Accept")
 
