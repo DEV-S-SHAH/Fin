@@ -971,9 +971,10 @@ class _ConnectionPool:
     readiness answer "busy" instead of queueing.
     """
 
-    def __init__(self, database: Any, max_size: int) -> None:
+    def __init__(self, database: Any, max_size: int, max_threads: int = 4) -> None:
         self._database = database
         self._max_size = max(1, int(max_size))
+        self._max_threads = max(1, int(max_threads))
         self._condition = threading.Condition()
         self._idle: list[Any] = []
         self._made = 0
@@ -1012,7 +1013,7 @@ class _ConnectionPool:
         # the condition. A failure has to give the slot back, or a transient
         # error would permanently shrink the pool.
         try:
-            return lb.Connection(self._database)
+            return lb.Connection(self._database, num_threads=self._max_threads)
         except Exception:
             with self._condition:
                 self._made -= 1
@@ -1066,12 +1067,43 @@ class _ConnectionPool:
 
 
 class KnowledgeGraph:
-    def __init__(self, db_path: Path, read_only: bool = True):
+    def __init__(
+        self,
+        db_path: Path,
+        read_only: bool = True,
+        buffer_pool_size: int | None = None,
+        max_num_threads: int | None = None,
+    ):
         # Read-only by default: this UI never writes, and LadybugDB takes an
         # exclusive lock on a read-write handle, so a read-write open makes a
         # second server on another port fail to start at all.
         self.path = Path(db_path)
-        self.db = lb.Database(str(db_path), read_only=read_only)
+        if buffer_pool_size is None:
+            raw_pool = os.environ.get("LADYBUG_BUFFER_POOL_BYTES")
+            if raw_pool:
+                try:
+                    buffer_pool_size = int(raw_pool)
+                except ValueError:
+                    buffer_pool_size = 128 * 1024 * 1024
+            else:
+                buffer_pool_size = 128 * 1024 * 1024
+
+        if max_num_threads is None:
+            raw_threads = os.environ.get("LADYBUG_MAX_THREADS")
+            if raw_threads:
+                try:
+                    max_num_threads = int(raw_threads)
+                except ValueError:
+                    max_num_threads = 4
+            else:
+                max_num_threads = 4
+
+        self.db = lb.Database(
+            str(db_path),
+            read_only=read_only,
+            buffer_pool_size=buffer_pool_size,
+            max_num_threads=max_num_threads,
+        )
         # A read-write handle is pinned to one connection: LadybugDB allows only
         # one open write transaction unless `enable_multi_writes` is set, so
         # fanning queries out there would trade a throughput problem for a
@@ -1079,7 +1111,9 @@ class KnowledgeGraph:
         # -- have no such conflict.
         self.read_only = read_only
         self.pool = _ConnectionPool(
-            self.db, GRAPH_QUERY_SLOTS if read_only else 1
+            self.db,
+            GRAPH_QUERY_SLOTS if read_only else 1,
+            max_threads=max_num_threads,
         )
         #: Set by begin_shutdown(); see that method for why a read-only server
         #: needs a write guard at all.

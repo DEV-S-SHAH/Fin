@@ -135,7 +135,8 @@ def fingerprint(db_path: Path) -> dict[str, Any]:
     """
     import ladybug as lb
 
-    database = lb.Database(str(db_path), read_only=True)
+    bp = int(os.environ.get("LADYBUG_BUFFER_POOL_BYTES", 128 * 1024 * 1024))
+    database = lb.Database(str(db_path), read_only=True, buffer_pool_size=bp)
     try:
         connection = lb.Connection(database)
         try:
@@ -548,7 +549,8 @@ def restore_backup(
             f"the pre-restore copy is at {displaced or 'n/a'}"
         )
 
-    database = lb.Database(str(db_path), read_only=True)
+    bp = int(os.environ.get("LADYBUG_BUFFER_POOL_BYTES", 128 * 1024 * 1024))
+    database = lb.Database(str(db_path), read_only=True, buffer_pool_size=bp)
     database.close()
     on_progress("restored database opens cleanly")
 

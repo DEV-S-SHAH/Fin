@@ -308,13 +308,14 @@ def resolve_within(root: Path, name: str) -> Path | None:
 
 
 def default_ui_port() -> int:
-    """Resolve the port from ``$PORT_QUERY_UI_V2``, then :data:`DEFAULT_UI_PORT`."""
-    raw = os.environ.get(UI_PORT_ENV, "").strip()
-    if raw:
-        try:
-            return int(raw)
-        except ValueError:
-            log.warning("%s=%r is not a port number; using %d", UI_PORT_ENV, raw, DEFAULT_UI_PORT)
+    """Resolve the port from ``$PORT`` or ``$PORT_QUERY_UI_V2``, then :data:`DEFAULT_UI_PORT`."""
+    for env_var in ("PORT", UI_PORT_ENV):
+        raw = os.environ.get(env_var, "").strip()
+        if raw:
+            try:
+                return int(raw)
+            except ValueError:
+                log.warning("%s=%r is not a port number; using %d", env_var, raw, DEFAULT_UI_PORT)
     return DEFAULT_UI_PORT
 
 
@@ -969,7 +970,7 @@ def _extract_fundamentals(detail: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def company_detail(ticker: str) -> dict[str, Any] | None:
+def company_detail(ticker: str, kg: Any = None) -> dict[str, Any] | None:
     """Get comprehensive company data with caching."""
     ticker = ticker.upper().strip()
 
@@ -1012,22 +1013,35 @@ def company_detail(ticker: str) -> dict[str, Any] | None:
     # Get company info from graph if available
     graph_info = None
     try:
-        from sandbox_engine.query_ui import KnowledgeGraph, resolve_db_path
-        kg = KnowledgeGraph(resolve_db_path(), read_only=True)
-        rows = kg.execute(
-            "MATCH (c:Company {ticker: $ticker})-[:SUBMITTED]->(f:Filing) "
-            "RETURN f.form_type, f.fiscal_year, f.fiscal_period, f.period_end_date "
-            "ORDER BY f.fiscal_year DESC, f.fiscal_period DESC LIMIT 10",
-            {"ticker": ticker}
-        )
-        filings = []
-        for form, fy, fp, pe in rows:
-            filings.append({"form": form, "fiscal_year": fy, "period": fp, "period_end": pe})
-        kg.close()
-        if filings:
-            graph_info = {"filings": filings, "in_graph": True}
+        if kg is not None:
+            rows = kg.execute(
+                "MATCH (c:Company {ticker: $ticker})-[:SUBMITTED]->(f:Filing) "
+                "RETURN f.form_type, f.fiscal_year, f.fiscal_period, f.period_end_date "
+                "ORDER BY f.fiscal_year DESC, f.fiscal_period DESC LIMIT 10",
+                {"ticker": ticker}
+            )
+            filings = [
+                {"form": form, "fiscal_year": fy, "period": fp, "period_end": pe}
+                for form, fy, fp, pe in rows
+            ]
+            graph_info = {"filings": filings, "in_graph": bool(filings)}
         else:
-            graph_info = {"in_graph": False}
+            from sandbox_engine.query_ui import KnowledgeGraph, resolve_db_path
+            kg_temp = KnowledgeGraph(resolve_db_path(), read_only=True)
+            try:
+                rows = kg_temp.execute(
+                    "MATCH (c:Company {ticker: $ticker})-[:SUBMITTED]->(f:Filing) "
+                    "RETURN f.form_type, f.fiscal_year, f.fiscal_period, f.period_end_date "
+                    "ORDER BY f.fiscal_year DESC, f.fiscal_period DESC LIMIT 10",
+                    {"ticker": ticker}
+                )
+                filings = [
+                    {"form": form, "fiscal_year": fy, "period": fp, "period_end": pe}
+                    for form, fy, fp, pe in rows
+                ]
+                graph_info = {"filings": filings, "in_graph": bool(filings)}
+            finally:
+                kg_temp.close()
     except Exception:
         graph_info = {"in_graph": False}
 
@@ -1232,6 +1246,9 @@ class _NextHandler(_legacy._Handler):
     """The legacy router plus a static-file route for the new assets."""
 
     server_version = "graphrag-ui-next"
+
+    def log_message(self, fmt: str, *args: Any) -> None:
+        log.info("%s - %s", self.address_string(), fmt % args)
 
     def _send_cors_headers(self) -> None:
         # Use the request's Origin header for CORS, allowing any origin from loopback.
@@ -1445,6 +1462,8 @@ class _NextHandler(_legacy._Handler):
             })
         if p == "/api/companies":
             return self._json({"companies": companies(self.kg)})
+        if p == "/api/federated/dbs":
+            return self._api_federated_dbs()
         if p == "/api/markets":
             return self._json({"markets": markets()})
         if p == "/api/route":
@@ -1459,7 +1478,7 @@ class _NextHandler(_legacy._Handler):
         if p.startswith("/api/company/"):
             ticker = p.split("/api/company/")[1].split("/")[0].split("?")[0].upper()
             if ticker and ticker.isalpha():
-                detail = company_detail(ticker)
+                detail = company_detail(ticker, kg=getattr(self, "kg", None))
                 if detail is None:
                     return self._err(404, f"company not found: {ticker}")
                 return self._json(detail)
@@ -1561,11 +1580,49 @@ class _NextHandler(_legacy._Handler):
             return self._api_auth_session()
         if p == "/api/auth/logout":
             return self._api_auth_logout()
+        if p == "/api/federated":
+            return self._api_federated()
         # Protected POST endpoints (only ingestion and rag config management)
         if p.startswith("/api/ingestion") or (p == "/api/rag" and self.command == "POST"):
             if self._require_auth() is None:
                 return
         return super()._post()
+
+    def _api_federated(self) -> None:
+        """Handle federated multi-database query joining."""
+        try:
+            payload = _read_json_body(self)
+        except (ValueError, json.JSONDecodeError) as exc:
+            return self._err(400, str(exc))
+
+        question = str(payload.get("question") or payload.get("query") or "").strip()
+        if not question:
+            return self._err(400, "question is required")
+        ticker = payload.get("ticker")
+
+        try:
+            from sandbox_engine.federation import FederatedQueryCoordinator
+            coordinator = FederatedQueryCoordinator()
+            res = coordinator.execute_federated_query(question, target_ticker=ticker)
+            self._json(res.to_dict())
+        except Exception as exc:
+            log.exception("Federated query execution failed: %s", exc)
+            self._err(500, f"Federated query failed: {exc}")
+
+    def _api_federated_dbs(self) -> bool:
+        """List active federated databases and their status."""
+        from sandbox_engine.federation import FederatedDatabaseManager, DatabaseType
+        manager = FederatedDatabaseManager()
+        info = []
+        for db_type in DatabaseType:
+            path = manager.get_db_path(db_type)
+            info.append({
+                "type": db_type.value,
+                "path": str(path),
+                "exists": path.exists(),
+                "size_bytes": path.stat().st_size if path.exists() else 0,
+            })
+        return self._json({"databases": info})
 
     def _api_auth_session(self) -> None:
         """Issue (or refuse) a session cookie for a completed provider sign-in.

@@ -59,7 +59,7 @@ VERSION = "1.0.0"
 #: quantity with a unit, so a literal ``256MB`` would silently mean 256 bytes
 #: and the database would spill on a 3-filing load. This is a byte count that
 #: bounds the engine's buffer manager; it is not an RSS ceiling.
-BUFFER_POOL_BYTES = 256 * 1024 * 1024
+BUFFER_POOL_BYTES = int(os.environ.get("LADYBUG_BUFFER_POOL_BYTES", 128 * 1024 * 1024))
 
 #: Rows at or above which the loader uses ``COPY <table> FROM $arrow`` instead
 #: of a parameterised ``UNWIND ... CREATE``. Below this a parameterised insert

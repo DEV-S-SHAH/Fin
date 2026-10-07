@@ -1,0 +1,23 @@
+[build]
+builder = "nixpacks"
+
+[deploy]
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 10
+healthcheckPath = "/"
+healthcheckTimeout = 300
+
+[env]
+FINGRAPH_DATA_DIR = "/data"
+FINGRAPH_DEV_LOGIN = "0"
+PORT_QUERY_UI_V2 = "8080"
+LADYBUG_BUFFER_POOL_BYTES = "134217728"
+LADYBUG_MAX_THREADS = "4"
+# Railway provides PORT automatically
+# NVIDIA_API_KEY must be set in Railway dashboard
+# FINGRAPH_AUTH_SECRET must be set in Railway dashboard (generate with: openssl rand -hex 32)
+# FINGRAPH_CORS_ORIGIN must be set in Railway dashboard (e.g., https://fin-graph-production.up.railway.app)
+
+[[volumes]]
+name = "fin-graph-volume"
+mountPath = "/data"

@@ -148,7 +148,10 @@ class BulkLoader:
 
     def _open(self) -> None:
         try:
-            self.database = lb.Database(str(self.path))
+            self.database = lb.Database(
+                str(self.path),
+                buffer_pool_size=self.buffer_pool_bytes,
+            )
         except RuntimeError as exc:
             if _looks_like_wal(exc):
                 raise WalRecoveryError(

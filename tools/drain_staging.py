@@ -293,7 +293,8 @@ def _commit_payload_to_db(
 
     from sandbox_engine.ddl import ensure_schema
 
-    database = lb.Database(str(db_path))
+    bp = int(os.environ.get("LADYBUG_BUFFER_POOL_BYTES", 128 * 1024 * 1024))
+    database = lb.Database(str(db_path), buffer_pool_size=bp)
     connection = lb.Connection(database)
     try:
         ensure_schema(connection)
