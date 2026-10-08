@@ -92,6 +92,8 @@ sandbox_engine/data/<company>/<year>/<form>/*.htm  →  30 committed filings (39
 cp .env.example .env   # or let setup.py create it
 ```
 
+**Default API key:** The `.env.example` includes a default `NVIDIA_API_KEY` so anyone deploying can run queries immediately without additional setup. Override by running `python setup.py` or editing `.env`.
+
 | Variable | Default | Meaning |
 |----------|---------|---------|
 | `PORT_QUERY_UI_V2` | `9100` | FinGraph UI port |
