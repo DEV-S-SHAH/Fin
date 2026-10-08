@@ -1,0 +1,167 @@
+{
+  "company_ticker": "AAPL",
+  "started_at": "2026-10-06T15:03:11.471564Z",
+  "completed_at": "2026-10-06T15:04:16.326405Z",
+  "total_duration_seconds": 64.854841,
+  "summary": {
+    "filings_discovered": 91,
+    "filings_downloaded": 91,
+    "filings_processed": 91,
+    "filings_skipped": 0,
+    "filings_failed": 0,
+    "chunks_created": 1872,
+    "embeddings_generated": 1872,
+    "evidence_stored": 91,
+    "graph_nodes_created": 0,
+    "graph_edges_created": 0
+  },
+  "stages": [
+    {
+      "stage": "discovery",
+      "started_at": "2026-10-06T15:03:11.471572Z",
+      "completed_at": "2026-10-06T15:04:07.479487Z",
+      "duration_seconds": 56.007915,
+      "items_processed": 91,
+      "items_failed": 0,
+      "items_skipped": 0,
+      "errors": [],
+      "warnings": [],
+      "metadata": {
+        "download_stats": {
+          "cached": 0,
+          "downloaded": 91,
+          "failed": 0
+        },
+        "manifest_path": "data/ingestion-cache/aapl_manifest.json",
+        "filings_discovered": 91
+      }
+    },
+    {
+      "stage": "persistence",
+      "started_at": "2026-10-06T15:04:07.479565Z",
+      "completed_at": "2026-10-06T15:04:07.507843Z",
+      "duration_seconds": 0.028278,
+      "items_processed": 91,
+      "items_failed": 0,
+      "items_skipped": 0,
+      "errors": [],
+      "warnings": [],
+      "metadata": {
+        "filings_persisted": 91
+      }
+    },
+    {
+      "stage": "parsing",
+      "started_at": "2026-10-06T15:04:07.507877Z",
+      "completed_at": "2026-10-06T15:04:15.963206Z",
+      "duration_seconds": 8.455329,
+      "items_processed": 91,
+      "items_failed": 0,
+      "items_skipped": 0,
+      "errors": [],
+      "warnings": [],
+      "metadata": {
+        "parsed_count": 91
+      }
+    },
+    {
+      "stage": "chunking",
+      "started_at": "2026-10-06T15:04:15.963235Z",
+      "completed_at": "2026-10-06T15:04:16.308488Z",
+      "duration_seconds": 0.345253,
+      "items_processed": 91,
+      "items_failed": 0,
+      "items_skipped": 0,
+      "errors": [],
+      "warnings": [],
+      "metadata": {
+        "chunks_created": 1872
+      }
+    },
+    {
+      "stage": "embedding",
+      "started_at": "2026-10-06T15:04:16.308527Z",
+      "completed_at": "2026-10-06T15:04:16.316595Z",
+      "duration_seconds": 0.008068,
+      "items_processed": 91,
+      "items_failed": 0,
+      "items_skipped": 0,
+      "errors": [],
+      "warnings": [],
+      "metadata": {
+        "embeddings_ready": 1872
+      }
+    },
+    {
+      "stage": "evidence",
+      "started_at": "2026-10-06T15:04:16.316617Z",
+      "completed_at": "2026-10-06T15:04:16.324772Z",
+      "duration_seconds": 0.008155,
+      "items_processed": 91,
+      "items_failed": 0,
+      "items_skipped": 0,
+      "errors": [],
+      "warnings": [],
+      "metadata": {
+        "evidence_stored": 91
+      }
+    },
+    {
+      "stage": "postgres",
+      "started_at": "2026-10-06T15:04:16.324791Z",
+      "completed_at": "2026-10-06T15:04:16.324794Z",
+      "duration_seconds": 3e-06,
+      "items_processed": 0,
+      "items_failed": 0,
+      "items_skipped": 0,
+      "errors": [],
+      "warnings": [],
+      "metadata": {
+        "note": "Would persist: Company, Document, Evidence, Chunk, FinancialFact, FiscalYear, FiscalQuarter"
+      }
+    },
+    {
+      "stage": "graph",
+      "started_at": "2026-10-06T15:04:16.324797Z",
+      "completed_at": "2026-10-06T15:04:16.324798Z",
+      "duration_seconds": 1e-06,
+      "items_processed": 0,
+      "items_failed": 0,
+      "items_skipped": 0,
+      "errors": [],
+      "warnings": [],
+      "metadata": {
+        "note": "Would create company-aware graph nodes and relationships"
+      }
+    },
+    {
+      "stage": "graphrag",
+      "started_at": "2026-10-06T15:04:16.324800Z",
+      "completed_at": "2026-10-06T15:04:16.324801Z",
+      "duration_seconds": 1e-06,
+      "items_processed": 0,
+      "items_failed": 0,
+      "items_skipped": 0,
+      "errors": [],
+      "warnings": [],
+      "metadata": {
+        "note": "Would update GraphRAG retrieval with company-scoped embeddings"
+      }
+    },
+    {
+      "stage": "validation_cleanup",
+      "started_at": "2026-10-06T15:04:16.324803Z",
+      "completed_at": "2026-10-06T15:04:16.326390Z",
+      "duration_seconds": 0.001587,
+      "items_processed": 0,
+      "items_failed": 0,
+      "items_skipped": 0,
+      "errors": [],
+      "warnings": [],
+      "metadata": {
+        "temp_files_cleaned": 0,
+        "validated": true
+      }
+    }
+  ]
+}

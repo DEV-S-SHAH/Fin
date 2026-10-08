@@ -40,24 +40,6 @@ venv/
 web/.vite/
 web/dist/
 
-# Runtime data
-/data/*
-!/data/sandbox.lbug.gz
-!/data/concepts.json
-
-!sandbox_engine/data/
-!sandbox_engine/data/**
-sandbox_engine/data/microsoft/2020/
-sandbox_engine/data/microsoft/2021/
-sandbox_engine/data/microsoft/2022/
-sandbox_engine/data/microsoft/2023/
-sandbox_engine/data/microsoft/2024/
-sandbox_engine/data/microsoft/2025/
-sandbox_engine/data/microsoft/2026/11k/
-sandbox_engine/data/tsla/
-sandbox_engine/_run/*
-sandbox_engine/_run/staging/
-
 # LadybugDB ephemeral files
 *.lbug.wal
 *.lbug.tmp
