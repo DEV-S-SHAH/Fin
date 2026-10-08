@@ -52,41 +52,45 @@ export function svgEl(tag, attrs = {}) {
   return node;
 }
 
-/* ── type colours ─────────────────────────────────────────────────────────── */
+/* ── type colours ───────────────────────────────────────────────────────────
+ * Red theme matching FinGraph design system (--primary: #FF3C00).
+ */
 
 const KNOWN_COLORS = {
   company: "#FF3C00",
-  filing: "#FF551C",
-  financialmetric: "#F59E0B",
-  segment: "#FF6B35",
-  disclosureevent: "#FF7A45",
-  documentchunk: "#FF8A50",
-  executive: "#FBBF24",
-  supplier: "#FB923C",
-  riskfactor: "#EF4444",
-  productfamily: "#FCD34D",
-  geographicmarket: "#F97316",
-  competitor: "#EA580C",
-  customer: "#FDBA74",
-  section: "#FFA07A",
-  causalrelation: "#E63600",
-  regulatorybody: "#D97706",
-  macrovariable: "#F59E0B",
-  footnote: "#FED7AA",
-  fiscalperiod: "#FB923C",
-  rawfact: "#FF6B35",
-  standardizedconcept: "#FF551C",
+  filing: "#FF7A3D",
+  financialmetric: "#FF5E2E",
+  segment: "#FF4A18",
+  disclosureevent: "#FF3D10",
+  documentchunk: "#FF2E00",
+  executive: "#FF8A50",
+  supplier: "#FF9A5E",
+  riskfactor: "#FF6B3D",
+  productfamily: "#FFB391",
+  geographicmarket: "#FFC4AA",
+  competitor: "#FFD5C4",
+  customer: "#FFE5D9",
+  section: "#FFAA7A",
+  causalrelation: "#FF552A",
+  regulatorybody: "#FFF0EB",
+  macrovariable: "#FF8A50",
+  footnote: "#FF9A5E",
+  fiscalperiod: "#FF5E2E",
+  rawfact: "#FF6B3D",
+  standardizedconcept: "#FF7A3D",
 };
 
 /* One hue per entity type, stable across reloads: a type that hashes to a
- * different colour on each load makes the legend a lie. */
+ * different colour on each load makes the legend a lie. Red/orange hues only. */
 export function typeColor(type) {
   const key = String(type || "unspecified").toLowerCase();
   if (KNOWN_COLORS[key]) return KNOWN_COLORS[key];
   let hash = 0;
   for (const ch of key) hash = (hash * 31 + ch.codePointAt(0)) >>> 0;
-  const hue = 10 + (hash % 45);
-  return `hsl(${hue} 85% 60%)`;
+  const hue = (hash % 25); // Red hue range: 0-25
+  const sat = 70 + (hash % 25);  // Saturation 70-95%
+  const light = 40 + (hash % 25); // Lightness 40-65%
+  return `hsl(${hue} ${sat}% ${light}%)`;
 }
 
 export function prettyType(type) {

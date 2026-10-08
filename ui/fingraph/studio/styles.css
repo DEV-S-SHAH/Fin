@@ -18,8 +18,20 @@
  /* ── 1. tokens ───────────────────────────────────────────────────────────── */
 
 :root {
-  /* Type: one scale, fluid between two bounds, so a 27" monitor and a laptop
-     get the same visual weight instead of the same pixel count. */
+  /* Color Palette — Blue Theme */
+  --bg:        #0f1115;   /* Page background */
+  --panel:     #171a21;   /* Sidebar/panel background */
+  --panel-2:   #1e222b;   /* Input backgrounds, hover states */
+  --line:      #2a2f3a;   /* Borders, dividers */
+  --text:      #e6e8ee;   /* Primary text */
+  --muted:     #9aa3b2;   /* Secondary/muted text */
+  --accent:    #6ea8fe;   /* Primary blue (links, focus, citations) */
+  --accent-2:  #7ee0b8;   /* Green (success, STATED provenance) */
+  --warn:      #ffb454;   /* Amber (warnings, INFERRED/EXTERNAL) */
+  --bad:       #ff7b72;   /* Red (errors, REFUSED, GAP) */
+  --radius:    8px;       /* Border radius */
+
+  /* Type */
   --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
     "Helvetica Neue", Arial, "Inter", "Geist", sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
@@ -32,8 +44,7 @@
   --text-lg: clamp(1.05rem, 1rem + 0.25vw, 1.175rem);
   --text-xl: clamp(1.25rem, 1.15rem + 0.4vw, 1.5rem);
 
-  /* Space: 4px base. Named by use, not by number, so a change lands in one
-     place. */
+  /* Space: 4px base */
   --sp-1: 0.25rem;
   --sp-2: 0.5rem;
   --sp-3: 0.75rem;
@@ -45,7 +56,7 @@
 
   --r-xs: 4px;
   --r-sm: 6px;
-  --r-md: 10px;
+  --r-md: 8px;    /* Updated to match --radius */
   --r-lg: 14px;
   --r-xl: 20px;
   --r-full: 999px;
@@ -56,122 +67,123 @@
   --ease: cubic-bezier(0.32, 0.72, 0, 1);
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
 
-  --topbar-h: 56px;
+  --topbar-h: 48px;
   --mobile-nav-h: 58px;
-  --w-qa: 520px;
+  --w-left: 300px;   /* Left panel width (persisted) */
+  --w-right: 460px;  /* Right panel width (persisted) */
 
   color-scheme: dark;
 }
 
-/* Dark is the default: this is a developer tool, and a dark canvas is what the
-   graph is drawn on. Light is a full second theme rather than an inversion —
-   every token that matters has its own light value below. */
+/* Dark theme (default) */
 :root,
 [data-theme="dark"] {
-  /* FinGraph Brand Palette */
-  --bg: #050505;
+  --bg: #0f1115;
   --bg-grad: 
-    radial-gradient(ellipse 80% 60% at 20% 10%, rgba(255, 60, 0, 0.06) 0%, transparent 60%),
-    radial-gradient(ellipse 60% 50% at 85% 90%, rgba(122, 31, 10, 0.05) 0%, transparent 55%),
-    radial-gradient(ellipse 100% 100% at 50% 50%, rgba(255, 90, 31, 0.02) 0%, transparent 70%),
-    #050505;
-  --surface-1: #0a0a0b;    /* panels */
-  --surface-2: #111113;    /* raised: headers, cards, list rows */
-  --surface-3: #18181c;    /* raised on hover / inputs */
-  --surface-glass: rgba(17, 17, 19, 0.85);
+    radial-gradient(ellipse 80% 60% at 20% 10%, rgba(110, 168, 254, 0.06) 0%, transparent 60%),
+    radial-gradient(ellipse 60% 50% at 85% 90%, rgba(126, 224, 184, 0.04) 0%, transparent 55%),
+    radial-gradient(ellipse 100% 100% at 50% 50%, rgba(110, 168, 254, 0.02) 0%, transparent 70%),
+    #0f1115;
+  --surface-1: #171a21;    /* panels */
+  --surface-2: #1e222b;    /* raised: headers, cards, list rows */
+  --surface-3: #252b37;    /* raised on hover / inputs */
+  --surface-glass: rgba(23, 26, 33, 0.85);
 
-  --border: rgba(255, 255, 255, 0.06);
-  --border-strong: rgba(255, 255, 255, 0.12);
-  --border-focus: #FF3C00;
-  --border-accent: rgba(255, 60, 0, 0.35);
+  --border: #2a2f3a;
+  --border-strong: #3a404f;
+  --border-focus: #6ea8fe;
+  --border-accent: rgba(110, 168, 254, 0.35);
 
-  --text: #F5F5F7;
-  --text-muted: #9CA3AF;
-  --text-faint: #6B7280;
+  --text: #e6e8ee;
+  --text-muted: #9aa3b2;
+  --text-faint: #6b7285;
 
-  --accent: #FF3C00;
-  --accent-strong: #FF551C;
-  --accent-soft: rgba(255, 60, 0, 0.14);
-  --accent-ring: rgba(255, 60, 0, 0.32);
+  --accent: #6ea8fe;
+  --accent-strong: #8bb6fe;
+  --accent-soft: rgba(110, 168, 254, 0.14);
+  --accent-ring: rgba(110, 168, 254, 0.32);
   --on-accent: #ffffff;
 
-  --primary: #FF3C00;
-  --primary-2: #FF5A1F;
-  --primary-3: #FF8A3D;
-  --secondary-dark: #7A1F0A;
+  --primary: #6ea8fe;
+  --primary-2: #8bb6fe;
+  --primary-3: #a8cffe;
+  --secondary-dark: #1d4d8a;
 
-  --cyan: #22d3ee;
-  --green: #34d399;
-  --amber: #FF8A3D;
-  --red: #FF3C00;
+  --cyan: #7ee0b8;
+  --green: #7ee0b8;
+  --amber: #ffb454;
+  --red: #ff7b72;
   --violet: #c084fc;
 
-  --green-soft: rgba(52, 211, 153, 0.12);
-  --amber-soft: rgba(255, 138, 61, 0.14);
-  --red-soft: rgba(255, 60, 0, 0.12);
-  --primary-soft: rgba(255, 60, 0, 0.14);
+  --green-soft: rgba(126, 224, 184, 0.12);
+  --amber-soft: rgba(255, 180, 84, 0.14);
+  --red-soft: rgba(255, 123, 114, 0.12);
+  --primary-soft: rgba(110, 168, 254, 0.14);
 
   --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.5);
   --shadow-2: 0 8px 24px -8px rgba(0, 0, 0, 0.6);
   --shadow-3: 0 24px 64px -16px rgba(0, 0, 0, 0.8);
-  --glow-primary: 0 0 36px -6px rgba(255, 60, 0, 0.35);
-  --glow-accent: 0 0 36px -6px rgba(255, 107, 53, 0.30);
-  --graph-bg: #050505;
-  --graph-grid: rgba(255, 60, 0, 0.025);
-  --label-stroke: #050505;
+  --glow-primary: 0 0 36px -6px rgba(110, 168, 254, 0.35);
+  --glow-accent: 0 0 36px -6px rgba(126, 224, 184, 0.30);
+  --graph-bg: #0f1115;
+  --graph-grid: rgba(110, 168, 254, 0.025);
+  --label-stroke: #0f1115;
 }
 
+/* Light theme */
 [data-theme="light"] {
   color-scheme: light;
 
-  --bg: #f4f5f8;
-  --bg-grad: radial-gradient(120% 80% at 12% -10%, #e5e9ff 0%, transparent 60%),
-             radial-gradient(100% 70% at 100% 0%, #f2e8ff 0%, transparent 55%),
-             #f4f5f8;
+  --bg: #f0f2f5;
+  --bg-grad: 
+    radial-gradient(ellipse 80% 60% at 20% 10%, rgba(110, 168, 254, 0.08) 0%, transparent 60%),
+    radial-gradient(ellipse 60% 50% at 85% 90%, rgba(126, 224, 184, 0.06) 0%, transparent 55%),
+    radial-gradient(ellipse 100% 100% at 50% 50%, rgba(110, 168, 254, 0.04) 0%, transparent 70%),
+    #f0f2f5;
   --surface-1: #ffffff;
-  --surface-2: #fafbfd;
-  --surface-3: #f0f2f6;
+  --surface-2: #f7f9fc;
+  --surface-3: #eef1f5;
   --surface-glass: rgba(255, 255, 255, 0.86);
 
-  --border: #e2e5ec;
-  --border-strong: #cbd1dd;
-  --border-focus: #FF3C00;
-  --border-accent: rgba(255, 60, 0, 0.35);
+  --border: #d0d5dd;
+  --border-strong: #aab2bd;
+  --border-focus: #6ea8fe;
+  --border-accent: rgba(110, 168, 254, 0.35);
 
-  --text: #14161c;
-  --text-muted: #3c4350;
-  --text-faint: #6a7283;
+  --text: #1d2939;
+  --text-muted: #667085;
+  --text-faint: #98a2b3;
 
-  --accent: #FF3C00;
-  --accent-strong: #FF551C;
-  --accent-soft: rgba(255, 60, 0, 0.09);
-  --accent-ring: rgba(255, 60, 0, 0.22);
+  --accent: #4d96f5;
+  --accent-strong: #6ea8fe;
+  --accent-soft: rgba(110, 168, 254, 0.09);
+  --accent-ring: rgba(110, 168, 254, 0.22);
   --on-accent: #ffffff;
 
-  --primary: #FF3C00;
-  --primary-2: #FF5A1F;
-  --primary-3: #FF8A3D;
-  --secondary-dark: #7A1F0A;
+  --primary: #4d96f5;
+  --primary-2: #6ea8fe;
+  --primary-3: #8bb6fe;
+  --secondary-dark: #2a5d9e;
 
-  --cyan: #0891b2;
+  --cyan: #059669;
   --green: #059669;
-  --amber: #FF8A3D;
-  --red: #FF3C00;
+  --amber: #d97706;
+  --red: #dc2626;
   --violet: #7c3aed;
 
   --green-soft: rgba(5, 150, 105, 0.1);
-  --amber-soft: rgba(255, 138, 61, 0.1);
-  --red-soft: rgba(255, 60, 0, 0.08);
-  --primary-soft: rgba(255, 60, 0, 0.09);
+  --amber-soft: rgba(217, 119, 6, 0.1);
+  --red-soft: rgba(220, 38, 38, 0.08);
+  --primary-soft: rgba(110, 168, 254, 0.09);
 
   --shadow-1: 0 1px 2px rgba(16, 24, 40, 0.06);
   --shadow-2: 0 6px 20px -6px rgba(16, 24, 40, 0.12);
   --shadow-3: 0 24px 56px -16px rgba(16, 24, 40, 0.22);
-  --glow-primary: 0 0 28px -4px rgba(255, 60, 0, 0.25);
-  --glow-accent: 0 0 28px -4px rgba(255, 107, 53, 0.20);
-  --graph-bg: #fbfbfd;
-  --graph-grid: rgba(255, 60, 0, 0.035);
-  --label-stroke: #14161c;
+  --glow-primary: 0 0 28px -4px rgba(110, 168, 254, 0.25);
+  --glow-accent: 0 0 28px -4px rgba(126, 224, 184, 0.20);
+  --graph-bg: #ffffff;
+  --graph-grid: rgba(110, 168, 254, 0.035);
+  --label-stroke: #1d2939;
 }
 
 /* ── 2. primitives ───────────────────────────────────────────────────────── */
@@ -870,14 +882,14 @@ mark.hit {
   cursor: grab;
   background-color: var(--graph-bg);
   background-image:
-    radial-gradient(ellipse 80% 60% at 15% 20%, rgba(255, 60, 0, 0.03) 0%, transparent 60%),
-    radial-gradient(ellipse 60% 50% at 85% 80%, rgba(122, 31, 10, 0.025) 0%, transparent 55%),
+    radial-gradient(ellipse 80% 60% at 15% 20%, rgba(110, 168, 254, 0.03) 0%, transparent 60%),
+    radial-gradient(ellipse 60% 50% at 85% 80%, rgba(126, 224, 184, 0.025) 0%, transparent 55%),
     linear-gradient(var(--graph-grid) 1px, transparent 1px),
     linear-gradient(90deg, var(--graph-grid) 1px, transparent 1px);
   background-size: 100% 100%, 100% 100%, 32px 32px, 32px 32px;
   background-position: center;
 }
-#graph-canvas.is-panning { cursor: grabbing; }
+#graph-canvas.dragging { cursor: grabbing; }
 
 
 .legend-row__dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; flex: 0 0 auto; box-shadow: 0 0 8px -1px currentColor; }
@@ -996,16 +1008,33 @@ mark.hit {
 
 .g-edge {
   fill: none;
-  stroke: var(--border-strong, #3a3f4d);
+  stroke: #39404f;  /* dark slate */
+  stroke-width: 1.4px;
   stroke-linecap: round;
   transition: stroke var(--dur) var(--ease), stroke-width var(--dur) var(--ease),
               opacity var(--dur) var(--ease);
 }
 /* Answer path: the company's own accent, thicker and solid. */
-.g-edge.is-answer-path { opacity: 0.9; }
-.g-edge.is-cited { opacity: 0.6; }
+.g-edge.is-answer-path { 
+  opacity: 0.9; 
+  stroke: var(--accent);
+  stroke-width: 2.5px;
+}
+/* Cited edges: blue accent, dashed + animated flow */
+.g-edge.is-cited {
+  opacity: 1;
+  stroke: var(--accent);
+  stroke-width: 2.5px;
+  stroke-dasharray: 8 4;
+  animation: flowMove 1.5s linear infinite;
+}
+@keyframes flowMove { to { stroke-dashoffset: -12; } }
 /* Unrelated edges stay visible but recede. */
-.g-edge.is-dim { opacity: 0.22; }
+.g-edge.is-dim { 
+  opacity: 1;
+  stroke: #23272f;  /* very dark */
+  stroke-width: 1.4px;
+}
 .g-edge.is-hot { opacity: 0.85; }
 
 @keyframes edge-flow { to { stroke-dashoffset: -20; } }
@@ -1035,12 +1064,12 @@ mark.hit {
 }
 
 .g-edge-label {
-  font-size: 8.5px;
-  fill: var(--text-faint);
+  font-size: 10px;
+  fill: #7d879a;  /* muted */
   pointer-events: none;
   paint-order: stroke;
   stroke: var(--graph-bg);
-  stroke-width: 1.5px;
+  stroke-width: 3px;
   stroke-linejoin: round;
   opacity: 0.5;
 }
@@ -1048,15 +1077,43 @@ mark.hit {
 .g-edge-label.is-answer-path { opacity: 0.95; }
 
 .g-node { cursor: pointer; }
-.g-node circle {
-  transition: opacity var(--dur) var(--ease), stroke var(--dur) var(--ease);
+.g-node circle.core {
+  stroke: var(--bg);
+  stroke-width: 2px;
+  transition: opacity var(--dur) var(--ease), stroke var(--dur) var(--ease), filter var(--dur) var(--ease);
 }
 
-/* --- Answer Path Highlight (Company → Filing → Metric → Evidence) ---------
-  * Answer nodes keep their own company colour. An earlier version overrode the
-  * fill to near-black and ringed it in the brand orange, which threw away the
-  * one thing that identifies the company at a glance; the answer state is now
-  * expressed by which nodes are on screen at all, so the fill stays put. */
+/* --- Node State Classes ----------------------------------------------------- */
+/* Seed: blue ring */
+.g-node.seed .core {
+  stroke: var(--accent);
+  stroke-width: 3.5px;
+}
+
+/* Cited: green glow, no stroke */
+.g-node.cited .core,
+.g-node.is-cited .core {
+  stroke: none;
+  filter: drop-shadow(0 0 12px var(--green)) drop-shadow(0 0 24px var(--green));
+}
+
+/* Dim: faded to gray */
+.g-node.dim,
+.g-node.is-dim { 
+  opacity: 0.22 !important; 
+}
+.g-node.dim text.g-node-label,
+.g-node.is-dim text.g-node-label { opacity: 0.22 !important; }
+.g-node.dim.is-selected,
+.g-node.dim.is-hovered,
+.g-node.is-dim.is-selected,
+.g-node.is-dim.is-hovered { opacity: 1 !important; }
+.g-node.dim.is-selected text.g-node-label,
+.g-node.dim.is-hovered text.g-node-label,
+.g-node.is-dim.is-selected text.g-node-label,
+.g-node.is-dim.is-hovered text.g-node-label { opacity: 1 !important; }
+
+/* --- Answer Path Highlight -------------------------------------------------- */
 .g-node.is-answer-path .core { stroke: var(--text) !important; stroke-width: 1.75px !important; }
 .g-node.is-answer-path text.g-node-label { opacity: 1 !important; font-weight: 600 !important; }
 
@@ -1075,9 +1132,6 @@ mark.hit {
 .g-node.is-selected text.g-node-label { font-weight: 700; }
 .g-node.is-hovered .core { stroke: var(--text); stroke-width: 2px; }
 
-/* Cited state: the outline is enough. The fill already says "this company". */
-.g-node.is-cited .core { stroke-width: 2px; }
-
 /* Fresh state - one-shot flare */
 .g-node.is-fresh .core { animation: fresh-flare 1.5s var(--ease-out) 1; }
 @keyframes fresh-flare {
@@ -1086,24 +1140,14 @@ mark.hit {
   100% { stroke-width: 2px; }
 }
 
-/* Dimmed / unrelated nodes: still legible, clearly backgrounded. In answer
-  * state these are filtered out of the render entirely, so this only applies
-  * to hover and selection focus while exploring. */
-.g-node.is-dim { opacity: 0.45 !important; }
-.g-node.is-dim text.g-node-label { opacity: 0.5 !important; }
-.g-node.is-dim.is-selected,
-.g-node.is-dim.is-hovered { opacity: 1 !important; }
-.g-node.is-dim.is-selected text.g-node-label,
-.g-node.is-dim.is-hovered text.g-node-label { opacity: 1 !important; }
-
 .g-node text,
 .g-node text.g-node-label {
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 500;
-  fill: var(--text-muted);
+  fill: var(--text);
   pointer-events: none;
   paint-order: stroke;
-  stroke: var(--label-stroke, #050505);
+  stroke: var(--bg);
   stroke-width: 3.5px;
   stroke-linejoin: round;
   stroke-linecap: round;

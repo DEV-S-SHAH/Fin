@@ -24,7 +24,7 @@
  * not drawn. Clearing the answer brings the full graph back.
  */
 
-import { svgEl, typeColor, prettyType, escapeHtml, $ } from "./util.js";
+import { svgEl, prettyType, escapeHtml, $ } from "./util.js";
 
 export const FLASH_MS = 1500;
 export const FLOW_MS = 2000;
@@ -52,31 +52,132 @@ const SETTLE_TICKS = 400;
 /** Clear space kept between two node circles when one is dragged past another. */
 const DRAG_CLEARANCE = 6;
 
-/* Distinct accent per company. Ordered so neighbouring slots land far apart on
- * the wheel, and deliberately not "one warm ramp for everything" — company
- * identity has to survive at a glance. */
+/* Blue palette for company identity — distinct but cohesive.
+ * Each company gets a unique blue hue; entities inherit a muted shade.
+ * Matches the FinGraph blue theme (--accent: #6ea8fe). */
 const COMPANY_PALETTE = [
-  "#FF5A1F", // orange-red (brand)
-  "#3B9DFF", // azure
-  "#16C79A", // mint
-  "#B07CFF", // violet
-  "#F2B705", // gold
-  "#FF6FA5", // pink
-  "#35C4D6", // cyan
-  "#7C8CFF", // periwinkle
-  "#8DBE2E", // olive
-  "#F0563D", // coral
-  "#00A3A3", // deep teal
-  "#D96BA0", // rose
-  "#C77DFF", // orchid
-  "#6FBF73", // green
+  "#6ea8fe", // Primary blue (AAPL)
+  "#5d96f5", // Bright blue (MSFT)
+  "#4d84ec", // Light blue (GOOGL)
+  "#3d72e3", // Medium blue (AMZN)
+  "#2d60da", // Soft blue (TSLA)
+  "#4d8fff", // Warm blue (NVDA)
+  "#5d9eff", // Medium blue (META)
+  "#3d7fff", // Deep blue (JPM)
+  "#2d6fff", // Medium-dark blue (V)
+  "#1d5fff", // Light blue (WMT)
+  "#0d4fff", // Medium blue (JNJ)
+  "#4da3ff", // Light blue (PG)
+  "#5db0ff", // Classic blue (MA)
+  "#3d9bff", // Dark blue (UNH)
+  "#6eb8ff", // Coral blue (HD)
+  "#4d9eff", // Medium blue (BAC)
+  "#7eb3ff", // Blue-orange (DIS)
+  "#2d83f0", // Deep blue (ADBE)
+  "#3d8fff", // Medium-dark blue (NFLX)
+  "#8ec0ff", // Coral blue (CRM)
 ];
 
-/* Entities take a related shade of their company's accent rather than the
+/* Entities take a related shade of their company's blue rather than the
  * accent itself, so the company colour reads as a family. Nodes with no
- * company stay neutral. */
-const ENTITY_TINT = "#9AA3B2";
-const NEUTRAL = "#9AA3B2";
+ * company stay neutral grey. */
+const ENTITY_TINT = "#9aa3b2";
+const NEUTRAL = "#9aa3b2";
+
+/**
+ * Comprehensive type-based color mapping matching FinGraph blue theme.
+ * Returns a color for any node type, with company-specific overrides.
+ */
+function typeColor(node) {
+  const t = (node?.type || "unspecified").toLowerCase();
+  const known = {
+    // Core types - all blue palette
+    filing:           "#4da3ff",
+    financialmetric:  "#3d9bff",
+    segment:          "#2d8fff",
+    disclosureevent:  "#1d83f0",
+    documentchunk:    "#0d77e6",
+    executive:        "#7eb3ff",
+    supplier:         "#8ec0ff",
+    section:          "#9ecfff",
+    riskfactor:       "#5db0ff",
+    causalrelation:   "#4d9eff",
+    productfamily:    "#aed8ff",
+    geographicmarket: "#bedfff",
+    competitor:       "#cedfff",
+    customer:         "#dee7ff",
+    regulatorybody:   "#eef3ff",
+    macrovariable:    "#7eb3ff",
+    standardizedconcept: "#4da3ff",
+    rawfact:          "#5db0ff",
+    footnote:         "#8ec0ff",
+    fiscalperiod:     "#3d9bff",
+  };
+  if (known[t]) return known[t];
+
+  // For companies: assign distinct, visible blue shades based on ticker
+  if (t === "company") {
+    const ticker = (node.id || node.name || "").toUpperCase();
+    const companyBlues = {
+      "AAPL": "#0044ff", "MSFT": "#0066ff", "GOOGL": "#0088ff", "GOOG": "#0088ff",
+      "AMZN": "#00aaff", "TSLA": "#00ccff", "NVDA": "#0099ee", "META": "#0077dd",
+      "JPM":  "#0033ee", "V":   "#0055dd", "MA":  "#0077cc", "XOM": "#0099bb",
+      "PFE":  "#00bb99", "DIS": "#00dd77", "INTC": "#00ff55", "NFLX": "#33ff33",
+      "AVGO": "#55ff11", "AMD": "#77ee00", "JNJ":  "#99dd00", "PG":  "#bbcc00",
+      "UNH":  "#ddbb00", "HD":  "#ffaa00", "BAC":  "#ff8800", "ADBE": "#ff6600",
+      "CRM":  "#ff4400", "PYPL": "#ff2200", "CSCO": "#ff0000", "KO":  "#ee0011",
+      "PEP":  "#dd0022", "TMO": "#cc0033", "COST": "#bb0044", "ABBV": "#aa0055",
+      "MRK":  "#990066", "ACN": "#880077", "DHR":  "#770088", "VZ":  "#660099",
+      "TXN":  "#5500aa", "NKE": "#4400bb", "NEE":  "#3300cc", "UPS": "#2200dd",
+      "QCOM": "#1100ee", "HON": "#0000ff", "LOW":  "#0011ee", "LIN": "#0022dd",
+      "SBUX": "#0033cc", "BA":  "#0044bb", "MDT":  "#0055aa", "AMGN": "#006699",
+      "RTX":  "#007788", "SPGI": "#008877", "AMT": "#009966", "IBM": "#00aa55",
+      "ORCL": "#00bb44", "CAT": "#00cc33", "GS":  "#00dd22", "CVX": "#00ee11",
+      "AXP":  "#00ff00", "INTU": "#11ff11", "BKNG": "#22ff22", "ISRG": "#33ff33",
+      "ZTS":  "#44ff44", "SYK":  "#55ff55", "GILD": "#66ff66", "BLK": "#77ff77",
+      "MO":   "#88ff88", "T":    "#99ff99", "CMCSA": "#aaffaa", "REGN": "#bbffbb",
+      "VRTX": "#ccffcc", "LRCX": "#ddffdd", "CI":   "#eeffee", "PLD": "#ffffff",
+      "MDLZ": "#aaffaa", "ADP":  "#bbffbb", "TMUS": "#ccffcc", "CB":  "#ddffdd",
+      "SO":   "#eeffee", "DUK":  "#ffffff", "CL":   "#aaffaa", "EQIX": "#bbffbb",
+      "CSX":  "#ccffcc", "ITW":  "#ddffdd", "BDX":  "#eeffee", "APD":  "#ffffff",
+      "WM":   "#aaffaa", "SHW":  "#bbffbb", "EOG":  "#ccffcc", "MMC":  "#ddffdd",
+      "MCO":  "#eeffee", "ICE":  "#ffffff", "APH":  "#aaffaa", "SNPS": "#bbffbb",
+      "CDNS": "#ccffcc", "MAR":  "#ddffdd", "ROP":  "#eeffee", "FCX":  "#ffffff",
+      "EMR":  "#aaffaa", "NSC":  "#bbffbb", "AFL":  "#ccffcc", "PSX":  "#ddffdd",
+      "PSA":  "#eeffee", "MCK":  "#ffffff", "CTAS": "#aaffaa", "ADI":  "#bbffbb",
+      "KLAC": "#ccffcc", "MNST": "#ddffdd", "CTSH": "#eeffee", "PAYX": "#ffffff",
+      "ROST": "#aaffaa", "ORLY": "#bbffbb", "AON":  "#ccffcc", "DXCM": "#ddffdd",
+      "KDP":  "#eeffee", "MCHP": "#ffffff", "EXC":  "#aaffaa", "MU":   "#bbffbb",
+      "LULU": "#ccffcc", "IDXX": "#ddffdd", "TEL":  "#eeffee", "WDAY": "#ffffff",
+    };
+    if (companyBlues[ticker]) return companyBlues[ticker];
+
+    // Fallback: 50-shade blue palette hashed from ticker
+    let h = 0;
+    for (const ch of ticker) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+    const palette = [
+      "#0011ff", "#0022ff", "#0033ff", "#0044ff", "#0055ff",
+      "#0066ff", "#0077ff", "#0088ff", "#0099ff", "#00aaff",
+      "#00bbff", "#00ccff", "#00ddff", "#00eeff", "#00ffff",
+      "#00eedd", "#00ddbb", "#00cc99", "#00bb77", "#00aa55",
+      "#009933", "#008811", "#007700", "#006600", "#005500",
+      "#004400", "#003300", "#002200", "#001100", "#000000",
+      "#110000", "#220000", "#330000", "#440000", "#550000",
+      "#660000", "#770000", "#880000", "#990000", "#aa0000",
+      "#bb0000", "#cc0000", "#dd0000", "#ee0000", "#ff0000",
+      "#ff1100", "#ff2200", "#ff3300", "#ff4400", "#ff5500"
+    ];
+    return palette[h % palette.length];
+  }
+
+  // Fallback: generate a blue hue based on the type name
+  let h = 0;
+  for (const ch of t) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  const hue = 200 + (h % 40); // 200-240 for blue hues
+  const sat = 70 + (h % 25);  // Saturation 70-95%
+  const light = 40 + (h % 25); // Lightness 40-65%
+  return `hsl(${hue} ${sat}% ${light}%)`;
+}
 
 function hexToRgb(hex) {
   const h = String(hex).replace("#", "");
@@ -99,15 +200,10 @@ function mix(hex, toward, amount) {
   });
 }
 
-function getNodeBaseRadius(type) {
-  const t = String(type || "").toLowerCase();
-  if (t === "company") return 18;
-  if (t === "filing" || t === "document") return 10;
-  if (t === "segment") return 8.5;
-  if (t === "financialmetric") return 6.5;
-  if (t === "fiscalyear" || t === "fiscalquarter") return 7.5;
-  if (t === "event" || t === "disclosureevent") return 7;
-  return 7;
+/* Node radius: 7 + min(7, name.length / 20) → 7–14px */
+function getNodeBaseRadius(name) {
+  const len = String(name || "").length;
+  return 7 + Math.min(7, len / 20);
 }
 
 /* Short, readable relationship distances. Kept in one place so the same
@@ -135,7 +231,7 @@ const LABEL_CHAR_W = 6.1;
 const LABEL_PAD = 10;
 
 function labelText(name) {
-  return name.length > 30 ? `${name.slice(0, 29)}…` : name;
+  return name.length > 26 ? `${name.slice(0, 25)}…` : name;
 }
 
 function estimateLabelWidth(nodes) {
@@ -281,15 +377,15 @@ export class GraphView {
 
   #buildBehaviours() {
     this.zoom = d3.zoom()
-      .scaleExtent([0.08, 4])
+      .scaleExtent([0.1, 3])
       .filter((event) => !this.nodeDragging && !event.button)
-      .on("start", () => this.canvas.classList.add("is-panning"))
+      .on("start", () => this.canvas.classList.add("dragging"))
       .on("zoom", (event) => {
         this.view = { x: event.transform.x, y: event.transform.y, k: event.transform.k };
         this.#applyView();
         this.#computeLabelPlacements();
       })
-      .on("end", () => this.canvas.classList.remove("is-panning"));
+      .on("end", () => this.canvas.classList.remove("dragging"));
 
     d3.select(this.canvas)
       .call(this.zoom)
@@ -307,35 +403,66 @@ export class GraphView {
     // reheated here: letting the forces resolve the move is what made a drag
     // shuffle its neighbours around, and what previously let a node be pushed
     // on top of another. Overlap is refused outright instead.
+    //
+    // Enhanced with query_ui.py's collision prevention: when dragging a company
+    // node, actively push other company nodes away to maintain separation.
     this.drag = d3.drag()
       .on("start", (event, d) => {
         this.nodeDragging = true;
         this.suppressClick = false;
         this.dragTravel = 0;
         this.dragOrigin = { x: event.x, y: event.y };
-        d.fx = event.x;
-        d.fy = event.y;
-        d.x = event.x;
-        d.y = event.y;
-        this.canvas.classList.add("is-panning");
+        d.fx = d.x;
+        d.fy = d.y;
+        if (this.simulation) this.simulation.alpha(Math.max(this.simulation.alpha(), 0.7));
+        this.canvas.classList.add("dragging");
         this.#hideTooltip();
       })
       .on("drag", (event, d) => {
+        let targetX = event.x;
+        let targetY = event.y;
+
+        // Enhanced collision prevention for Company nodes during drag (from query_ui.py)
+        // Push other companies away if they get too close
+        if (d.type === "Company" && this.nodes) {
+          const minDist = (d.r || 9) * 3.5; // larger buffer for companies
+          for (const other of this.nodes) {
+            if (other === d || other.type !== "Company") continue;
+            const dx = other.x - targetX;
+            const dy = other.y - targetY;
+            const dist = Math.hypot(dx, dy);
+            if (dist < minDist && dist > 0.001) {
+              // Push the other node away
+              const pushStrength = 0.3;
+              const pushX = (dx / dist) * (minDist - dist) * pushStrength;
+              const pushY = (dy / dist) * (minDist - dist) * pushStrength;
+              other.x += pushX;
+              other.y += pushY;
+              other.vx += pushX * 0.5;
+              other.vy += pushY * 0.5;
+              // Also push the dragged node slightly away
+              targetX -= pushX * 0.3;
+              targetY -= pushY * 0.3;
+            }
+          }
+        }
+
         // A move that would put this circle on top of another is not taken, so
         // the node simply stops at the last clear spot. The drag stays alive and
         // keeps working the moment the pointer moves clear again.
-        if (this.#positionIsClear(d, event.x, event.y)) {
-          d.fx = event.x;
-          d.fy = event.y;
+        if (this.#positionIsClear(d, targetX, targetY)) {
+          d.fx = targetX;
+          d.fy = targetY;
           // The layout is not running, so the position is applied here rather
           // than being picked up by a tick that will never come.
-          d.x = event.x;
-          d.y = event.y;
+          d.x = targetX;
+          d.y = targetY;
         }
         this.dragTravel = Math.max(
           this.dragTravel,
           Math.hypot(event.x - this.dragOrigin.x, event.y - this.dragOrigin.y)
         );
+        if (this.simulation) this.simulation.alpha(Math.max(this.simulation.alpha(), 0.35));
         this.#updatePositions();
         this.#computeLabelPlacements();
       })
@@ -346,11 +473,13 @@ export class GraphView {
         d.fx = null;
         d.fy = null;
         this.nodeDragging = false;
-        this.canvas.classList.remove("is-panning");
-        this.suppressClick = this.dragTravel > 5;
+        this.canvas.classList.remove("dragging");
+        this.suppressClick = this.dragTravel > 4;
         if (this.suppressClick) {
-          setTimeout(() => { this.suppressClick = false; }, 60);
+          setTimeout(() => { this.suppressClick = false; }, 0);
         }
+        // Reheat simulation after drag to let forces settle nodes into non-overlapping positions
+        if (this.simulation) this.simulation.alpha(0.5);
         this.#computeLabelPlacements();
       });
   }
@@ -478,7 +607,7 @@ export class GraphView {
         const type = n.entity_type || n.type || "Unspecified";
         const name = n.name || String(n.id);
         const before = prev.get(String(n.id));
-        const baseRadius = getNodeBaseRadius(type);
+        const baseRadius = getNodeBaseRadius(name);
 
         return {
           ...n,
@@ -565,12 +694,13 @@ export class GraphView {
       const idStr = String(n.id);
       if (!this.byId.has(idStr)) {
         const type = n.entity_type || n.type || "Unspecified";
-        const baseRadius = getNodeBaseRadius(type);
+        const name = n.name || idStr;
+        const baseRadius = getNodeBaseRadius(name);
         const nodeObj = {
           ...n,
           id: idStr,
           type,
-          name: n.name || idStr,
+          name,
           baseRadius,
           r: baseRadius * this.nodeScale,
           x: null,
@@ -1024,25 +1154,25 @@ export class GraphView {
       for (const n of this.nodes) {
         n.x = null;
         n.y = null;
+        n._initialized = false; // Allow re-initialization on reseed
       }
     }
 
-    this.#seedClusters();
+    // Only run cluster seeding for exploration view (not answer view)
+    // Answer view uses globe layout from #buildSimulation
+    if (!answering) {
+      this.#seedClusters();
+    }
     this.#buildSimulation();
     this.#draw();
     this.#run();
   }
 
-  /* ── 2D Cluster Seeding ────────────────────────────────────────────────── */
+  /* ── 2D Cluster Seeding (Exploration View Only) ─────────────────────────────── */
 
   /**
    * Give every company a slot on a grid, then scatter its members on a small
-   * disc around that slot.
-   *
-   * The disc is a sunflower spiral rather than a ring so a cluster fills
-   * evenly instead of forming an obvious hollow circle, and the offset is
-   * derived from a hash of the node id so the arrangement is identical on
-   * every load and after every re-filter.
+   * disc around that slot. Only used for exploration view (not answer view).
    */
   #seedClusters() {
     const { width, height } = this.#size();
@@ -1145,119 +1275,51 @@ export class GraphView {
     this.simulation?.stop();
 
     const { width, height } = this.#size();
-    for (const n of this.nodes) {
-      if (!Number.isFinite(n.x)) { n.x = width / 2; n.y = height / 2; }
-      n.vx = 0;
-      n.vy = 0;
-    }
+    const cx = width / 2;
+    const cy = height / 2;
+    const radius = Math.min(width, height) * 0.35;
 
-    const present = new Set(this.nodes.map((n) => n.clusterId).filter(Boolean));
-    let maxClusterRadius = 90;
-    for (const key of present) {
-      maxClusterRadius = Math.max(maxClusterRadius, this.companyClusters.get(key)?.radius || 0);
-    }
+    // Globe initialization: place uninitialized nodes on a sphere surface projected to 2D
+    this.nodes.forEach((d, i) => {
+      if (!d._initialized) {
+        const phi = Math.acos(1 - 2 * (i + 0.5) / this.nodes.length);
+        const theta = Math.PI * (1 + Math.sqrt(5)) * (i + 0.5);
+        const r = radius * Math.sqrt(Math.random());
+        d.x = cx + r * Math.sin(phi) * Math.cos(theta);
+        d.y = cy + r * Math.sin(phi) * Math.sin(theta);
+        d._initialized = true;
+      }
+      d.vx = 0;
+      d.vy = 0;
+    });
 
-    // A label is far wider than the circle it names -- a filing label runs to
-    // 160px against a 14px node. Exploration packs tight because most labels are
-    // hidden and only the node has to be clickable. The answer subgraph is the
-    // one place every label is shown, so it needs room for the text, not just
-    // the circles: collision padding grows to match. Without this the answer
-    // graph renders correctly but reads as a pile-up of overlapping captions.
-    //
-    // The padding is the only thing that changes. Link distances stay at the
-    // exploration values on purpose -- stretching them was what spread an answer
-    // across the canvas and pulled each company away from its own bench.
     const answering = !!(this.answerPathNodes && this.answerPathNodes.size > 0);
-    // Collision has to clear the caption, not just the circle. Half of a label
-    // is the right unit: two labels whose centres are a full label-width apart
-    // cannot touch however they are anchored.
     const labelHalf = answering ? estimateLabelWidth(this.nodes) * 0.5 : 0;
     const pad = answering ? Math.max(26, Math.min(56, labelHalf * 0.6)) : 15;
 
-    // Size each bench so its members actually fit inside it.
-    //
-    // This is what stops a cluster turning into a ring. If the bench is smaller
-    // than the members need, collision pushes them outward until they all pile
-    // against the boundary at an identical radius -- a starburst. Giving the
-    // bench enough room for the nodes and their captions lets collision spread
-    // them through the interior instead, which is what makes a cluster read as a
-    // cluster. Packing is a disc, so the radius grows with the square root of the
-    // member count.
-    for (const key of new Set(this.nodes.map((n) => n.clusterId).filter(Boolean))) {
-      const cluster = this.companyClusters.get(key);
-      if (!cluster) continue;
-      const members = this.nodes.filter((n) => n.clusterId === key && !n.isCompany);
-      if (!members.length) {
-        cluster.benchRadius = 54;
-        continue;
-      }
-      const avgR = members.reduce((a, n) => a + (n.r || 8), 0) / members.length;
-      const needed = (avgR + pad) * Math.sqrt(members.length) * 1.15;
-      cluster.benchRadius = Math.max(54, Math.min(cluster.radiusCap || Infinity, needed));
-    }
-
     this.simulation = d3.forceSimulation(this.nodes)
-      // Related nodes hold a short, readable distance.
-      .force("link", d3.forceLink(this.links)
-        .id((d) => d.id)
-        .distance((l) => linkDistance(l.relation))
-        .strength(0.55))
+      .force("link", d3.forceLink(this.links).id(d => d.id).distance(90).strength(0.15))
+      .force("charge", d3.forceManyBody().strength(d => 
+        d.type === "Company" ? -360 - 12 * (d.r || 9) : -120 - 4 * (d.r || 9)
+      ))
+      .force("x", d3.forceX(cx).strength(0.02))
+      .force("y", d3.forceY(cy).strength(0.02))
+      .force("center", d3.forceCenter(cx, cy))
+      .force("radial", d3.forceRadial(radius * 0.9, cx, cy).strength(0.08))
+      .force("collide", d3.forceCollide(d => {
+        const base = (d.r || 9) + 8;
+        return d.type === "Company" ? base * 2.5 : base;
+      }).iterations(4).strength(1))
+      .stop();
 
-      // Moderate repulsion, capped so a dense cluster stays local. An answer has
-      // far fewer nodes in flight, so it needs less push to stay separated.
-      // `distanceMax` is what stops a member being flung out of its own bench.
-      //
-      // In answer mode this is deliberately close to zero. The bench is only a
-      // few nodes across, so any real repulsion presses every member outward
-      // until they all rest at an identical distance from the company -- the
-      // starburst. Collision below does the separating inside the bench.
-      .force("charge", d3.forceManyBody()
-        .strength(answering ? -30 : -180)
-        .distanceMax(Math.min(maxClusterRadius * 1.9, 260)))
-
-      // Circles never overlap.
-      .force("collide", d3.forceCollide()
-        .radius((d) => (d.r || 8) + pad)
-        .strength(0.9)
-        .iterations(2))
-
-      // Every node is held near its company's bench. This is what makes a
-      // company read as one blob instead of being smeared across the canvas.
-      // The strength ramps up near the bench edge, so members stay comfortably
-      // spread through the interior rather than settling onto one circle.
-      .force("clusterX", d3.forceX((d) => d.slotX ?? 0).strength((d) => this.#benchHold(d)))
-      .force("clusterY", d3.forceY((d) => d.slotY ?? 0).strength((d) => this.#benchHold(d)))
-
-      // Start cool and cool down fast. The seed above has already placed every
-      // node on a sensible spot inside its bench, so the simulation only has to
-      // make small corrections. Letting it start hot and decay slowly made the
-      // whole graph visibly slither for several seconds after every load and
-      // filter change, which read as a glitch rather than as a layout.
-      .alpha(0.3)
-      .alphaDecay(0.06)
-      .velocityDecay(0.42);
-
-    // Run the forces to convergence *before* the first paint.
-    //
-    // The graph should appear already laid out rather than visibly rearranging
-    // itself for a second or two after every load. Because nothing is rendered
-    // during these ticks, the cost is a few milliseconds of main-thread work
-    // instead of a long animation -- and it also means labels are placed once
-    // against final positions, so they do not start out overlapping while the
-    // nodes are still sliding underneath them.
+    // Run the forces to convergence before first paint
     for (let i = 0; i < SETTLE_TICKS; i++) {
       if (this.simulation.alpha() <= this.simulation.alphaMin()) break;
       this.simulation.tick();
-      // The bench clamp normally runs while rendering, one pass per frame. Doing
-      // it here too is what makes this settle identical to the animated version
-      // it replaces -- without it, members pile up on the bench edge where
-      // collision cannot separate them, and the finished layout has overlaps in
-      // it that never get resolved.
-      this.#constrainToBenches();
+      // Company collision prevention
+      this.#preventCompanyCollision(cx, cy);
     }
 
-    // Nothing is left to animate. Dragging still works because a drag sets the
-    // node's position directly rather than relying on the simulation running.
     this.simulation.alpha(0);
     this.simulation.stop();
   }
@@ -1313,6 +1375,31 @@ export class GraphView {
     if (distance <= soft) return base;
     const over = (distance - soft) / (limit - soft);
     return Math.min(2.4, base * (1 + 14 * over));
+  }
+
+  /**
+   * Prevent company nodes from overlapping each other during simulation.
+   * Pushes other companies away when a company node is dragged or moves.
+   */
+  #preventCompanyCollision(cx, cy) {
+    const companies = this.nodes.filter(d => d.type === "Company");
+    for (const d of companies) {
+      const minDist = (d.r || 9) * 3.5;
+      for (const other of companies) {
+        if (other === d) continue;
+        const dx = other.x - d.x;
+        const dy = other.y - d.y;
+        const dist = Math.hypot(dx, dy);
+        if (dist < minDist && dist > 0.001) {
+          const push = (minDist - dist) * 0.3;
+          other.x += (dx / dist) * push;
+          other.y += (dy / dist) * push;
+          d.x -= (dx / dist) * push * 0.3;
+          d.y -= (dy / dist) * push * 0.3;
+        }
+      }
+    }
+    this.simulation.alpha(0.5);
   }
 
   /**
@@ -1483,10 +1570,11 @@ export class GraphView {
       .attr("d", (l) => this.#edgePath(l))
       .attr("class", (l) => {
         const key = EDGE_KEY(l);
+        const isCited = this.cited.has(l.source.id) && this.cited.has(l.target.id);
         return [
           "g-edge",
           this.answerPathEdges?.has(key) ? "is-answer-path" : "",
-          this.cited.has(l.source.id) && this.cited.has(l.target.id) ? "is-cited" : "",
+          isCited ? "is-cited flow" : "",
           hasFocus && highlightedEdges.has(key) ? "is-hot" : "",
           hasFocus && !highlightedEdges.has(key) ? "is-dim" : "",
           l.source.clusterId && l.source.clusterId === l.target.clusterId ? "is-company-edge" : "",
@@ -1527,7 +1615,7 @@ export class GraphView {
       const dist = Math.hypot((l.target.x || 0) - (l.source.x || 0), (l.target.y || 0) - (l.source.y || 0));
       if (dist < (l.source.r || 8) + (l.target.r || 8) + 42) return false;
       if (hasFocus) return highlightedEdges.has(EDGE_KEY(l));
-      return this.view.k > 1.3;
+      return this.view.k > 0.62;
     });
 
     this.layerEdgeLabels.selectAll("text.g-edge-label")
@@ -1581,9 +1669,10 @@ export class GraphView {
           d.id === this.selected ? "is-selected" : "",
           d.id === this.searchPathTargetId && this.searchPathNodes ? "is-selected" : "",
           d.id === this.hovered ? "is-hovered" : "",
-          this.cited.has(d.id) ? "is-cited" : "",
+          this.seeds.has(d.id) ? "seed" : "",
+          this.cited.has(d.id) ? "cited" : "",
           this.fresh.has(d.id) ? "is-fresh" : "",
-          isDim ? "is-dim" : "",
+          isDim ? "dim" : "",
           d.isCompany ? "is-root" : "",
         ].filter(Boolean).join(" ");
       })
@@ -1592,12 +1681,17 @@ export class GraphView {
     groups.select("circle.core")
       .attr("r", (d) => Math.max(3, d.r || 7))
       .attr("fill", (d) => d.nodeColor || d.companyColor || typeColor(d.type))
-      .attr("stroke", (d) => (d.id === this.selected || d.id === this.hovered)
-        ? "var(--text)"
-        : "var(--graph-bg, #050505)");
+      .attr("stroke", (d) => {
+        // Base stroke is set via CSS (var(--bg)), only override for selected/hovered
+        if (d.id === this.selected || d.id === this.hovered) {
+          return "var(--text)";
+        }
+        return null; // Let CSS handle base stroke
+      })
+      .style("filter", "none"); // CSS handles cited glow via .cited class
 
     groups.select("text.g-node-label")
-      .text((d) => (d.name.length > 30 ? `${d.name.slice(0, 29)}…` : d.name));
+      .text((d) => (d.name.length > 26 ? `${d.name.slice(0, 25)}…` : d.name));
 
     groups.select("title")
       .text((d) => `${d.name} (${prettyType(d.type)})${d.description ? ` — ${d.description}` : ""}`);
@@ -1713,11 +1807,8 @@ export class GraphView {
         if (mode === "none") { d.labelVisible = false; continue; }
 
         // At low zoom a label nobody can read is just noise.
-        if (mode === "smart") {
-          if (d.type === "Filing" && k < 0.55) { d.labelVisible = false; continue; }
-          if (rank >= 5 && k < 0.75) { d.labelVisible = false; continue; }
-          if (rank >= 6 && k < 1.0) { d.labelVisible = false; continue; }
-        }
+        // Show condition: showLabels && (zoom > 0.45)
+        if (mode === "smart" && k < 0.45) { d.labelVisible = false; continue; }
 
         if (rank >= (answering ? 3 : 6)) {
           if (tailBudget <= 0) { d.labelVisible = false; continue; }
@@ -2287,7 +2378,7 @@ export class GraphView {
 
     const spanX = Math.max(1, maxX - minX);
     const spanY = Math.max(1, maxY - minY);
-    const k = Math.max(0.12, Math.min(1.3, 0.92 * Math.min(width / spanX, height / spanY)));
+    const k = Math.max(0.15, Math.min(2, 0.92 * Math.min(width / spanX, height / spanY)));
 
     this.#setView(
       width / 2 - ((minX + maxX) / 2) * k,
@@ -2298,7 +2389,7 @@ export class GraphView {
 
   zoomBy(factor) {
     const { width, height } = this.#size();
-    const k = Math.max(0.08, Math.min(4, this.view.k * factor));
+    const k = Math.max(0.1, Math.min(3, this.view.k * factor));
     this.#setView(
       width / 2 - (width / 2 - this.view.x) * (k / this.view.k),
       height / 2 - (height / 2 - this.view.y) * (k / this.view.k),
