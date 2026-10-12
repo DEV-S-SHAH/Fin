@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FinGraph — Review Decks</title>
+<style>
+  :root {
+    --bg: #0b0f14;
+    --panel: #131a23;
+    --line: #223040;
+    --fg: #e6edf3;
+    --muted: #8b98a5;
+    --accent: #2f81f7;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 14px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--line);
+    flex: 0 0 auto;
+  }
+  header h1 {
+    font-size: 14px;
+    font-weight: 600;
+    margin: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .spacer { flex: 1 1 auto; }
+  select, button {
+    font: inherit;
+    color: var(--fg);
+    background: #1b2430;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 6px 10px;
+    cursor: pointer;
+  }
+  button:hover, select:hover { border-color: var(--accent); }
+  button:disabled { opacity: .4; cursor: default; border-color: var(--line); }
+  .counter {
+    font-variant-numeric: tabular-nums;
+    color: var(--muted);
+    min-width: 58px;
+    text-align: center;
+  }
+
+  #stage {
+    position: relative;
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 12px;
+    background: #05080b;
+    touch-action: pan-y;
+  }
+  #slide {
+    max-width: 100%;
+    max-height: 100%;
+    object-fit: contain;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, .6);
+    border-radius: 4px;
+    background: #fff;
+  }
+  #slide.loading { opacity: .35; }
+
+  .nav {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 44px;
+    height: 64px;
+    font-size: 22px;
+    line-height: 1;
+    background: rgba(19, 26, 35, .72);
+    border-radius: 8px;
+    opacity: 0;
+    transition: opacity .15s;
+  }
+  #stage:hover .nav, .nav:focus-visible { opacity: 1; }
+  #prev { left: 10px; }
+  #next { right: 10px; }
+
+  footer {
+    flex: 0 0 auto;
+    background: var(--panel);
+    border-top: 1px solid var(--line);
+    padding: 8px 10px;
+  }
+  #filmstrip {
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+    padding-bottom: 4px;
+    scrollbar-width: thin;
+  }
+  #filmstrip img {
+    height: 54px;
+    width: auto;
+    border-radius: 4px;
+    border: 2px solid transparent;
+    cursor: pointer;
+    opacity: .6;
+    flex: 0 0 auto;
+  }
+  #filmstrip img:hover { opacity: 1; }
+  #filmstrip img[aria-current="true"] { border-color: var(--accent); opacity: 1; }
+
+  #progress {
+    position: absolute;
+    left: 0;
+    bottom: 0;
+    height: 3px;
+    background: var(--accent);
+    width: 0;
+    transition: width .18s ease;
+  }
+
+  .hint { color: var(--muted); font-size: 12px; }
+  @media (max-width: 640px) { .hint { display: none; } }
+</style>
+</head>
+<body>
+
+<header>
+  <h1 id="title">FinGraph Review Decks</h1>
+  <select id="deckPicker" aria-label="Choose deck"></select>
+  <div class="spacer"></div>
+  <span class="hint">← → space to slide · F fullscreen</span>
+  <span class="counter" id="counter">1 / 1</span>
+  <button id="fs" title="Fullscreen (F)">⛶</button>
+</header>
+
+<main id="stage">
+  <button class="nav" id="prev" aria-label="Previous slide">‹</button>
+  <img id="slide" alt="">
+  <button class="nav" id="next" aria-label="Next slide">›</button>
+  <div id="progress"></div>
+</main>
+
+<footer>
+  <div id="filmstrip" role="tablist" aria-label="Slides"></div>
+</footer>
+
+<script>
+// To add a deck: drop its slides in docs/decks/<id>/ as slide-01.png, slide-02.png, ...
+// and append an entry here. `slides` is the slide count.
+const DECKS = [
+  { id: "review1", title: "Review 1 — Graph RAG based Financial Insights", slides: 9 }
+];
+
+const el = {
+  stage:   document.getElementById("stage"),
+  slide:   document.getElementById("slide"),
+  title:   document.getElementById("title"),
+  counter: document.getElementById("counter"),
+  strip:   document.getElementById("filmstrip"),
+  picker:  document.getElementById("deckPicker"),
+  prev:    document.getElementById("prev"),
+  next:    document.getElementById("next"),
+  fs:      document.getElementById("fs"),
+  progress:document.getElementById("progress")
+};
+
+let deck = DECKS[0];
+let index = 0;
+
+const slidePath = (deck, i) =>
+  `decks/${deck.id}/slide-${String(i + 1).padStart(2, "0")}.png`;
+
+function render() {
+  const total = deck.slides;
+  el.slide.src = slidePath(deck, index);
+  el.slide.alt = `${deck.title} — slide ${index + 1} of ${total}`;
+  el.counter.textContent = `${index + 1} / ${total}`;
+  el.progress.style.width = `${((index + 1) / total) * 100}%`;
+  el.prev.disabled = index === 0;
+  el.next.disabled = index === total - 1;
+  Array.from(el.strip.children).forEach((img, i) =>
+    img.setAttribute("aria-current", String(i === index)));
+  const active = el.strip.children[index];
+  if (active) active.scrollIntoView({ block: "nearest", inline: "nearest" });
+  if (location.hash !== `#${index + 1}`) {
+    history.replaceState(null, "", `#${index + 1}`);
+  }
+}
+
+function go(i) {
+  index = Math.max(0, Math.min(deck.slides - 1, i));
+  render();
+}
+
+function build() {
+  el.title.textContent = deck.title;
+  document.title = `${deck.title} — FinGraph`;
+  el.strip.replaceChildren();
+  for (let i = 0; i < deck.slides; i++) {
+    const img = document.createElement("img");
+    img.src = slidePath(deck, i);
+    img.alt = `Go to slide ${i + 1}`;
+    img.loading = i < 2 ? "eager" : "lazy";
+    img.addEventListener("click", () => go(i));
+    el.strip.appendChild(img);
+  }
+  go(index);
+}
+
+function selectDeck(id) {
+  const found = DECKS.find(d => d.id === id);
+  if (found) { deck = found; index = 0; build(); }
+}
+
+DECKS.forEach(d => {
+  const opt = document.createElement("option");
+  opt.value = d.id;
+  opt.textContent = d.title;
+  el.picker.appendChild(opt);
+});
+el.picker.hidden = DECKS.length < 2;
+el.picker.value = deck.id;
+el.picker.addEventListener("change", e => selectDeck(e.target.value));
+
+el.prev.addEventListener("click", () => go(index - 1));
+el.next.addEventListener("click", () => go(index + 1));
+el.fs.addEventListener("click", () => {
+  if (document.fullscreenElement) document.exitFullscreen();
+  else el.stage.requestFullscreen();
+});
+
+document.addEventListener("keydown", e => {
+  const t = e.target;
+  if (t instanceof Element && t.closest("select, input, textarea")) return;
+  switch (e.key) {
+    case "ArrowRight": case "PageDown": case " ": case "n":
+      e.preventDefault(); go(index + 1); break;
+    case "ArrowLeft": case "PageUp": case "p":
+      e.preventDefault(); go(index - 1); break;
+    case "Home": e.preventDefault(); go(0); break;
+    case "End": e.preventDefault(); go(deck.slides - 1); break;
+    case "f": case "F":
+      e.preventDefault(); el.fs.click(); break;
+    default:
+      if (/^[1-9]$/.test(e.key)) { e.preventDefault(); go(Number(e.key) - 1); }
+  }
+});
+
+// swipe
+let startX = null;
+el.stage.addEventListener("pointerdown", e => { startX = e.clientX; });
+el.stage.addEventListener("pointerup", e => {
+  if (startX === null) return;
+  const dx = e.clientX - startX;
+  if (Math.abs(dx) > 60) go(index + (dx < 0 ? 1 : -1));
+  startX = null;
+});
+
+// deep link: #3 opens slide 3
+const deep = parseInt((location.hash || "").slice(1), 10);
+if (Number.isFinite(deep) && deep >= 1) index = Math.min(deep - 1, deck.slides - 1);
+window.addEventListener("hashchange", () => {
+  const n = parseInt((location.hash || "").slice(1), 10);
+  if (Number.isFinite(n) && n >= 1 && n - 1 !== index) go(n - 1);
+});
+
+build();
+</script>
+</body>
+</html>
