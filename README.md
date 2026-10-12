@@ -164,19 +164,6 @@ Fin/
 └── .env.example
 ```
 
-## Review 1 Deck (PPT)
-
-Graph RAG based Financial Insights — Review 1 (9 slides).
-
-📄 **[Open the deck (PDF)](docs/decks/review1/review1.pdf)** — rendered by GitHub's built-in viewer, right here in the repo. Scroll or use the viewer's page controls to move through the slides.
-
-▶ **[Open the interactive slide viewer](https://dev-s-shah.github.io/Fin/)** — click the arrows or use `←` `→` / `space` to slide, `F` for fullscreen. (Needs GitHub Pages enabled under Settings → Pages.)
-
-[![Review 1 — Graph RAG based Financial Insights (open the deck)](docs/decks/review1/slide-01.png)](docs/decks/review1/review1.pdf)
-
-Original file: [Graph RAG based Financial Insights Review 1.pptx](https://github.com/user-attachments/files/33320369/Graph.RAG.based.Financial.Insights.R.1.pptx)
-
-
 ---
 
 ## License
