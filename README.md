@@ -4,16 +4,6 @@
 
 ---
 
-## Demo
-
-[![Watch the FinGraph demo](demo/fingraph-brag.jpg)](demo/fingraph-brag.mp4)
-
-▶️ **[Watch the demo — 29s FinGraph walkthrough](demo/fingraph-brag.mp4)**
-
-Fragmented research → connected knowledge graph → a real, cited answer.
-
----
-
 ## Presentations
 
 PPTX files download directly. PDFs open in GitHub's built-in viewer for slide-by-slide navigation.
