@@ -164,7 +164,20 @@ Fin/
 └── .env.example
 ```
 
-[Graph RAG based Financial Insights Review 1.pptx](https://github.com/user-attachments/files/33320369/Graph.RAG.based.Financial.Insights.R.1.pptx)
+## Review 1 Deck (PPT)
+
+Graph RAG based Financial Insights — Review 1. All 9 slides are shown below; scroll to advance.
+Original file: [Graph RAG based Financial Insights Review 1.pptx](https://github.com/user-attachments/files/33320369/Graph.RAG.based.Financial.Insights.R.1.pptx)
+
+<img src="images/ppt-review1/slide-01.png" width="880" alt="Review 1 — Slide 1">
+<img src="images/ppt-review1/slide-02.png" width="880" alt="Review 1 — Slide 2">
+<img src="images/ppt-review1/slide-03.png" width="880" alt="Review 1 — Slide 3">
+<img src="images/ppt-review1/slide-04.png" width="880" alt="Review 1 — Slide 4">
+<img src="images/ppt-review1/slide-05.png" width="880" alt="Review 1 — Slide 5">
+<img src="images/ppt-review1/slide-06.png" width="880" alt="Review 1 — Slide 6">
+<img src="images/ppt-review1/slide-07.png" width="880" alt="Review 1 — Slide 7">
+<img src="images/ppt-review1/slide-08.png" width="880" alt="Review 1 — Slide 8">
+<img src="images/ppt-review1/slide-09.png" width="880" alt="Review 1 — Slide 9">
 
 
 ---
