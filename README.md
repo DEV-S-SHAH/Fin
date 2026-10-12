@@ -6,13 +6,15 @@
 
 ## Presentations
 
-Download the presentation files below (clicking the filename will download it):
+PPTX files download directly. PDFs open in GitHub's built-in viewer for slide-by-slide navigation.
 
 | File | PPTX | PDF (View Online) |
 |------|------|-------------------|
 | Review 1 | [Download](https://raw.githubusercontent.com/DEV-S-SHAH/Fin/main/ppt/Graph%20RAG%20based%20Financial%20Insights%20Review%201.pptx) | [View](https://github.com/DEV-S-SHAH/Fin/blob/main/ppt/Graph%20RAG%20based%20Financial%20Insights%20Review%201.pdf) |
 | Review 2 | [Download](https://raw.githubusercontent.com/DEV-S-SHAH/Fin/main/ppt/Graph%20RAG%20based%20Financial%20Insights%20Review%202.pptx) | [View](https://github.com/DEV-S-SHAH/Fin/blob/main/ppt/Graph%20RAG%20based%20Financial%20Insights%20Review%202.pdf) |
 | Review 3 | [Download](https://raw.githubusercontent.com/DEV-S-SHAH/Fin/main/ppt/Graph%20RAG%20based%20Financial%20Insights%20Review%203.pptx) | [View](https://github.com/DEV-S-SHAH/Fin/blob/main/ppt/Graph%20RAG%20based%20Financial%20Insights%20Review%203.pdf) |
+
+[View all files in /ppt folder](https://github.com/DEV-S-SHAH/Fin/tree/main/ppt)
 
 ---
 
