@@ -14,7 +14,9 @@ Download the presentation files below (clicking the filename will download it):
 | Review 2 | [Download](https://raw.githubusercontent.com/DEV-S-SHAH/Fin/main/ppt/Graph%20RAG%20based%20Financial%20Insights%20Review%202.pptx) | [View](https://github.com/DEV-S-SHAH/Fin/blob/main/ppt/Graph%20RAG%20based%20Financial%20Insights%20Review%202.pdf) |
 | Review 3 | [Download](https://raw.githubusercontent.com/DEV-S-SHAH/Fin/main/ppt/Graph%20RAG%20based%20Financial%20Insights%20Review%203.pptx) | [View](https://github.com/DEV-S-SHAH/Fin/blob/main/ppt/Graph%20RAG%20based%20Financial%20Insights%20Review%203.pdf) |
 
----## Quick Start
+---
+
+## Quick Start
 
 **Requires:** Python 3.13, Node.js 20+ (for React workspace). No Docker, no database server.
 
