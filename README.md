@@ -164,6 +164,9 @@ Fin/
 └── .env.example
 ```
 
+[Graph RAG based Financial Insights Review 1.pptx](https://github.com/user-attachments/files/33320369/Graph.RAG.based.Financial.Insights.R.1.pptx)
+
+
 ---
 
 ## License
