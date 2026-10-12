@@ -4,6 +4,14 @@
 
 ---
 
+## Demo
+
+▶️ **[Watch the demo — 29s FinGraph walkthrough](https://github.com/DEV-S-SHAH/Fin/issues/1)**
+
+Fragmented research → connected knowledge graph → a real, cited answer.
+
+---
+
 ## Presentations
 
 PPTX files download directly. PDFs open in GitHub's built-in viewer for slide-by-slide navigation.
