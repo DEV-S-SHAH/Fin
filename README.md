@@ -6,7 +6,9 @@
 
 ## Demo
 
-▶️ **[Watch the demo — 29s FinGraph walkthrough](https://github.com/DEV-S-SHAH/Fin/issues/1)**
+[![Watch the FinGraph demo](demo/fingraph-brag.jpg)](demo/fingraph-brag.mp4)
+
+▶️ **[Watch the demo — 29s FinGraph walkthrough](demo/fingraph-brag.mp4)**
 
 Fragmented research → connected knowledge graph → a real, cited answer.
 
