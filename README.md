@@ -2,15 +2,11 @@
 
 **GraphRAG for SEC filings.** Turns 10-K, 10-Q, and 8-K filings into a queryable property graph with LLM question answering. Pure-Python ingestion (deterministic, no API key), model only used at query time to phrase answers over retrieved graph context.
 
----
-
 ## Demo
 
 https://github.com/user-attachments/assets/562b2311-8066-4879-899b-d8bc6858a6ed
 
 Financial intelligence, connected.
-
----
 
 ## Presentations
 
@@ -23,8 +19,6 @@ PPTX files download directly. PDFs open in GitHub's built-in viewer for slide-by
 | Review 3 | [Download](https://raw.githubusercontent.com/DEV-S-SHAH/Fin/main/ppt/Graph%20RAG%20based%20Financial%20Insights%20Review%203.pptx) | [View](https://github.com/DEV-S-SHAH/Fin/blob/main/ppt/Graph%20RAG%20based%20Financial%20Insights%20Review%203.pdf) |
 
 [View all files in /ppt folder](https://github.com/DEV-S-SHAH/Fin/tree/main/ppt)
-
----
 
 ## Quick Start
 
@@ -52,6 +46,7 @@ cd web && npm install && npm run dev
 ```
 
 **All five benchmarks should pass:**
+
 ```
 [PASS] B1 graph shape and referential integrity
 [PASS] B2 point lookup: Net Sales 3M-2026-07-26 on 10-Q FY2027
@@ -59,8 +54,6 @@ cd web && npm install && npm run dev
 [PASS] B4 segment fan-out from 'Net Sales'
 [PASS] B5 negative control: FY2019 absent
 ```
-
----
 
 ## Architecture
 
@@ -77,8 +70,6 @@ sandbox_engine/data/<company>/<year>/<form>/*.htm  →  30 committed filings (39
          ▼  python -m ui.fingraph --port 9100
     FinGraph UI: landing + studio + auth
 ```
-
----
 
 ## Database Backup & Restore
 
@@ -99,8 +90,6 @@ python -m sandbox_engine --backup verify --backup-id <id>
 python -m sandbox_engine --backup restore --backup-id <id> --confirm
 ```
 
----
-
 ## Tests
 
 ```bash
@@ -111,8 +100,6 @@ python -m unittest discover -s sandbox_engine -p "test_*.py"
 # Frontend
 cd web && npm run build
 ```
-
----
 
 ## Repository Layout
 
@@ -135,8 +122,6 @@ Fin/
 └── .env.example
 ```
 
----
-
 ## License
 
-MIT
+This project is licensed under the MIT License.
