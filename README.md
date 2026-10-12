@@ -62,20 +62,6 @@ cd web && npm install && npm run dev
 
 ---
 
-## What You Get
-
-| Route | Description |
-|-------|-------------|
-| `/` | Public landing page — hero, live market ticker, features, pricing |
-| `/app` | **GraphRAG Studio** (protected) — entity browser, force-directed D3 graph, Ask FinGraph with streaming answers & provenance |
-| `/auth` | Sign-in — Google, Apple, TradingView OAuth + dev fallback |
-| `/company/{ticker}` | Company overview — filings, metrics, chart, news, technicals |
-| `/api/ask` | SSE streaming QA — routes KNOWN/COLD_START/AMBIGUOUS, returns answer + citations + graph |
-
-**Cold-Start JIT Graph RAG:** Questions about companies not in the graph trigger live SEC fetch → extraction → in-memory overlay stitching → 2-hop traversal → streaming answer. All under SLA budgets (fetch < 2.5s, extract < 3.5s, stitch < 1s).
-
----
-
 ## Architecture
 
 ```
@@ -91,43 +77,6 @@ sandbox_engine/data/<company>/<year>/<form>/*.htm  →  30 committed filings (39
          ▼  python -m ui.fingraph --port 9100
     FinGraph UI: landing + studio + auth
 ```
-
-**Key modules:**
-| Path | Role |
-|------|------|
-| `sandbox_engine/parser.py` | HTML → nodes/edges; registrant, DEI facts, fiscal calendars |
-| `sandbox_engine/entity_resolver.py` | Canonical registry; merges concepts across filings |
-| `sandbox_engine/buffer.py` + `loader.py` | Arrow batching, Parquet spill, idempotent LadybugDB load |
-| `sandbox_engine/router.py` | Query router: KNOWN / COLD_START / AMBIGUOUS |
-| `sandbox_engine/tier1_fetch.py` | SEC EDGAR fetcher (< 2.5s SLA, retry 429 with Retry-After) |
-| `sandbox_engine/coldstart_extract.py` | LLM triple extraction (15–30, < 3.5s) |
-| `sandbox_engine/stitch.py` | In-memory `networkx` overlay + backbone stitching (< 1s) |
-| `sandbox_engine/traversal.py` | Hybrid 2-hop traverser + provenance ledger |
-| `sandbox_engine/query_ui.py` | Backend logic: SSE events, Cypher WHERE push-down |
-| `ui/fingraph/server.py` | Unified HTTP server (landing, studio, auth, APIs) |
-
----
-
-## Environment
-
-```bash
-cp .env.example .env   # or let setup.py create it
-```
-
-**Default API key:** The `.env.example` includes a default `NVIDIA_API_KEY` so anyone deploying can run queries immediately without additional setup. Override by running `python setup.py` or editing `.env`.
-
-| Variable | Default | Meaning |
-|----------|---------|---------|
-| `PORT_QUERY_UI_V2` | `9100` | FinGraph UI port |
-| `NVIDIA_API_KEY` | — | Hosted model key from [build.nvidia.com](https://build.nvidia.com) |
-| `RAG_BACKEND` | `auto` | `auto`, `nvidia`, `ollama` |
-| `RAG_OLLAMA_BASE_URL` | `http://127.0.0.1:11434/v1` | Local model server |
-| `RAG_OLLAMA_MODEL` | `llama3.2` | |
-| `FINGRAPH_DATA_DIR` | `./data` | Persistent data directory (DB, staging, registry, checkpoints) |
-| `FINGRAPH_AUTH_SECRET` | random | HMAC secret for session cookies (set to persist sessions across restarts) |
-| `FINGRAPH_DEV_LOGIN` | `1` | Enable dev sign-in without OAuth |
-
-**Key resolution:** Key in `.env` → NVIDIA hosted model. No key + Ollama running → local `llama3.2`. Neither → UI asks for key or offers local model. Key can also be pasted in-browser (memory only).
 
 ---
 
@@ -190,4 +139,4 @@ Fin/
 
 ## License
 
-MIT# Sun Oct  4 16:55:37 IST 2026
+MIT
