@@ -4,11 +4,6 @@
 
 ---
 
-##Demo
-
-https://github.com/user-attachments/assets/d48c52e9-d1cf-4db2-8fa6-6bb7bd896c11
----
-
 ## Presentations
 
 PPTX files download directly. PDFs open in GitHub's built-in viewer for slide-by-slide navigation.
