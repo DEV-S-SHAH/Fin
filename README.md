@@ -1,4 +1,4 @@
-# FinGraph (Final)
+# FinGraph 
 
 **GraphRAG for SEC filings.** Turns 10-K, 10-Q, and 8-K filings into a queryable property graph with LLM question answering. Pure-Python ingestion (deterministic, no API key), model only used at query time to phrase answers over retrieved graph context.
 
