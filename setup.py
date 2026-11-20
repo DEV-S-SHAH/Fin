@@ -65,6 +65,31 @@ def write_env(path: Path, key: str, backend: str) -> None:
     restrict(path)
 
 
+def ensure_dependencies() -> None:
+    """Install Python runtime dependencies from requirements.txt.
+
+    A fresh clone should have every importable module available before the
+    first `python -m sandbox_engine` call. Runs pip once; if requirements are
+    already satisfied this is a no-op.
+    """
+    import subprocess
+    import sys
+
+    req = ROOT / "requirements.txt"
+    if not req.exists():
+        return
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-q", "-r", str(req)],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.SubprocessError):
+        # Best-effort; the import errors that surface later will guide the user.
+        pass
+
+
 def looks_like_a_key(value: str) -> bool:
     return value.startswith("nvapi-") and len(value) > 20
 
@@ -106,6 +131,7 @@ def check_key(key: str, model: str, base: str) -> tuple[bool, str]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    ensure_dependencies()
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--check", action="store_true",

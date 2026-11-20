@@ -1,0 +1,36 @@
+# Pre-commit hooks for FinGraph.
+# Runs on every `git commit`. Mirrors CI checks (ruff + pytest) locally so
+# errors are caught before they reach CI, plus a guardrail against the
+# `c.legal_name` schema-mismatch bug class seen in query_ui.py.
+#
+# Install once:  pre-commit install
+# Run manually:  pre-commit run --all-files
+
+repos:
+  # Ruff lint — mirrors CI "Lint (ruff)" step.
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.6
+    hooks:
+      - id: ruff
+        args: [check, sandbox_engine/, tests/]
+
+  # Pytest — mirrors CI "Run tests" step.
+  - repo: local
+    hooks:
+      - id: pytest
+        name: Run pytest test suite
+        entry: pytest tests/ -q
+        language: system
+        types: [python]
+        pass_filenames: false
+
+  # Guardrail: ban raw `c.legal_name` references in Cypher query strings.
+  # The Company table column is `name` (see sandbox_engine/buffer.py NODE_TABLES).
+  # The `_PROP_RENAME` map and Python `legal_name` parameters are legitimate.
+  - repo: local
+    hooks:
+      - id: no-legal-name-in-queries
+        name: Ban raw c.legal_name in Cypher queries
+        entry: bash -c 'grep -n "c\.legal_name" sandbox_engine/query_ui.py && echo "FOUND raw c.legal_name reference(s) above — use c.name instead (see _PROP_RENAME)" && exit 1 || exit 0'
+        language: system
+        files: ^sandbox_engine/query_ui\.py$

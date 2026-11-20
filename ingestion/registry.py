@@ -13,11 +13,11 @@ from pathlib import Path
 from typing import Any
 
 __all__ = [
-    "FiscalCalendar",
+    "DEFAULT_REGISTRY_PATH",
     "Company",
     "CompanyRegistry",
+    "FiscalCalendar",
     "get_registry",
-    "DEFAULT_REGISTRY_PATH",
 ]
 
 # Default registry location
@@ -178,7 +178,7 @@ class Company:
         }
     
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "Company":
+    def from_dict(cls, data: dict[str, Any]) -> Company:
         fiscal_data = data.get("fiscal_calendar", {})
         fiscal_cal = FiscalCalendar(
             year_end_month=fiscal_data.get("year_end_month", 12),
@@ -251,7 +251,7 @@ class CompanyRegistry:
         path.write_text(json.dumps(data, indent=2))
     
     @classmethod
-    def from_json(cls, path: Path) -> "CompanyRegistry":
+    def from_json(cls, path: Path) -> CompanyRegistry:
         """Load registry from JSON file."""
         if not path.exists():
             return cls()

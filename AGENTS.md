@@ -114,7 +114,7 @@ Embedded, file-based (`.lbug`). Respect:
 
 ## 6. DATABASE RULES
 
-- Inspect schema before changes (`buffer.py` `NODE_TABLES`, `REL_TABLES`, `PRIMARY_KEYS`)
+- Inspect schema before changes (`buffer.py` `NODE_TABLES`, `REL_TABLES`, `PRIMARY_KEYS` — `sandbox_engine/buffer.py` is the source of truth for table column names)
 - No casual schema changes — understand downstream: parser → loader → traversal → provenance
 - Node drift: `rebuild_node_table()`; rel drift: manual `DROP TABLE`
 - Preserve: `INT64 fiscal_year`, `DATE filing_date` for correct queries

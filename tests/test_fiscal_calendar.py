@@ -14,11 +14,9 @@ import unittest
 from datetime import date
 
 from ingestion.registry import (
-    CompanyRegistry,
-    FiscalCalendar,
     DEFAULT_COMPANIES,
+    FiscalCalendar,
     get_registry,
-    reset_registry,
 )
 
 
@@ -154,7 +152,7 @@ class TestFiscalCalendarCrossCompanyComparison(unittest.TestCase):
 
         aapl_start, aapl_end = registry.get("AAPL").fiscal_calendar.date_range_for_fiscal_year(2025)
         msft_start, msft_end = registry.get("MSFT").fiscal_calendar.date_range_for_fiscal_year(2025)
-        tsla_start, tsla_end = registry.get("TSLA").fiscal_calendar.date_range_for_fiscal_year(2025)
+        _tsla_start, tsla_end = registry.get("TSLA").fiscal_calendar.date_range_for_fiscal_year(2025)
 
         # All three are "FY2025" but cover different calendar windows
         self.assertNotEqual(aapl_start, msft_start)
@@ -187,6 +185,7 @@ class TestRetrieveFinancialContextFiscalCalendar(unittest.TestCase):
                               form_type=None):
         """Run retrieve_financial_context with a filing-query capture mock."""
         from unittest.mock import MagicMock
+
         from sandbox_engine.query_ui import retrieve_financial_context
 
         kg = MagicMock()
@@ -248,7 +247,7 @@ class TestRetrieveFinancialContextFiscalCalendar(unittest.TestCase):
 
     def test_aapl_fy2025_gets_aapl_date_range(self):
         """AAPL fiscal_year=2025 resolves to Oct 1 2024 - Sep 30 2025."""
-        kg = self._run_with_filing_mock("AAPL", 2025)
+        self._run_with_filing_mock("AAPL", 2025)
 
         cypher = self._submitted_filing_cypher
         params = self._submitted_filing_params
@@ -263,7 +262,7 @@ class TestRetrieveFinancialContextFiscalCalendar(unittest.TestCase):
 
     def test_msft_fy2025_gets_msft_date_range(self):
         """MSFT fiscal_year=2025 resolves to Jul 1 2024 - Jun 30 2025."""
-        kg = self._run_with_filing_mock("MSFT", 2025)
+        self._run_with_filing_mock("MSFT", 2025)
 
         cypher = self._submitted_filing_cypher
         params = self._submitted_filing_params
