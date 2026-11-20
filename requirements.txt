@@ -36,3 +36,6 @@ networkx>=3.0
 
 # Live market data for the landing page: lightweight Yahoo Finance API calls.
 requests>=2.31.0
+
+# India Company Graph UI (localhost-first).
+streamlit>=1.40.0
