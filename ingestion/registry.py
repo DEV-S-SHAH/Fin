@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -65,6 +65,59 @@ class FiscalCalendar:
         fy = self.fiscal_year_for_date(d)
         fq = self.fiscal_quarter_for_date(d)
         return f"FY{fy}-Q{fq}"
+
+    def year_end_date(self, fiscal_year: int) -> date:
+        """Last day of *fiscal_year*.
+
+        When ``fiscal_year_is_calendar_year_of_end`` is ``True`` (the default),
+        FY2025 ends on ``date(2025, year_end_month, year_end_day)`` -- e.g. MSFT
+        FY2025 ends June 30, 2025.  When ``False``, the fiscal year is named by
+        the year it *starts* in, so FY2025 ends on ``date(2026, ...)``.
+        """
+        if self.fiscal_year_is_calendar_year_of_end:
+            return date(fiscal_year, self.year_end_month, self.year_end_day)
+        return date(fiscal_year + 1, self.year_end_month, self.year_end_day)
+
+    def year_start_date(self, fiscal_year: int) -> date:
+        """First day of *fiscal_year*.
+
+        The day after the previous fiscal year's end.
+        """
+        prev_end = self.year_end_date(fiscal_year - 1)
+        return date(prev_end.year, prev_end.month, prev_end.day) + timedelta(days=1)
+
+    def date_range_for_fiscal_year(self, fiscal_year: int) -> tuple[date, date]:
+        """``(start, end)`` calendar dates for *fiscal_year*."""
+        return self.year_start_date(fiscal_year), self.year_end_date(fiscal_year)
+
+    def quarter_start_date(self, fiscal_year: int, quarter: int) -> date:
+        """First day of fiscal *quarter* (1-4) within *fiscal_year*."""
+        if quarter < 1 or quarter > 4:
+            raise ValueError(f"quarter must be 1-4, got {quarter!r}")
+        year_start = self.year_start_date(fiscal_year)
+        return self._add_months(year_start, (quarter - 1) * 3)
+
+    def quarter_end_date(self, fiscal_year: int, quarter: int) -> date:
+        """Last day of fiscal *quarter* (1-4) within *fiscal_year*."""
+        if quarter < 1 or quarter > 4:
+            raise ValueError(f"quarter must be 1-4, got {quarter!r}")
+        if quarter == 4:
+            return self.year_end_date(fiscal_year)
+        return self.quarter_start_date(fiscal_year, quarter + 1) - timedelta(days=1)
+
+    def date_range_for_fiscal_quarter(
+        self, fiscal_year: int, quarter: int
+    ) -> tuple[date, date]:
+        """``(start, end)`` calendar dates for fiscal *quarter* within *fiscal_year*."""
+        return (
+            self.quarter_start_date(fiscal_year, quarter),
+            self.quarter_end_date(fiscal_year, quarter),
+        )
+
+    def _add_months(self, d: date, months: int) -> date:
+        """Add *months* to *d*; *d* must be the first day of a month."""
+        total = d.year * 12 + (d.month - 1) + months
+        return date(total // 12, total % 12 + 1, d.day)
 
 
 @dataclass(frozen=True)

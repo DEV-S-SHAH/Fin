@@ -257,7 +257,7 @@ def default_ui_port() -> int:
 # A fresh clone can only produce the latter, because the databases are build
 # artefacts -- so a UI that spoke only the blueprint dialect served a graph
 # where every entity query raised "Cannot find property legal_name" and the page
-# rendered blank.
+# rendered blank; the engine stores the column as ``name`` and queries now use it.
 #
 # Rather than maintain two copies of every query, queries are written once in
 # blueprint terms and translated per database. Properties with no counterpart
@@ -411,7 +411,7 @@ MATCH (c:Company)-[:SUBMITTED]->(f:Filing)-[r:REPORTS_METRIC]->(m:FinancialMetri
 WHERE m.canonical_name CONTAINS 'Net Sales'
    OR m.canonical_name CONTAINS 'Revenue'
 RETURN c.ticker        AS ticker,
-       c.legal_name    AS company,
+       c.name          AS company,
        f.form_type     AS form,
        f.fiscal_year   AS fiscal_year,
        f.fiscal_period AS period,
@@ -1292,7 +1292,7 @@ class KnowledgeGraph:
         entities = []
 
         # 1. Company
-        for r in self.execute("MATCH (c:Company) RETURN c.ticker, c.legal_name"):
+        for r in self.execute("MATCH (c:Company) RETURN c.ticker, c.name"):
             tid, name = r[0], r[1]
             if not q or q in tid.lower() or q in name.lower() or q in "company":
                 # The ticker is the id and the only thing that distinguishes two
@@ -1720,9 +1720,9 @@ def retrieve_financial_context(
 
     # Include the core company - specifically filtered to resolved entity if given
     if ticker:
-        companies = kg.execute("MATCH (c:Company {ticker: $ticker}) RETURN c.ticker, c.legal_name, c.cik", {"ticker": ticker})
+        companies = kg.execute("MATCH (c:Company {ticker: $ticker}) RETURN c.ticker, c.name, c.cik", {"ticker": ticker})
     else:
-        companies = kg.execute("MATCH (c:Company) RETURN c.ticker, c.legal_name, c.cik")
+        companies = kg.execute("MATCH (c:Company) RETURN c.ticker, c.name, c.cik")
     for c in companies:
         add_node(c[0], c[1], "Company", f"Ticker: {c[0]}, CIK: {c[2]}", hint=c[0])
 
@@ -1740,7 +1740,46 @@ def retrieve_financial_context(
     if form_type is not None:
         temporal_where.append("f.form_type = $form_type")
         temporal_params["form_type"] = form_type
-    
+
+    # Fiscal-calendar-aware period range filtering.
+    # Resolve fiscal_year/quarter to calendar dates using the issuer's
+    # FiscalCalendar, so FY2026 means AAPL's Oct 2025-Sep 2026 but MSFT's
+    # Jul 2025-Jun 2026 -- never assume fiscal year = calendar year.
+    if ticker and fiscal_year is not None:
+        try:
+            from ingestion.registry import get_registry
+            _registry = get_registry()
+            _company = _registry.get(ticker)
+            if _company is not None:
+                _cal = _company.fiscal_calendar
+                _fy_start, _fy_end = _cal.date_range_for_fiscal_year(fiscal_year)
+                temporal_where.append(
+                    "f.period_end_date >= $fy_start AND f.period_end_date <= $fy_end"
+                )
+                temporal_params["fy_start"] = _fy_start.isoformat()
+                temporal_params["fy_end"] = _fy_end.isoformat()
+                # If a quarter is also given, narrow to that quarter's range.
+                if fiscal_quarter is not None:
+                    _q_num = None
+                    for _token in str(fiscal_quarter).upper():
+                        if _token.isdigit():
+                            _q_num = int(_token)
+                            break
+                    if _q_num is not None and 1 <= _q_num <= 4:
+                        _fq_start, _fq_end = _cal.date_range_for_fiscal_quarter(
+                            fiscal_year, _q_num
+                        )
+                        temporal_where.append(
+                            "f.period_end_date >= $fq_start "
+                            "AND f.period_end_date <= $fq_end"
+                        )
+                        temporal_params["fq_start"] = _fq_start.isoformat()
+                        temporal_params["fq_end"] = _fq_end.isoformat()
+        except Exception:
+            # If the registry is unavailable, fall back to the fiscal_year /
+            # fiscal_period filters above alone.
+            pass
+
     temporal_where_clause = " AND ".join(temporal_where) if temporal_where else "1=1"
 
     # Check filings. The filer is part of the label: "10-K FY2026 (FY)" is what
