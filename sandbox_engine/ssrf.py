@@ -43,6 +43,7 @@ DEFAULT_CONFIG = SSRFConfig(
         # SEC EDGAR
         "www.sec.gov",
         "data.sec.gov",
+        "efts.sec.gov",
         # Yahoo Finance
         "query1.finance.yahoo.com",
         "query2.finance.yahoo.com",

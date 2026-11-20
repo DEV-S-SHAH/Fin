@@ -111,6 +111,14 @@ class ValidateURLTests(unittest.TestCase):
         valid, error = validate_url("https://integrate.api.nvidia.com/v1/models", DEFAULT_CONFIG)
         self.assertTrue(valid, error)
 
+    def test_valid_efts_sec_url(self):
+        valid, error = validate_url("https://efts.sec.gov/LLD/searchtext?q=anthropic", DEFAULT_CONFIG)
+        self.assertTrue(valid, error)
+        self.assertIsNone(error)
+
+    def test_efts_sec_gov_in_allowed_hosts(self):
+        self.assertIn("efts.sec.gov", DEFAULT_CONFIG.allowed_hosts)
+
     def test_invalid_scheme(self):
         valid, error = validate_url("ftp://example.com/file", DEFAULT_CONFIG)
         self.assertFalse(valid)
