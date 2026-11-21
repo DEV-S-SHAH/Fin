@@ -1,6 +1,7 @@
 """Tests for India scrapers — normalization and error handling (no real network)."""
 
 from india_graph.scrapers.bse import BSEScraper
+from india_graph.scrapers.google_finance import GoogleFinanceScraper
 from india_graph.scrapers.mca import MCAScraper
 from india_graph.scrapers.nse import NSEScraper
 
@@ -87,3 +88,47 @@ def test_scraper_ssrf_blocked():
         assert False, "Should have raised ValueError"
     except ValueError:
         pass
+
+
+def test_google_finance_normalize():
+    s = GoogleFinanceScraper()
+    rec = s.normalize(
+        {
+            "symbol": "RELIANCE",
+            "exchange": "NSE",
+            "last_price": 1377.5,
+            "company_name": "Reliance Industries Ltd",
+            "currency": "INR",
+        },
+        "financial",
+    )
+    assert rec is not None
+    assert rec.source == "Google Finance"
+    assert rec.record_type == "financial"
+    assert rec.source_id == "RELIANCE:NSE"
+    assert rec.data["last_price"] == 1377.5
+    assert rec.data["company_name"] == "Reliance Industries Ltd"
+
+
+def test_google_finance_normalize_unknown_type():
+    s = GoogleFinanceScraper()
+    assert s.normalize({"foo": "bar"}, "unknown") is None
+    assert s.normalize("not a dict", "financial") is None
+
+
+def test_google_finance_ssrf_allowed():
+    """Google Finance hosts must be on the SSRF allow-list."""
+    s = GoogleFinanceScraper()
+    # Should not raise — google.com is allow-listed.
+    s._validate_url("https://www.google.com/finance/quote/RELIANCE:NSE")
+    s._validate_url("https://google.com/finance/quote/RELIANCE:NSE")
+
+
+def test_google_finance_ssrf_blocked():
+    """Google Finance scraper must reject non-allow-listed hosts."""
+    s = GoogleFinanceScraper()
+    try:
+        s._validate_url("https://www.sec.gov/filings")
+        assert False, "Should have raised ValueError"
+    except ValueError as exc:
+        assert "SSRF" in str(exc)

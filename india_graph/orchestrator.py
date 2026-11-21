@@ -25,6 +25,7 @@ from .provenance import build_evidence, grade_answer
 from .resolver import TickerCINResolver
 from .retrieval import retrieve
 from .scrapers.bse import BSEScraper
+from .scrapers.google_finance import GoogleFinanceScraper
 from .scrapers.mca import MCAScraper
 from .scrapers.nse import NSEScraper
 
@@ -47,6 +48,7 @@ class IndiaOrchestrator:
         self.nse = NSEScraper(config)
         self.bse = BSEScraper(config)
         self.mca = MCAScraper(config)
+        self.google = GoogleFinanceScraper(config)
         self.use_fixtures = use_fixtures
 
     # -- public API ---------------------------------------------------------
@@ -206,6 +208,61 @@ class IndiaOrchestrator:
                         f"{data.get('revenue')} PAT {data.get('profit_after_tax')}"
                     ),
                 )
+
+        # --- Google Finance: price + revenue (EXTERNAL provenance) ---
+        # Fallback when NSE is blocked and BSE has no financials.
+        gf_result = self.google.fetch_financials(symbol or cin)
+        if _record_ok(gf_result):
+            for rec in gf_result.records:
+                rec.data["cin"] = cin
+                data = rec.data
+                src = rec.source or "Google Finance"
+
+                # Last price metric
+                if data.get("last_price") is not None:
+                    metric_node = graph.add_metric(
+                        metric_name=f"{src} {data.get('company_name', 'quote')} last price",
+                        value=data.get("last_price"),
+                        scale="INR",
+                        unit="INR",
+                        period="latest",
+                        cin=cin,
+                        ticker=symbol or "",
+                        source=src,
+                    )
+                    graph.reports_metric(
+                        company_node,
+                        metric_node,
+                        value=data.get("last_price"),
+                        description=(
+                            f"{src} last price {data.get('last_price')} for "
+                            f"{data.get('company_name', symbol or cin)}"
+                        ),
+                    )
+
+                # Revenue metric
+                revenue = data.get("revenue")
+                if revenue is not None:
+                    period = data.get("revenue_period") or "latest"
+                    metric_node = graph.add_metric(
+                        metric_name=f"{src} {data.get('company_name', 'company')} revenue",
+                        value=revenue,
+                        scale="INR",
+                        unit="INR",
+                        period=period,
+                        cin=cin,
+                        ticker=symbol or "",
+                        source=src,
+                    )
+                    graph.reports_metric(
+                        company_node,
+                        metric_node,
+                        value=revenue,
+                        description=(
+                            f"{src} revenue {revenue} for {data.get('company_name', symbol or cin)} "
+                            f"({period})"
+                        ),
+                    )
 
         # --- Offline fallback: bundled fixtures (sample data only) ---
         # Load fixtures when live scraping returned no announcements or metrics
