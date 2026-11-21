@@ -745,9 +745,12 @@ async function init() {
     // Load stats for topbar
     const stats = await fetchStats();
     set({ stats, rag: stats });
-    $q('#stat-nodes').textContent = fmtNumber(stats.nodes ?? 0);
-    $q('#stat-edges').textContent = fmtNumber(stats.edges ?? 0);
-    $q('#stat-issuers').textContent = fmtNumber(appState.companies.length);
+    const nodes = $q('#stat-nodes');
+    if (nodes) nodes.textContent = fmtNumber(stats.nodes ?? 0);
+    const edges = $q('#stat-edges');
+    if (edges) edges.textContent = fmtNumber(stats.edges ?? 0);
+    const issuers = $q('#stat-issuers');
+    if (issuers) issuers.textContent = fmtNumber(appState.companies.length);
     const chip = $q('#schema-chip');
     if (stats.schema) {
       chip.hidden = false;

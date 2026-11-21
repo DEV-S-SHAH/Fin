@@ -313,6 +313,8 @@ export class GraphView {
     this.flashTimer = 0;
     this.flowTimer = 0;
     this.flowLinks = null;
+    this.springFrame = null;
+    this._entranceTimer = null;
     this.fitted = false;
     this.disposed = false;
 
@@ -481,6 +483,35 @@ export class GraphView {
         // Reheat simulation after drag to let forces settle nodes into non-overlapping positions
         if (this.simulation) this.simulation.alpha(0.5);
         this.#computeLabelPlacements();
+
+        // Spring-back: animate the dragged node back toward its cluster slot
+        // so a quick drag reads as a peek, not a permanent move. Only applies
+        // when the node hasn't been dragged far (under ~60px) — further drags
+        // are treated as intentional repositioning.
+        if (!d.isCompany && this.dragTravel < 60 && this.dragTravel > 4) {
+          const targetX = d.slotX ?? d.x;
+          const targetY = d.slotY ?? d.y;
+          const startX = d.x;
+          const startY = d.y;
+          const duration = 450;
+          const startTime = performance.now();
+          const spring = (now) => {
+            const elapsed = now - startTime;
+            const t = Math.min(1, elapsed / duration);
+            // Ease-out back: overshoots slightly then settles
+            const ease = 1 - Math.pow(1 - t, 3);
+            d.x = startX + (targetX - startX) * ease;
+            d.y = startY + (targetY - startY) * ease;
+            this.#updatePositions();
+            if (t < 1) {
+              this.springFrame = requestAnimationFrame(spring);
+            } else {
+              this.springFrame = null;
+              this.#computeLabelPlacements();
+            }
+          };
+          this.springFrame = requestAnimationFrame(spring);
+        }
       });
   }
 
@@ -1640,6 +1671,9 @@ export class GraphView {
           g.append("text").attr("class", "g-node-label").attr("text-anchor", "middle");
           g.call(this.drag);
 
+          // Mark entering nodes so the CSS entrance animation plays once.
+          enter.each(function (d) { d._entrance = true; });
+
           g.on("pointerenter", (event, d) => {
             this.hovered = d.id;
             this.#showTooltip(event, d);
@@ -1672,6 +1706,7 @@ export class GraphView {
           this.seeds.has(d.id) ? "seed" : "",
           this.cited.has(d.id) ? "cited" : "",
           this.fresh.has(d.id) ? "is-fresh" : "",
+          d._entrance ? "is-fresh" : "",
           isDim ? "dim" : "",
           d.isCompany ? "is-root" : "",
         ].filter(Boolean).join(" ");
@@ -1697,6 +1732,19 @@ export class GraphView {
       .text((d) => `${d.name} (${prettyType(d.type)})${d.description ? ` — ${d.description}` : ""}`);
 
     this.#computeLabelPlacements();
+
+    // Clear entrance animation flags after they've played, so nodes settle
+    // into their normal styling. Scheduled once per batch of new nodes.
+    if (this.nodes.some((d) => d._entrance) && !this._entranceTimer) {
+      this._entranceTimer = setTimeout(() => {
+        this._entranceTimer = null;
+        let cleared = false;
+        for (const d of this.nodes) {
+          if (d._entrance) { delete d._entrance; cleared = true; }
+        }
+        if (cleared) this.#draw();
+      }, 600);
+    }
   }
 
   /* ── Label Placement ──────────────────────────────────────────────────── */
@@ -2011,7 +2059,7 @@ export class GraphView {
 
     const { width, height } = this.#size();
     const targetK = Math.max(0.75, Math.min(1.4, this.view.k));
-    this.#setView(width / 2 - node.x * targetK, height / 2 - node.y * targetK, targetK);
+    this.#setViewSmooth(width / 2 - node.x * targetK, height / 2 - node.y * targetK, targetK, 700);
 
     this.#showDetailPanel(node);
     this.#draw();
@@ -2346,7 +2394,7 @@ export class GraphView {
       this.selected = node.id;
       const { width, height } = this.#size();
       const targetK = Math.max(0.75, Math.min(1.4, this.view.k));
-      this.#setView(width / 2 - (node.x || 0) * targetK, height / 2 - (node.y || 0) * targetK, targetK);
+      this.#setViewSmooth(width / 2 - (node.x || 0) * targetK, height / 2 - (node.y || 0) * targetK, targetK, 700);
       this.#showDetailPanel(node);
       this.#draw();
       this.handlers.onSelect?.(node);
@@ -2571,6 +2619,17 @@ export class GraphView {
     );
   }
 
+  /** Smoothly animate the camera to a new view using d3 transitions. */
+  #setViewSmooth(x, y, k, duration = 700) {
+    const clamped = Math.max(0.08, Math.min(4, k));
+    this.view = { x, y, k: clamped };
+    d3.select(this.canvas)
+      .transition()
+      .duration(duration)
+      .ease(d3.easeCubicOut)
+      .call(this.zoom.transform, d3.zoomIdentity.translate(x, y).scale(clamped));
+  }
+
   #size() {
     const rect = this.canvas.getBoundingClientRect();
     return {
@@ -2592,8 +2651,10 @@ export class GraphView {
     this.disposed = true;
     this.simulation?.stop();
     if (this.frame) cancelAnimationFrame(this.frame);
+    if (this.springFrame) cancelAnimationFrame(this.springFrame);
     clearTimeout(this.flashTimer);
     clearTimeout(this.flowTimer);
+    clearTimeout(this._entranceTimer);
     this.observer?.disconnect();
     this.root?.remove();
   }

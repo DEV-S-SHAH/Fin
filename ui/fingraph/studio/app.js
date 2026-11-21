@@ -123,14 +123,17 @@ class App {
    *  second one depending on the order they land in. */
   #renderIssuers() {
     const count = state.companies?.length || state.stats?.companies || 0;
-    $("stat-issuers").textContent = count ? fmtNumber(count) : "—";
+    const el = $("stat-issuers");
+    if (el) el.textContent = count ? fmtNumber(count) : "—";
   }
 
   #applyStats(stats) {
     set({ stats, rag: stats });
     this.#renderIssuers();
-    $("stat-nodes").textContent = fmtNumber(stats.nodes ?? 0);
-    $("stat-edges").textContent = fmtNumber(stats.edges ?? 0);
+    const nodes = $("stat-nodes");
+    if (nodes) nodes.textContent = fmtNumber(stats.nodes ?? 0);
+    const edges = $("stat-edges");
+    if (edges) edges.textContent = fmtNumber(stats.edges ?? 0);
     const chip = $("schema-chip");
     if (stats.schema) {
       chip.hidden = false;
@@ -142,8 +145,10 @@ class App {
   }
 
   #statsFailed(error) {
-    $("stat-nodes").textContent = "—";
-    $("stat-edges").textContent = "—";
+    const nodes = $("stat-nodes");
+    if (nodes) nodes.textContent = "—";
+    const edges = $("stat-edges");
+    if (edges) edges.textContent = "—";
     toast(`could not read the graph stats: ${error.message}`, "bad");
   }
 

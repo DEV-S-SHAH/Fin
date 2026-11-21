@@ -53,14 +53,17 @@ class GraphExplorerApp {
 
   #renderIssuers() {
     const count = state.companies?.length || state.stats?.companies || 0;
-    $("stat-issuers").textContent = count ? fmtNumber(count) : "—";
+    const el = $("stat-issuers");
+    if (el) el.textContent = count ? fmtNumber(count) : "—";
   }
 
   #applyStats(stats) {
     set({ stats, rag: stats });
     this.#renderIssuers();
-    $("stat-nodes").textContent = fmtNumber(stats.nodes ?? 0);
-    $("stat-edges").textContent = fmtNumber(stats.edges ?? 0);
+    const nodes = $("stat-nodes");
+    if (nodes) nodes.textContent = fmtNumber(stats.nodes ?? 0);
+    const edges = $("stat-edges");
+    if (edges) edges.textContent = fmtNumber(stats.edges ?? 0);
     const chip = $("schema-chip");
     if (stats.schema) {
       chip.hidden = false;
@@ -71,8 +74,10 @@ class GraphExplorerApp {
   }
 
   #statsFailed(error) {
-    $("stat-nodes").textContent = "—";
-    $("stat-edges").textContent = "—";
+    const nodes = $("stat-nodes");
+    if (nodes) nodes.textContent = "—";
+    const edges = $("stat-edges");
+    if (edges) edges.textContent = "—";
     toast(`could not read the graph stats: ${error.message}`, "bad");
   }
 
@@ -205,6 +210,12 @@ class GraphExplorerApp {
     $("graph-count").textContent = count
       ? `${fmtNumber(count)} nodes · ${fmtNumber(state.graph?.edges?.length ?? 0)} links`
       : "0 nodes";
+
+    // Show empty state when no nodes are rendered
+    const empty = $("graph-empty");
+    const kbHint = $("graph-kb-hint");
+    if (empty) empty.hidden = count > 0;
+    if (kbHint) kbHint.hidden = count > 0;
   }
 
   #wireStore() {
