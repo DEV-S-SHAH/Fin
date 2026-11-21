@@ -52,9 +52,20 @@ class IndiaOrchestrator:
     # -- public API ---------------------------------------------------------
 
     def build_for_cin(self, cin: str, company_name: str = "") -> SessionGraph:
-        """Scrape all sources for *cin* and build the session graph."""
+        """Scrape all sources for *cin* and build the session graph.
+
+        When *use_fixtures* is True, live scraping is skipped entirely and
+        only bundled sample fixtures are loaded — useful for offline demos
+        and for keeping the graph deterministic.
+        """
         graph = SessionGraph(cin=cin, company_name=company_name)
         company_node = graph.add_company(cin=cin, name=company_name, source="MCA")
+
+        if self.use_fixtures:
+            # Fixtures only — skip all live scraping (NSE, BSE, MCA).
+            self._load_fixtures(graph, cin, company_name)
+            self._tag_graph(graph)
+            return graph
 
         # --- MCA: company master (STATED) ---
         mca_result = self.mca.fetch_company(cin)
@@ -100,26 +111,56 @@ class IndiaOrchestrator:
             for rec in nse_fin.records:
                 rec.data["cin"] = cin
                 data = rec.data
-                if data.get("last_price") is None:
-                    continue  # skip valueless quotes
-                metric_node = graph.add_metric(
-                    metric_name=f"NSE {data.get('company_name', 'quote')} last price",
-                    value=data.get("last_price"),
-                    scale="INR",
-                    unit="INR",
-                    period="latest",
-                    cin=cin,
-                    ticker=symbol or "",
-                )
-                graph.reports_metric(
-                    company_node,
-                    metric_node,
-                    value=data.get("last_price"),
-                    description=(
-                        f"NSE last price {data.get('last_price')} for "
-                        f"{data.get('company_name', symbol or cin)}"
-                    ),
-                )
+                # Use the record's actual source (NSE or Yahoo Finance fallback)
+                # so provenance stays honest — Yahoo Finance data is EXTERNAL,
+                # not NSE STATED.
+                src = rec.source or "NSE"
+
+                # --- Last price metric ---
+                if data.get("last_price") is not None:
+                    metric_node = graph.add_metric(
+                        metric_name=f"{src} {data.get('company_name', 'quote')} last price",
+                        value=data.get("last_price"),
+                        scale="INR",
+                        unit="INR",
+                        period="latest",
+                        cin=cin,
+                        ticker=symbol or "",
+                        source=src,
+                    )
+                    graph.reports_metric(
+                        company_node,
+                        metric_node,
+                        value=data.get("last_price"),
+                        description=(
+                            f"{src} last price {data.get('last_price')} for "
+                            f"{data.get('company_name', symbol or cin)}"
+                        ),
+                    )
+
+                # --- Revenue metric (quarterly, since Indian cos report quarterly) ---
+                revenue = data.get("revenue")
+                if revenue is not None:
+                    period = data.get("revenue_period") or "latest"
+                    metric_node = graph.add_metric(
+                        metric_name=f"{src} {data.get('company_name', 'company')} revenue",
+                        value=revenue,
+                        scale="INR",
+                        unit="INR",
+                        period=period,
+                        cin=cin,
+                        ticker=symbol or "",
+                        source=src,
+                    )
+                    graph.reports_metric(
+                        company_node,
+                        metric_node,
+                        value=revenue,
+                        description=(
+                            f"{src} revenue {revenue} for {data.get('company_name', symbol or cin)} "
+                            f"({period})"
+                        ),
+                    )
 
         # --- BSE: announcements + financials (STATED) ---
         bse_ann = self.bse.fetch_announcements(symbol or cin)
@@ -168,17 +209,19 @@ class IndiaOrchestrator:
 
         # --- Offline fallback: bundled fixtures (sample data only) ---
         # Load fixtures when live scraping returned no announcements or metrics
-        # (graph holds only the Company node), or when use_fixtures is forced.
+        # (graph holds only the Company node).
         ann_count = len(graph.find_announcements())
         metric_count = len(graph.find_metrics())
-        if self.use_fixtures or (ann_count == 0 and metric_count == 0):
+        if ann_count == 0 and metric_count == 0:
             self._load_fixtures(graph, cin, company_name)
 
-        # Tag all nodes for evidence building
+        self._tag_graph(graph)
+        return graph
+
+    def _tag_graph(self, graph: SessionGraph) -> None:
+        """Tag all nodes for evidence building."""
         for idx, node in enumerate(graph.as_nodes(), start=1):
             graph.tag_node(f"E{idx}", node["id"])
-
-        return graph
 
     # -- fixtures -----------------------------------------------------------
 
@@ -253,7 +296,16 @@ class IndiaOrchestrator:
 
         answer_parts: list[str] = []
         citations = []
-        if evidence:
+
+        # Determine whether the graph has any citable facts beyond the
+        # Company node (announcements or financial metrics). If not, there
+        # is genuinely no data to answer with — report GAP clearly instead
+        # of just echoing the company name.
+        ann_count = len(graph.find_announcements())
+        metric_count = len(graph.find_metrics())
+        has_facts = ann_count > 0 or metric_count > 0
+
+        if evidence and has_facts:
             answer_parts.append(f"Here's what I found for {cin_label(graph)}:")
             for ev in evidence:
                 answer_parts.append(f"• [{ev.tag}] {ev.text}  ⟵ {ev.source.cite()}")
@@ -264,7 +316,7 @@ class IndiaOrchestrator:
                 })
         else:
             answer_parts.append(
-                f"No citable data found yet for {graph.cin}. "
+                f"No citable financial data found yet for {cin_label(graph)} ({graph.cin}). "
                 "This is reported as GAP — no figures were fabricated."
             )
             citations.append({"tag": "GAP", "text": "No citable evidence found.", "source": ""})

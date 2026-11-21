@@ -44,15 +44,17 @@ def test_nse_normalize_unknown_type():
 def test_bse_normalize_announcement():
     s = BSEScraper()
     rec = s.normalize({
-        "id": "BSE456",
-        "heading": "Dividend declared",
-        "dissemination_date": "2025-10-15",
+        "title": "Dividend declared",
+        "pubDate": "2025-10-15",
         "category": "Corporate Action",
-        "scrip": "RELIANCE",
+        "scripcode": "500325",
+        "symbol": "RELIANCE",
+        "description": "Final dividend for FY2025",
     }, "announcement")
     assert rec is not None
     assert rec.source == "BSE"
     assert rec.data["title"] == "Dividend declared"
+    assert rec.data["symbol"] == "RELIANCE"
 
 
 def test_mca_normalize_company():

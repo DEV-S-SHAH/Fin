@@ -1,15 +1,22 @@
 """BSE India scraper.
 
-BSE (bseindia.com) carries corporate announcements and financials. Like NSE it
-has no documented public API and protects against scraping; this scraper hits
-BSE's public endpoints with rotated User-Agents, jitter, Retry-After respect
-and one jittered retry on 429. Blocked requests return errors, never fabricated
-data.
+BSE (bseindia.com) exposes public XML/RSS feeds for corporate announcements
+that load without session cookies. This scraper:
+
+1. Fetches the BSE announcements XML feed and filters items matching the
+   company's scripcode or name.
+2. Has no live public financial-results endpoint (the XML financial feed is
+   typically empty and the JSON API subdomain is blocked), so financials come
+   from NSE/yfinance instead.
+3. Never fabricates data — blocked sources return errors.
+
+SSRF allow-list: www.bseindia.com, bseindia.com.
 """
 
 from __future__ import annotations
 
-from typing import Any
+import xml.etree.ElementTree as ET
+from typing import Any, ClassVar
 
 from .base import BaseScraper, ScrapedRecord, ScrapeResult
 
@@ -21,11 +28,69 @@ class BSEScraper(BaseScraper):
     allowed_hosts = ("www.bseindia.com", "bseindia.com")
 
     HOMEPAGE = "https://www.bseindia.com"
-    ANNOUNCEMENTS = "https://www.bseindia.com/api/v1/announcement?scrip={symbol}"
-    FINANCIALS = "https://www.bseindia.com/api/v1/financials?scrip={symbol}"
+    # Public RSS/XML feed of latest BSE corporate announcements.
+    ANNOUNCEMENTS_XML = "https://www.bseindia.com/data/xml/announcements.aspx"
+
+    # Common BSE scripcode overrides (symbol -> scripcode). Expanded at setup
+    # time from the BSE security master. RELIANCE = 500325.
+    _DEFAULT_SCRIPCODES: ClassVar[dict[str, str]] = {
+        "RELIANCE": "500325",
+        "TCS": "532540",
+        "HDFCBANK": "500180",
+        "ICICIBANK": "532174",
+        "INFY": "500209",
+        "HINDUNILVR": "500696",
+        "ITC": "500875",
+        "SBIN": "500112",
+        "BHARTIARTL": "532454",
+        "BAJFINANCE": "500034",
+        "KOTAKBANK": "500247",
+        "LT": "500510",
+        "AXISBANK": "532215",
+        "ASIANPAINT": "523297",
+        "HCLTECH": "532281",
+        "MARUTI": "532500",
+        "SUNPHARMA": "524715",
+        "TITAN": "500114",
+        "TATAMOTORS": "500570",
+        "ULTRACEMCO": "532538",
+        "NESTLEIND": "500790",
+        "WIPRO": "507688",
+        "M&M": "500520",
+        "NTPC": "532555",
+        "TECHM": "532755",
+        "POWERGRID": "533858",
+        "TATACONSUM": "500800",
+        "ADANIENT": "542482",
+        "ADANIPORTS": "533103",
+        "BAJAJ-AUTO": "532977",
+        "BPCL": "500547",
+        "BRITANNIA": "500055",
+        "CIPLA": "500087",
+        "COALINDIA": "533278",
+        "DIVISLAB": "532488",
+        "DRREDDY": "500124",
+        "EICHERMOT": "505200",
+        "GRASIM": "500300",
+        "HEROMOTOCO": "500182",
+        "HINDALCO": "500440",
+        "HDFCLIFE": "540777",
+        "ICICIPRULI": "540133",
+        "INDUSINDBK": "532737",
+        "JSWSTEEL": "500228",
+        "ONGC": "500312",
+        "SBILIFE": "540719",
+        "SHRIRAMFIN": "511218",
+        "TATAPOWER": "500410",
+        "TATASTEEL": "500470",
+        "UPL": "512088",
+        "VEDL": "532302",
+    }
 
     def __init__(self, config=None):
         super().__init__(config)
+        # symbol -> scripcode, populated from _DEFAULT_SCRIPCODES and resolver.
+        self._scripcode_map: dict[str, str] = dict(self._DEFAULT_SCRIPCODES)
         self._cookies: dict[str, str] = {}
 
     def _ensure_session(self, symbol: str) -> None:
@@ -35,8 +100,16 @@ class BSEScraper(BaseScraper):
         except Exception:  # noqa: BLE001 — graceful session setup failure
             self._cookies = {}
 
+    def _scripcode_for(self, symbol: str) -> str | None:
+        return self._scripcode_map.get(symbol.upper().strip())
+
+    def register_scripcode(self, symbol: str, scripcode: str) -> None:
+        self._scripcode_map[symbol.upper().strip()] = scripcode.strip()
+
+    # -- public interface ---------------------------------------------------
+
     def fetch_company(self, cin: str) -> ScrapeResult:
-        """BSE does not key on CIN. MCA is the CIN source."""
+        """BSE does not key on CIN. Return an empty result — MCA is the CIN source."""
         return ScrapeResult(
             ok=True,
             records=[],
@@ -45,11 +118,17 @@ class BSEScraper(BaseScraper):
         )
 
     def fetch_announcements(self, cin: str, limit: int = 50) -> ScrapeResult:
-        symbol = cin
+        """Recent corporate announcements, filtered to the company's scripcode.
+
+        Reads BSE's public announcements XML feed and keeps only items whose
+        scripcode or title matches the company.
+        """
+        symbol = cin  # caller passes symbol; cin stored on the record
         self._ensure_session(symbol)
-        url = self.ANNOUNCEMENTS.format(symbol=symbol)
+
+        scripcode = self._scripcode_for(symbol)
         try:
-            resp = self._get(url, timeout=10.0)
+            resp = self._get(self.ANNOUNCEMENTS_XML, timeout=15.0)
         except Exception as exc:  # noqa: BLE001 — graceful request failure
             return ScrapeResult(
                 ok=False,
@@ -64,20 +143,54 @@ class BSEScraper(BaseScraper):
                 http_status=resp.status_code,
             )
         try:
-            payload = resp.json()
-        except ValueError:
+            root = ET.fromstring(resp.text)
+        except ET.ParseError as exc:
             return ScrapeResult(
                 ok=False,
-                error="BSE announcements response was not JSON",
+                error=f"BSE announcements response was not valid XML: {exc}",
                 source=self.source_name,
                 http_status=resp.status_code,
             )
+
         records: list[ScrapedRecord] = []
-        data = payload.get("data", payload.get("Announcements", [])) if isinstance(payload, dict) else []
-        for item in data[:limit]:
-            rec = self.normalize(item, "announcement")
+        symbol_upper = symbol.upper().strip()
+
+        for item in root.findall(".//item"):
+            title = self._item_text(item, "title")
+            desc = self._item_text(item, "description")
+            pub_date = self._item_text(item, "pubDate")
+            item_scripcode = self._item_text(item, "scripcode")
+
+            # Filter strictly by scripcode when we know it (avoids false
+            # positives like "HDFC Charity Fund" matching "HDFCBANK"). Only
+            # fall back to a loose title/name match when no scripcode mapping
+            # is available for this symbol.
+            if scripcode is not None:
+                match = item_scripcode == scripcode
+            else:
+                match = (
+                    symbol_upper in (title or "").upper()
+                    or symbol_upper in (desc or "").upper()
+                )
+
+            if not match:
+                continue
+
+            rec = self.normalize(
+                {
+                    "title": title,
+                    "description": desc,
+                    "pubDate": pub_date,
+                    "scripcode": item_scripcode,
+                    "symbol": symbol,
+                },
+                "announcement",
+            )
             if rec:
                 records.append(rec)
+            if len(records) >= limit:
+                break
+
         return ScrapeResult(
             ok=True,
             records=records,
@@ -86,69 +199,44 @@ class BSEScraper(BaseScraper):
         )
 
     def fetch_financials(self, cin: str, limit: int = 8) -> ScrapeResult:
-        symbol = cin
-        self._ensure_session(symbol)
-        url = self.FINANCIALS.format(symbol=symbol)
-        try:
-            resp = self._get(url, timeout=10.0)
-        except Exception as exc:  # noqa: BLE001 — graceful request failure
-            return ScrapeResult(
-                ok=False,
-                error=f"BSE financials request failed: {exc}",
-                source=self.source_name,
-            )
-        if resp.status_code != 200:
-            return ScrapeResult(
-                ok=False,
-                error=f"BSE financials HTTP {resp.status_code}",
-                source=self.source_name,
-                http_status=resp.status_code,
-            )
-        try:
-            payload = resp.json()
-        except ValueError:
-            return ScrapeResult(
-                ok=False,
-                error="BSE financials response was not JSON",
-                source=self.source_name,
-                http_status=resp.status_code,
-            )
-        records: list[ScrapedRecord] = []
-        data = payload.get("data", []) if isinstance(payload, dict) else []
-        for item in data[:limit]:
-            rec = self.normalize(item, "financial")
-            if rec:
-                records.append(rec)
+        """BSE financial results.
+
+        BSE's public XML financial-results feed is typically empty and the
+        JSON API subdomain (api.bseindia.com) is blocked. Financials are
+        sourced from NSE/yfinance instead. Return empty (not fabricated).
+        """
         return ScrapeResult(
             ok=True,
-            records=records,
+            records=[],
+            error="BSE public financial-results feed is empty; financials sourced from NSE/yfinance",
             source=self.source_name,
-            http_status=resp.status_code,
         )
 
     def normalize(self, raw: Any, record_type: str) -> ScrapedRecord | None:
+        """Normalize a BSE announcement XML item into a ScrapedRecord."""
         if not isinstance(raw, dict):
             return None
         if record_type == "announcement":
             return ScrapedRecord(
                 record_type="announcement",
                 source=self.source_name,
-                source_id=str(raw.get("id", raw.get("announcement_id", ""))),
+                source_id=str(raw.get("scripcode", raw.get("title", ""))),
                 data={
-                    "title": raw.get("heading", raw.get("subject", "")),
-                    "date": raw.get("dissemination_date", raw.get("date", "")),
-                    "category": raw.get("category", ""),
-                    "attachment": raw.get("attachment", ""),
-                    "symbol": raw.get("scrip", raw.get("symbol", "")),
+                    "title": raw.get("title", ""),
+                    "date": raw.get("pubDate", ""),
+                    "category": "Corporate Announcement",
+                    "attachment": "",
+                    "symbol": raw.get("symbol", ""),
+                    "description": raw.get("description", ""),
                 },
             )
         if record_type == "financial":
             return ScrapedRecord(
                 record_type="financial",
                 source=self.source_name,
-                source_id=str(raw.get("symbol", raw.get("scrip", ""))),
+                source_id=str(raw.get("symbol", "")),
                 data={
-                    "symbol": raw.get("symbol", raw.get("scrip", "")),
+                    "symbol": raw.get("symbol", ""),
                     "company_name": raw.get("company_name", ""),
                     "revenue": raw.get("revenue"),
                     "profit_after_tax": raw.get("profit_after_tax"),
@@ -158,3 +246,12 @@ class BSEScraper(BaseScraper):
                 },
             )
         return None
+
+    # -- helpers ------------------------------------------------------------
+
+    @staticmethod
+    def _item_text(item: ET.Element, tag: str) -> str | None:
+        el = item.find(tag)
+        if el is None or el.text is None:
+            return None
+        return el.text.strip()
