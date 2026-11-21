@@ -84,6 +84,17 @@ class TickerCINResolver:
                 self._load()
             return self._symbol_to_cin.get(symbol)
 
+    def reverse_resolve(self, cin: str) -> str | None:
+        """Return the trading symbol for an MCA *cin*, or None if unresolved.
+
+        Used by the exchange scrapers which are keyed on symbol, not CIN.
+        """
+        cin = cin.strip().upper()
+        with self._lock:
+            if self._stale():
+                self._load()
+            return self._cin_to_symbol.get(cin)
+
     def resolve_live(self, symbol: str) -> str | None:
         """Query MCA live for *symbol* (fallback when cache misses).
 
@@ -93,6 +104,31 @@ class TickerCINResolver:
         """
         # TODO: Implement MCA live symbol->CIN lookup (MCA21 public search).
         return None
+
+    @classmethod
+    def load_seed(cls, path: str | Path, config: IndiaConfig | None = None) -> TickerCINResolver:
+        """Build a resolver from a seed JSON file produced by a setup-time MCA
+        + exchange-directory build.
+
+        Expected file shape::
+
+            {
+              "loaded_at": "2026-11-20T19:12:52Z",
+              "symbol_to_cin": {"RELIANCE": "L17110MH1973PLC019786", ...},
+              "cin_to_symbol": {"L17110MH1973PLC019786": "RELIANCE", ...}
+            }
+
+        This is the supported way to populate the day-one NIFTY 50 cache
+        offline — never guess CINs.
+        """
+        cfg = config or IndiaConfig()
+        resolver = cls(cfg)
+        payload = json.loads(Path(path).read_text())
+        mappings = [
+            (sym, cin) for sym, cin in payload.get("symbol_to_cin", {}).items()
+        ]
+        resolver.bulk_register(mappings)
+        return resolver
 
     def register(self, symbol: str, cin: str) -> None:
         """Record a symbol->CIN mapping (called during setup build or MCA crawl)."""

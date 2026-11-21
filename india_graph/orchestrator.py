@@ -4,27 +4,52 @@ Called lazily on the user's first question. Scrapes NSE + BSE (announcements
 and financials) and MCA (company master via CIN), normalizes into ScrapedRecord
 objects, and builds the in-memory SessionGraph deterministically. Provenance on
 every record is set by source: NSE/BSE/MCA = STATED.
+
+The NSE and BSE APIs are keyed on trading *symbol*, not MCA CIN. The orchestrator
+resolves cin -> symbol via the resolver before calling the exchange scrapers, and
+stores the canonical cin on every record so provenance/isolation stay correct.
+
+When live scraping returns nothing (anti-bot, no network), the orchestrator falls
+back to bundled fixtures so the full graph -> evidence -> Q&A flow can be
+demonstrated offline. Fixtures are clearly marked as sample data.
 """
 
 from __future__ import annotations
 
+from typing import Any
+
 from .config import IndiaConfig
+from .fixtures import load as load_fixture
 from .graph import SessionGraph
+from .provenance import build_evidence, grade_answer
 from .resolver import TickerCINResolver
+from .retrieval import retrieve
 from .scrapers.bse import BSEScraper
 from .scrapers.mca import MCAScraper
 from .scrapers.nse import NSEScraper
 
 
+def _record_ok(result) -> bool:
+    return getattr(result, "ok", False) and bool(getattr(result, "records", []))
+
+
 class IndiaOrchestrator:
     """Builds a SessionGraph for one company by scraping India sources."""
 
-    def __init__(self, config: IndiaConfig | None = None, resolver: TickerCINResolver | None = None) -> None:
+    def __init__(
+        self,
+        config: IndiaConfig | None = None,
+        resolver: TickerCINResolver | None = None,
+        use_fixtures: bool = False,
+    ) -> None:
         self.config = config or IndiaConfig()
         self.resolver = resolver or TickerCINResolver(config)
         self.nse = NSEScraper(config)
         self.bse = BSEScraper(config)
         self.mca = MCAScraper(config)
+        self.use_fixtures = use_fixtures
+
+    # -- public API ---------------------------------------------------------
 
     def build_for_cin(self, cin: str, company_name: str = "") -> SessionGraph:
         """Scrape all sources for *cin* and build the session graph."""
@@ -33,13 +58,12 @@ class IndiaOrchestrator:
 
         # --- MCA: company master (STATED) ---
         mca_result = self.mca.fetch_company(cin)
-        if mca_result.ok and mca_result.records:
+        if _record_ok(mca_result):
             rec = mca_result.records[0]
             data = rec.data
             if data.get("company_name") and not company_name:
                 company_name = data["company_name"]
                 graph.company_name = company_name
-            # Update company node with master data
             graph.graph.nodes[company_node].update({
                 "sector": data.get("sector", ""),
                 "industry": data.get("industry", ""),
@@ -51,12 +75,19 @@ class IndiaOrchestrator:
                 "email": data.get("email", ""),
             })
 
+        # Resolve cin -> symbol for the exchange scrapers (they key on symbol).
+        symbol = self.resolver.reverse_resolve(cin)
+
         # --- NSE: announcements + financials (STATED) ---
-        nse_ann = self.nse.fetch_announcements(cin)
-        if nse_ann.ok:
+        nse_ann = self.nse.fetch_announcements(symbol or cin)
+        if _record_ok(nse_ann):
             for rec in nse_ann.records:
+                title = rec.data.get("title", "")
+                if not title:
+                    continue  # skip announcements with no subject
+                rec.data["cin"] = cin
                 ann_node = graph.add_announcement(
-                    title=rec.data.get("title", ""),
+                    title=title,
                     date=rec.data.get("date", ""),
                     category=rec.data.get("category", ""),
                     source_url=rec.data.get("attachment", ""),
@@ -64,10 +95,13 @@ class IndiaOrchestrator:
                 )
                 graph.has_announcement(company_node, ann_node)
 
-        nse_fin = self.nse.fetch_financials(cin)
-        if nse_fin.ok:
+        nse_fin = self.nse.fetch_financials(symbol or cin)
+        if _record_ok(nse_fin):
             for rec in nse_fin.records:
+                rec.data["cin"] = cin
                 data = rec.data
+                if data.get("last_price") is None:
+                    continue  # skip valueless quotes
                 metric_node = graph.add_metric(
                     metric_name=f"NSE {data.get('company_name', 'quote')} last price",
                     value=data.get("last_price"),
@@ -75,19 +109,28 @@ class IndiaOrchestrator:
                     unit="INR",
                     period="latest",
                     cin=cin,
+                    ticker=symbol or "",
                 )
                 graph.reports_metric(
-                    company_node, metric_node,
+                    company_node,
+                    metric_node,
                     value=data.get("last_price"),
-                    description=f"NSE last price {data.get('last_price')} for {data.get('company_name', symbol_for_cin(cin))}",
+                    description=(
+                        f"NSE last price {data.get('last_price')} for "
+                        f"{data.get('company_name', symbol or cin)}"
+                    ),
                 )
 
         # --- BSE: announcements + financials (STATED) ---
-        bse_ann = self.bse.fetch_announcements(cin)
-        if bse_ann.ok:
+        bse_ann = self.bse.fetch_announcements(symbol or cin)
+        if _record_ok(bse_ann):
             for rec in bse_ann.records:
+                title = rec.data.get("title", "")
+                if not title:
+                    continue  # skip announcements with no heading
+                rec.data["cin"] = cin
                 ann_node = graph.add_announcement(
-                    title=rec.data.get("title", ""),
+                    title=title,
                     date=rec.data.get("date", ""),
                     category=rec.data.get("category", ""),
                     source_url=rec.data.get("attachment", ""),
@@ -95,23 +138,41 @@ class IndiaOrchestrator:
                 )
                 graph.has_announcement(company_node, ann_node)
 
-        bse_fin = self.bse.fetch_financials(cin)
-        if bse_fin.ok:
+        bse_fin = self.bse.fetch_financials(symbol or cin)
+        if _record_ok(bse_fin):
             for rec in bse_fin.records:
+                rec.data["cin"] = cin
                 data = rec.data
+                value = data.get("revenue") or data.get("profit_after_tax")
+                if value is None:
+                    continue  # skip valueless financials
                 metric_node = graph.add_metric(
                     metric_name=f"BSE {data.get('company_name', 'financials')}",
-                    value=data.get("revenue") or data.get("profit_after_tax"),
+                    value=value,
                     scale="INR",
                     unit="INR",
                     period=data.get("period", ""),
                     fiscal_year=data.get("fiscal_year", ""),
+                    cin=cin,
+                    ticker=symbol or "",
                 )
                 graph.reports_metric(
-                    company_node, metric_node,
-                    value=data.get("revenue") or data.get("profit_after_tax"),
-                    description=f"BSE {data.get('period', '')} revenue {data.get('revenue')} PAT {data.get('profit_after_tax')}",
+                    company_node,
+                    metric_node,
+                    value=value,
+                    description=(
+                        f"BSE {data.get('period', '')} revenue "
+                        f"{data.get('revenue')} PAT {data.get('profit_after_tax')}"
+                    ),
                 )
+
+        # --- Offline fallback: bundled fixtures (sample data only) ---
+        # Load fixtures when live scraping returned no announcements or metrics
+        # (graph holds only the Company node), or when use_fixtures is forced.
+        ann_count = len(graph.find_announcements())
+        metric_count = len(graph.find_metrics())
+        if self.use_fixtures or (ann_count == 0 and metric_count == 0):
+            self._load_fixtures(graph, cin, company_name)
 
         # Tag all nodes for evidence building
         for idx, node in enumerate(graph.as_nodes(), start=1):
@@ -119,15 +180,125 @@ class IndiaOrchestrator:
 
         return graph
 
+    # -- fixtures -----------------------------------------------------------
 
-def symbol_for_cin(cin: str) -> str:
-    """Best-effort symbol display for a CIN (the resolver holds the real map)."""
-    return cin  # placeholder; resolver would map cin->symbol
+    def _load_fixtures(self, graph: SessionGraph, cin: str, company_name: str) -> None:
+        """Load bundled sample data when live scraping returned nothing.
+
+        Fixtures are clearly sample data — they let the graph, evidence and
+        Q&A flow be demonstrated offline without hitting NSE/BSE/MCA.
+        """
+        payload = load_fixture(cin)
+        if payload is None:
+            return
+
+        # Company master
+        master = payload.get("mca_company", {})
+        if master:
+            graph.graph.nodes[graph.find_company_node() or graph.add_company(cin, company_name)].update({
+                "sector": master.get("sector", ""),
+                "industry": master.get("industry", ""),
+                "date_of_incorporation": master.get("date_of_incorporation", ""),
+                "registered_office_address": master.get("registered_office_address", ""),
+                "source": "MCA (fixture)",
+            })
+
+        # Announcements
+        for ann in payload.get("announcements", []):
+            ann_node = graph.add_announcement(
+                title=ann.get("title", ""),
+                date=ann.get("date", ""),
+                category=ann.get("category", ""),
+                source_url=ann.get("attachment", ""),
+                source=ann.get("source", "NSE"),
+            )
+            comp = graph.find_company_node()
+            if comp:
+                graph.has_announcement(comp, ann_node)
+
+        # Financial metrics
+        for fin in payload.get("financials", []):
+            metric_node = graph.add_metric(
+                metric_name=fin.get("metric_name", ""),
+                value=fin.get("value"),
+                scale=fin.get("scale", "INR"),
+                unit=fin.get("unit", "INR"),
+                period=fin.get("period", ""),
+                fiscal_year=fin.get("fiscal_year", ""),
+                cin=cin,
+                ticker=fin.get("ticker", ""),
+            )
+            comp = graph.find_company_node()
+            if comp:
+                graph.reports_metric(
+                    comp, metric_node,
+                    value=fin.get("value"),
+                    description=fin.get("description", ""),
+                )
+
+    # -- Q&A ---------------------------------------------------------------
+
+    def answer(self, graph: SessionGraph, question: str) -> dict[str, Any]:
+        """Produce a deterministic, provenance-grounded answer for *question*.
+
+        Retrieves relevant evidence from the graph, renders a short answer,
+        and grades it. Returns a dict suitable for the API response.
+        """
+        evidence = retrieve(graph, question)
+        nodes = graph.as_nodes()
+        edges = graph.as_edges()
+        tag_map = graph.tag_map()
+        # Rebuild full evidence for grading context (all nodes, not just retrieved).
+        full_evidence = build_evidence(nodes, edges, tag_map)
+
+        answer_parts: list[str] = []
+        citations = []
+        if evidence:
+            answer_parts.append(f"Here's what I found for {cin_label(graph)}:")
+            for ev in evidence:
+                answer_parts.append(f"• [{ev.tag}] {ev.text}  ⟵ {ev.source.cite()}")
+                citations.append({
+                    "tag": ev.tag,
+                    "text": ev.text,
+                    "source": ev.source.cite(),
+                })
+        else:
+            answer_parts.append(
+                f"No citable data found yet for {graph.cin}. "
+                "This is reported as GAP — no figures were fabricated."
+            )
+            citations.append({"tag": "GAP", "text": "No citable evidence found.", "source": ""})
+
+        answer = "\n".join(answer_parts)
+        graded = grade_answer(answer, full_evidence, question=question)
+
+        return {
+            "answer": answer,
+            "verdict": graded.verdict,
+            "citations": citations,
+            "evidence": [
+                {
+                    "tag": ev.tag,
+                    "text": ev.text,
+                    "provenance": ev.provenance,
+                    "source": ev.source.cite(),
+                    "kind": ev.kind,
+                }
+                for ev in full_evidence
+            ],
+            "violations": graded.violations(),
+        }
+
+
+def cin_label(graph: SessionGraph) -> str:
+    """A display label for the graph's company."""
+    return graph.company_name or graph.cin
 
 
 def build_graph_for_session(session_id: str, cin: str, company_name: str = "",
                             config: IndiaConfig | None = None,
-                            resolver: TickerCINResolver | None = None) -> SessionGraph:
+                            resolver: TickerCINResolver | None = None,
+                            use_fixtures: bool = False) -> SessionGraph:
     """Convenience: build a SessionGraph for a session's company."""
-    orch = IndiaOrchestrator(config=config, resolver=resolver)
+    orch = IndiaOrchestrator(config=config, resolver=resolver, use_fixtures=use_fixtures)
     return orch.build_for_cin(cin, company_name)

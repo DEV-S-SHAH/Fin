@@ -108,7 +108,7 @@ if not st.session_state.graph_built:
             st.session_state.graph = graph
             st.session_state.graph_built = True
             session_mgr.record_question(st.session_state.session_id)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — graceful UI error handling
             st.error(f"Graph build failed: {exc}")
             st.stop()
 

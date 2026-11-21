@@ -39,3 +39,6 @@ requests>=2.31.0
 
 # India Company Graph UI (localhost-first).
 streamlit>=1.40.0
+
+# FastAPI backend for the TypeScript frontend.
+fastapi>=0.115.0

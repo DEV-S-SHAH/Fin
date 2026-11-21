@@ -16,9 +16,9 @@ from __future__ import annotations
 
 import random
 import time
-from datetime import datetime, timezone
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
 
@@ -59,12 +59,12 @@ class BaseScraper(ABC):
         # Realistic browser UA pool — rotated per request to avoid trivial blocks.
         self._user_agents = [
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            + "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            + "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0",
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
-            "(KHTML, like Gecko) Version/17.4 Safari/605.1.15",
+            + "(KHTML, like Gecko) Version/17.4 Safari/605.1.15",
         ]
         self._last_request_time: float = 0.0
         self._min_delay_seconds: float = 1.0

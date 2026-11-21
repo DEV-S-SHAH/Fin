@@ -32,7 +32,7 @@ class BSEScraper(BaseScraper):
         try:
             resp = self._get(self.HOMEPAGE, timeout=10.0)
             self._cookies = dict(resp.cookies)
-        except Exception:
+        except Exception:  # noqa: BLE001 — graceful session setup failure
             self._cookies = {}
 
     def fetch_company(self, cin: str) -> ScrapeResult:
@@ -50,7 +50,7 @@ class BSEScraper(BaseScraper):
         url = self.ANNOUNCEMENTS.format(symbol=symbol)
         try:
             resp = self._get(url, timeout=10.0)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — graceful request failure
             return ScrapeResult(
                 ok=False,
                 error=f"BSE announcements request failed: {exc}",
@@ -91,7 +91,7 @@ class BSEScraper(BaseScraper):
         url = self.FINANCIALS.format(symbol=symbol)
         try:
             resp = self._get(url, timeout=10.0)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — graceful request failure
             return ScrapeResult(
                 ok=False,
                 error=f"BSE financials request failed: {exc}",

@@ -1,0 +1,37 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --india-saffron: 255 153 51;
+    --india-white: 255 255 255;
+    --india-green: 19 136 8;
+    --india-blue: 0 0 128;
+  }
+
+  body {
+    @apply bg-slate-50 text-slate-900;
+    font-feature-settings: 'rlig' 1, 'calt' 1;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+}
+
+@layer components {
+  .prose p {
+    @apply leading-relaxed;
+  }
+
+  .prose p + p {
+    @apply mt-2;
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+}

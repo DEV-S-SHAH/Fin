@@ -1,0 +1,176 @@
+# FinGraph 
+
+**GraphRAG for SEC filings.** Turns 10-K, 10-Q, and 8-K filings into a queryable property graph with LLM question answering. Pure-Python ingestion (deterministic, no API key), model only used at query time to phrase answers over retrieved graph context.
+
+## Demo
+
+https://github.com/user-attachments/assets/562b2311-8066-4879-899b-d8bc6858a6ed
+
+Financial intelligence, connected.
+
+## Presentations
+
+PPTX files download directly. PDFs open in GitHub's built-in viewer for slide-by-slide navigation.
+
+| File | PPTX | PDF (View Online) |
+|------|------|-------------------|
+| Review 1 | [Download](https://raw.githubusercontent.com/DEV-S-SHAH/Fin/main/ppt/Graph%20RAG%20based%20Financial%20Insights%20Review%201.pptx) | [View](https://github.com/DEV-S-SHAH/Fin/blob/main/ppt/Graph%20RAG%20based%20Financial%20Insights%20Review%201.pdf) |
+| Review 2 | [Download](https://raw.githubusercontent.com/DEV-S-SHAH/Fin/main/ppt/Graph%20RAG%20based%20Financial%20Insights%20Review%202.pptx) | [View](https://github.com/DEV-S-SHAH/Fin/blob/main/ppt/Graph%20RAG%20based%20Financial%20Insights%20Review%202.pdf) |
+| Review 3 | [Download](https://raw.githubusercontent.com/DEV-S-SHAH/Fin/main/ppt/Graph%20RAG%20based%20Financial%20Insights%20Review%203.pptx) | [View](https://github.com/DEV-S-SHAH/Fin/blob/main/ppt/Graph%20RAG%20based%20Financial%20Insights%20Review%203.pdf) |
+
+[View all files in /ppt folder](https://github.com/DEV-S-SHAH/Fin/tree/main/ppt)
+
+## Quick Start
+
+**Requires:** Python 3.13, Node.js 20+ (for React workspace). No Docker, no database server.
+
+```bash
+git clone https://github.com/DEV-S-SHAH/Fin.git
+cd Fin
+
+# Backend
+python3.13 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+python setup.py                     # prompts for NVIDIA key, verifies it
+python -m sandbox_engine --reset    # builds graph + runs 5 benchmarks (~11s)
+
+# Terminal 1: FinGraph UI (landing + studio + auth)
+python -m ui.fingraph --port 9100 --no-browser
+# → http://127.0.0.1:9100
+
+# Terminal 2 (optional): React GraphRAG Workspace
+cd web && npm install && npm run dev
+# → http://localhost:5173 (proxies API to port 9100)
+```
+
+**All five benchmarks should pass:**
+
+```
+[PASS] B1 graph shape and referential integrity
+[PASS] B2 point lookup: Net Sales 3M-2026-07-26 on 10-Q FY2027
+[PASS] B3 comparative-period separation
+[PASS] B4 segment fan-out from 'Net Sales'
+[PASS] B5 negative control: FY2019 absent
+```
+
+## Architecture
+
+```
+sandbox_engine/data/<company>/<year>/<form>/*.htm  →  30 committed filings (39 MB)
+         │
+         ▼  python -m sandbox_engine --reset
+         │  pure Python, ~11s, no network
+         ▼
+   Arrow → Parquet spill → LadybugDB
+         │
+         ▼  sandbox_engine/_run/sandbox.lbug
+         │
+         ▼  python -m ui.fingraph --port 9100
+    FinGraph UI: landing + studio + auth
+```
+
+## Database Backup & Restore
+
+The authoritative LadybugDB lives at `sandbox_engine/_run/sandbox.lbug` (or `$FINGRAPH_DATA_DIR/sandbox.lbug`). It is **never deleted by `--reset`** — only staging, reports, and registry are cleared.
+
+```bash
+# Create a verified backup
+python -m sandbox_engine --backup create
+# → backups/20261004T100949Z-sandbox-<sha>/sandbox.lbug + manifest.json
+
+# List backups
+python -m sandbox_engine --backup list
+
+# Verify a backup
+python -m sandbox_engine --backup verify --backup-id <id>
+
+# Restore (preserves existing DB, requires --confirm)
+python -m sandbox_engine --backup restore --backup-id <id> --confirm
+```
+
+## Tests
+
+```bash
+# Backend (all offline — no network, no key, no DB build)
+python -m unittest discover -s tests -p "test_*.py"
+python -m unittest discover -s sandbox_engine -p "test_*.py"
+
+# India Company Graph (offline — no network, no key)
+PYTHONPATH=. python -m pytest tests/test_india_*.py -q
+
+# Frontend
+cd web && npm run build
+```
+
+## India Company Graph
+
+A localhost-first, India-only financial GraphRAG product that sits alongside
+FinGraph's US SEC pipeline. It gathers NSE/BSE announcements + financials and
+MCA company-master data into a just-in-time, per-session in-memory graph
+(NetworkX), answers natural-language questions with provenance-tagged evidence
+(STATED / DERIVED / INFERRED / EXTERNAL / GAP), then destroys the graph when
+the session ends (30-min TTL). Nothing persists between sessions.
+
+**Stack:** Python backend (FastAPI + scrapers + NetworkX) + TypeScript frontend
+(React + Vite + Tailwind). Open source, no API key required.
+
+```bash
+# Backend (localhost:8000)
+uvicorn india_graph.api.main:app --reload --port 8000
+
+# Frontend (localhost:5173, proxies /api to :8000)
+cd frontend && npm install && npm run dev
+```
+
+**Flow:**
+1. Open `http://localhost:5173`, create a session
+2. Bind a company (NSE/BSE ticker → MCA CIN via the resolver cache)
+3. First question builds the graph just-in-time from NSE/BSE/MCA (offline
+   sample fixtures are bundled for RELIANCE so the flow works with no network)
+4. Ask questions — answers come back with evidence citations and a
+   SUPPORTED / QUALIFIED / REFUSED verdict
+5. Session graph is destroyed after 30 min of inactivity or on logout
+
+**Security:** SSRF allow-list permits only `nseindia.com`, `bseindia.com`,
+`mca.gov.in`, `sebi.gov.in`. No US SEC hosts. Graph construction is
+deterministic (scraper → structured records → graph); the model only phrases
+answers over retrieved, provenance-tagged evidence.
+
+## Repository Layout
+
+```
+Fin/
+├── india_graph/          # India Company Graph backend (FastAPI + scrapers)
+│   ├── scrapers/         # NSE, BSE, MCA scrapers (SSRF-guarded)
+│   ├── fixtures/         # Bundled offline sample data (RELIANCE)
+│   ├── api/              # FastAPI routes (/session, /bind, /ask, /graph)
+│   ├── config.py         # SSRF allow-list, FYE March 31, TTL, NIFTY 50
+│   ├── resolver.py       # Ticker -> CIN resolver (disk cache)
+│   ├── graph.py          # In-memory NetworkX session graph
+│   ├── provenance.py     # build_evidence + grade_answer (5 tags, 3 verdicts)
+│   ├── retrieval.py      # Deterministic keyword evidence retrieval
+│   ├── session.py        # Session dict + TTL sweeper
+│   └── orchestrator.py   # Scrape -> graph -> Q&A pipeline
+├── frontend/             # React + Vite + Tailwind UI (port 5173)
+├── sandbox_engine/       # Ingestion pipeline + query backend (US SEC)
+│   ├── _run/sandbox.lbug     # Authoritative LadybugDB (build output)
+│   ├── data/                 # SEC filings (committed)
+│   └── tests/                # 112 unit tests
+├── ui/
+│   ├── fingraph/             # PRIMARY UI (port 9100) — landing, studio, auth
+│   ├── legacy_graphrag/      # Legacy three-pane explorer (port 9000)
+│   └── graphrag_web/         # PDF GraphRAG viewer (port 8765)
+├── graphrag/                 # Domain-agnostic PDF GraphRAG package
+├── ingestion/                # Generic multi-company ingestion pipeline
+├── web/                      # React + TypeScript GraphRAG Workspace
+├── backups/                  # Verified DB backups (generated)
+├── requirements.txt
+├── setup.py
+└── .env.example
+```
+
+## License
+
+This project is licensed under the MIT License.

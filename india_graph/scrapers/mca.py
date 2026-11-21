@@ -32,7 +32,7 @@ class MCAScraper(BaseScraper):
         url = self.COMPANY_MASTER.format(cin=cin)
         try:
             resp = self._get(url, timeout=15.0)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 — graceful request failure
             return ScrapeResult(
                 ok=False,
                 error=f"MCA company master request failed: {exc}",
@@ -119,5 +119,5 @@ class MCAScraper(BaseScraper):
         try:
             resp = self._get(self.HOMEPAGE, timeout=10.0)
             self._cookies = dict(resp.cookies)
-        except Exception:
+        except Exception:  # noqa: BLE001 — graceful session setup failure
             self._cookies = {}
