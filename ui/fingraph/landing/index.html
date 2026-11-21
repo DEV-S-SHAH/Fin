@@ -42,12 +42,8 @@
       </a>
 
       <div class="nav__links" id="nav-links" role="list">
-        <a role="listitem" class="nav__link" href="#about" data-scroll>About</a>
         <a role="listitem" class="nav__link" href="#features" data-scroll>Features</a>
         <a role="listitem" class="nav__link" href="#how-it-works" data-scroll>How it works</a>
-        <a role="listitem" class="nav__link" href="#insights" data-scroll>Insights</a>
-        <a role="listitem" class="nav__link" href="#markets" data-scroll>Markets</a>
-        <a role="listitem" class="nav__link" href="#pricing" data-scroll>Pricing</a>
       </div>
 
       <div class="nav__actions">
@@ -64,12 +60,8 @@
     <!-- mobile panel -->
     <div class="nav-panel" id="nav-panel" hidden>
       <div class="nav-panel__links" role="list">
-        <a role="listitem" class="nav-panel__link" href="#about" data-scroll>About</a>
         <a role="listitem" class="nav-panel__link" href="#features" data-scroll>Features</a>
         <a role="listitem" class="nav-panel__link" href="#how-it-works" data-scroll>How it works</a>
-        <a role="listitem" class="nav-panel__link" href="#insights" data-scroll>Insights</a>
-        <a role="listitem" class="nav-panel__link" href="#markets" data-scroll>Markets</a>
-        <a role="listitem" class="nav-panel__link" href="#pricing" data-scroll>Pricing</a>
       </div>
       <div class="nav-panel__actions">
         <a class="btn btn--ghost" href="/auth">Sign in</a>
@@ -100,8 +92,8 @@
         </p>
 
         <div class="hero__cta">
-<a class="btn btn--primary btn--lg" href="/answer?q=What%20is%20Apple%27s%20revenue%3F">
-            <span class="btn__label">Explore FinGraph</span>
+          <a class="btn btn--primary btn--lg" href="/app">
+            <span class="btn__label">Start asking →</span>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M5 12h13M13 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>
           </a>
           <a class="btn btn--ghost btn--lg" href="#how-it-works" data-scroll>
@@ -109,50 +101,6 @@
             <span class="btn__label">See how it works</span>
           </a>
         </div>
-      </div>
-    </section>
-
-    <!-- ── about ───────────────────────────────────────────────────────────── -->
-    <section class="about" id="about" aria-labelledby="about-title">
-      <div class="section-head">
-        <h2 class="section-head__title" id="about-title">
-          Why FinGraph<br>exists.
-        </h2>
-        <p class="section-head__sub">
-          Financial data is deeply connected — but the tools analysts use are not.
-        </p>
-      </div>
-
-      <div class="about__grid" aria-hidden="false">
-        <article class="about__card">
-          <div class="about__icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
-          </div>
-          <h3 class="about__card-title">Fragmented sources</h3>
-          <p class="about__card-body">Filings, metrics, news, and relationships live in separate silos. Connecting them takes hours of manual work.</p>
-        </article>
-        <article class="about__card">
-          <div class="about__icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
-          </div>
-          <h3 class="about__card-title">Opaque answers</h3>
-          <p class="about__card-body">LLM answers sound confident but hide their sources. You can't verify what you can't trace.</p>
-        </article>
-        <article class="about__card">
-          <div class="about__icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-          </div>
-          <h3 class="about__card-title">Static screens</h3>
-          <p class="about__card-body">Dashboards show snapshots. They don't reveal how a metric flows from a segment to a filing to a company.</p>
-        </article>
-      </div>
-
-      <div class="about__mission">
-        <p class="about__mission-text">
-          FinGraph was built to replace that friction with a single intelligence layer:
-          a knowledge graph that connects every metric, relationship, filing, and event —
-          then surfaces exactly what the evidence supports, with the full provenance path visible.
-        </p>
       </div>
     </section>
 
@@ -174,7 +122,7 @@
           </div>
           <h3 class="feature__title">GraphRAG answers</h3>
           <p class="feature__desc">Ask in natural language. Get answers grounded in SEC filings, with every sentence traced to its source document and figure.</p>
-          <a href="/answer?q=What%20is%20Apple%27s%20revenue%3F" class="feature__link">Try in Studio →</a>
+          <a href="/app" class="feature__link">Try in Studio →</a>
         </article>
 
         <article class="feature">
@@ -192,16 +140,7 @@
           </div>
           <h3 class="feature__title">Provenance & grading</h3>
           <p class="feature__desc">Every answer is graded sentence-by-sentence: Supported, Qualified, or Refused. See the exact rule that judged each claim.</p>
-          <a href="/answer?q=What%20is%20Apple%27s%20revenue%3F" class="feature__link">See grading →</a>
-        </article>
-
-        <article class="feature">
-          <div class="feature__icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
-          </div>
-          <h3 class="feature__title">Live market data</h3>
-          <p class="feature__desc">Real-time quotes from Yahoo Finance for 18+ major tickers. The same prices FinGraph grounds its answers in.</p>
-          <a href="#markets" class="feature__link" data-scroll>View markets →</a>
+          <a href="/app" class="feature__link">See grading →</a>
         </article>
 
         <article class="feature">
@@ -211,15 +150,6 @@
           <h3 class="feature__title">Company deep-dives</h3>
           <p class="feature__desc">Dedicated pages per issuer: technicals, fundamentals, news, filings, and the entity graph — all in one view.</p>
           <a href="/company/AAPL" class="feature__link">Open AAPL →</a>
-        </article>
-
-        <article class="feature">
-          <div class="feature__icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-          </div>
-          <h3 class="feature__title">Multi-issuer compare</h3>
-          <p class="feature__desc">Compare AAPL vs MSFT vs NVDA across metrics, segments, and filings side-by-side in the graph.</p>
-          <a href="/compare" class="feature__link">Compare →</a>
         </article>
       </div>
     </section>
@@ -267,191 +197,6 @@
       </div>
     </section>
 
-    <!-- ── insights ────────────────────────────────────────────────────────── -->
-    <section class="insights" id="insights" aria-labelledby="insights-title">
-      <div class="section-head">
-        <h2 class="section-head__title" id="insights-title">
-          Insights you<br>can act on.
-        </h2>
-        <p class="section-head__sub">
-          The graph reveals patterns that spreadsheets hide — segment concentration,
-          geographic exposure, filing inconsistencies, and more.
-        </p>
-      </div>
-
-      <div class="insights__grid">
-        <article class="insight-card">
-          <div class="insight-card__tag">Segment analysis</div>
-          <h3 class="insight-card__title">Revenue concentration risk</h3>
-          <p class="insight-card__desc">Instantly see what % of revenue comes from iPhone vs Services vs Wearables — and how that mix shifts quarter-over-quarter.</p>
-          <a href="/answer?q=Show%20Apple%27s%20revenue%20breakdown%20by%20product%20segment%20(iPhone%2C%20Services%2C%20Wearables%2C%20Mac%2C%20iPad)%20with%20quarterly%20trends" class="insight-card__link">Explore →</a>
-        </article>
-
-        <article class="insight-card">
-          <div class="insight-card__tag">Geographic exposure</div>
-          <h3 class="insight-card__title">Geographic revenue mix</h3>
-          <p class="insight-card__desc">Map revenue across Americas, Europe, Greater China, Japan, and Rest of Asia — with YoY growth rates per region.</p>
-          <a href="/answer?q=Show%20Apple%27s%20revenue%20by%20geographic%20segment%20(Americas%2C%20Europe%2C%20Greater%20China%2C%20Japan%2C%20Rest%20of%20Asia%20Pacific)%20with%20YoY%20growth" class="insight-card__link">Explore →</a>
-        </article>
-
-        <article class="insight-card">
-          <div class="insight-card__tag">Filing intelligence</div>
-          <h3 class="insight-card__title">Filing-to-filing changes</h3>
-          <p class="insight-card__desc">Detect when language shifts in Risk Factors, MD&A, or Business sections — flagging new risks or strategy changes.</p>
-          <a href="/answer?q=What%20are%20the%20key%20changes%20in%20Apple%27s%2010-K%20Risk%20Factors%20and%20MD%26A%20between%20FY2024%20and%20FY2025%3F" class="insight-card__link">Explore →</a>
-        </article>
-
-        <article class="insight-card">
-          <div class="insight-card__tag">Metric lineage</div>
-          <h3 class="insight-card__title">Trace any metric to source</h3>
-          <p class="insight-card__desc">Click any figure — Net Sales, Operating Income, R&D — and follow the exact path: Filing → Table → Row → Graph node.</p>
-          <a href="/provenance?q=Show%20provenance%20and%20grading%20for%20Apple%27s%20Net%20Sales%20revenue%20figures" class="insight-card__link">Explore →</a>
-        </article>
-
-        <article class="insight-card">
-          <div class="insight-card__tag">Event signals</div>
-          <h3 class="insight-card__title">Earnings & guidance tracking</h3>
-          <p class="insight-card__desc">Surface earnings dates, guidance revisions, and disclosure events — linked to the filing paragraphs that announced them.</p>
-          <a href="/answer?q=What%20are%20Apple%27s%20latest%20earnings%20dates%2C%20guidance%20revisions%2C%20and%20key%20disclosure%20events%20from%20recent%20filings%3F" class="insight-card__link">Explore →</a>
-        </article>
-
-        <article class="insight-card">
-          <div class="insight-card__tag">Cross-issuer</div>
-          <h3 class="insight-card__title">Peer comparison, automated</h3>
-          <p class="insight-card__desc">Select multiple issuers. FinGraph aligns their metrics, segments, and periods — no manual normalization required.</p>
-          <a href="/compare" class="insight-card__link">Explore →</a>
-        </article>
-      </div>
-    </section>
-
-    <!-- ── markets ─────────────────────────────────────────────────────────── -->
-    <section class="markets" id="markets" aria-labelledby="markets-title">
-      <div class="section-head">
-        <h2 class="section-head__title" id="markets-title">
-          Live markets,<br>
-          straight from the source.
-        </h2>
-        <p class="section-head__sub">
-          Real-time quotes from Yahoo Finance — the same tickers FinGraph
-          grounds its answers in, plus the names that move the market.
-        </p>
-      </div>
-
-      <div class="ticker" id="ticker" aria-label="Live market ticker">
-        <div class="ticker__track" id="ticker-track"></div>
-      </div>
-
-      <div class="markets__grid" id="markets-grid" aria-live="off"></div>
-
-      <p class="markets__status" id="markets-status" role="status" aria-live="polite"></p>
-    </section>
-
-    <!-- ── pricing ─────────────────────────────────────────────────────────── -->
-    <section class="plans" id="pricing" aria-labelledby="pricing-title">
-      <div class="section-head">
-        <h2 class="section-head__title" id="pricing-title">
-          Plans that fit<br>your analysis.
-        </h2>
-        <p class="section-head__sub">
-          Choose the FinGraph plan that matches your financial intelligence needs.
-        </p>
-      </div>
-
-      <!-- billing toggle -->
-      <div class="billing-toggle" role="group" aria-label="Billing period">
-        <span class="billing-toggle__label" id="label-monthly">Monthly</span>
-        <button class="billing-toggle__switch" id="billing-switch" type="button"
-                role="switch" aria-checked="false"
-                aria-labelledby="label-monthly label-yearly"
-                aria-label="Toggle monthly and yearly billing">
-          <span class="billing-toggle__thumb" aria-hidden="true"></span>
-        </button>
-        <span class="billing-toggle__label" id="label-yearly">Yearly</span>
-        <span class="billing-toggle__save" aria-hidden="true">Save 20%</span>
-      </div>
-
-      <div class="plans__grid">
-
-        <!-- Free -->
-        <article class="plan" data-plan="free">
-          <header class="plan__head">
-            <h2 class="plan__name">Free</h2>
-            <p class="plan__blurb">For exploring the graph on your own.</p>
-          </header>
-
-          <p class="plan__price">
-            <span class="plan__amount" data-monthly="0" data-yearly="0">$0</span>
-            <span class="plan__period">/ month</span>
-          </p>
-          <p class="plan__billing-note" data-billing-note>Free forever</p>
-
-          <ul class="plan__features">
-            <li>3 questions per day</li>
-            <li>Single-issuer graph view</li>
-            <li>Community support</li>
-            <li>Public filings only</li>
-          </ul>
-
-          <a class="btn btn--ghost plan__cta" href="/answer?q=What%20is%20Apple%27s%20revenue%3F">Start for free</a>
-        </article>
-
-        <!-- Pro (highlighted) -->
-        <article class="plan plan--pro" data-plan="pro">
-          <span class="plan__badge">Most Popular</span>
-
-          <header class="plan__head">
-            <h2 class="plan__name">Pro</h2>
-            <p class="plan__blurb">For analysts who live in the data.</p>
-          </header>
-
-          <p class="plan__price">
-            <span class="plan__amount" data-monthly="29" data-yearly="23">$29</span>
-            <span class="plan__period">/ month</span>
-          </p>
-          <p class="plan__billing-note" data-billing-note>Billed monthly</p>
-
-          <ul class="plan__features">
-            <li>Unlimited questions</li>
-            <li>Multi-issuer comparison</li>
-            <li>Live market data & signals</li>
-            <li>Full filing history & traces</li>
-            <li>Priority support</li>
-          </ul>
-
-          <a class="btn btn--primary plan__cta" href="/answer?q=What%20is%20Apple%27s%20revenue%3F">Get Started</a>
-        </article>
-
-        <!-- Enterprise -->
-        <article class="plan" data-plan="enterprise">
-          <header class="plan__head">
-            <h2 class="plan__name">Enterprise</h2>
-            <p class="plan__blurb">For teams and institutions.</p>
-          </header>
-
-          <p class="plan__price">
-            <span class="plan__amount plan__amount--custom">Custom</span>
-          </p>
-          <p class="plan__billing-note" data-billing-note>Tailored to your stack</p>
-
-          <ul class="plan__features">
-            <li>Everything in Pro</li>
-            <li>Private graph deployment</li>
-            <li>SSO & audit logs</li>
-            <li>Dedicated data pipeline</li>
-            <li>Custom integrations & SLA</li>
-          </ul>
-
-          <a class="btn btn--ghost plan__cta" href="/answer?q=What%20is%20Apple%27s%20revenue%3F">Contact Sales</a>
-        </article>
-
-      </div>
-
-      <p class="plans__note">
-        All plans include read-only access to the public knowledge graph.
-        No credit card required to start.
-      </p>
-    </section>
-
   </main>
 
   <footer class="footer">
@@ -467,12 +212,8 @@
           </div>
 
           <nav class="footer__nav" aria-label="Product">
-            <a href="#about">About</a>
             <a href="#features">Features</a>
             <a href="#how-it-works">How it works</a>
-            <a href="#insights">Insights</a>
-            <a href="#markets">Markets</a>
-            <a href="#pricing">Pricing</a>
           </nav>
         </div>
 

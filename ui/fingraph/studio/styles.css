@@ -43,6 +43,7 @@
   --text-base: clamp(0.9375rem, 0.9rem + 0.15vw, 1rem);
   --text-lg: clamp(1.05rem, 1rem + 0.25vw, 1.175rem);
   --text-xl: clamp(1.25rem, 1.15rem + 0.4vw, 1.5rem);
+  --text-2xl: clamp(1.5rem, 1.4rem + 0.5vw, 2rem);
 
   /* Space: 4px base */
   --sp-1: 0.25rem;
@@ -354,6 +355,7 @@ svg { display: block; }
   border-radius: 50%;
   background: var(--border-strong);
   flex: 0 0 auto;
+  opacity: 0.6;
 }
 
 .topbar__spacer { flex: 1 1 auto; min-width: var(--sp-2); }
@@ -373,17 +375,16 @@ svg { display: block; }
   background: var(--surface-2);
   color: var(--text);
   font-size: var(--text-sm);
-  font-weight: 520;
+  font-weight: 550;
   white-space: nowrap;
   transition: background var(--dur-fast) var(--ease),
               border-color var(--dur-fast) var(--ease),
               color var(--dur-fast) var(--ease),
-              translate var(--dur-fast) var(--ease),
-              box-shadow var(--dur-fast) var(--ease);
+              translate var(--dur-fast) var(--ease);
 }
-.btn:hover:not(:disabled) { background: var(--surface-3); border-color: var(--border-strong); }
+.btn:hover:not(:disabled) { background: var(--surface-3); border-color: var(--border-strong); color: var(--text); translate: 0 -1px; }
 .btn:active:not(:disabled) { translate: 0 1px; }
-.btn:disabled { opacity: 0.45; }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .btn svg { width: 15px; height: 15px; flex: 0 0 auto; }
 
 .btn--primary {
@@ -405,12 +406,12 @@ svg { display: block; }
 
 .btn--icon { width: 32px; padding: 0; }
 .btn--sm { min-height: 27px; padding: 0 var(--sp-2); font-size: var(--text-xs); }
-.btn[aria-pressed="true"] {
+.btn[aria-pressed="true"],
+.btn.is-on {
   background: var(--primary-soft);
   border-color: var(--accent-ring);
   color: var(--primary);
 }
-.btn.is-on { background: var(--primary-soft); border-color: var(--accent-ring); color: var(--primary); }
 
 .btn__kbd {
   font-family: var(--font-mono);
@@ -2953,11 +2954,11 @@ table.data td.mono { font-family: var(--font-mono); font-size: var(--text-xs); }
 
 .company-hero {
   position: relative;
-  min-height: 420px;
+  min-height: 340px;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: calc(var(--topbar-h) + 40px) 24px 48px;
+  padding: calc(var(--topbar-h) + 24px) 24px 40px;
   overflow: clip;
 }
 
@@ -3208,25 +3209,21 @@ table.data td.mono { font-family: var(--font-mono); font-size: var(--text-xs); }
 .company-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
-  gap: 20px;
-  max-width: var(--wrap);
+  gap: 16px;
+  max-width: 1000px;
   margin: 0 auto;
-  padding: 0 24px 48px;
+  padding: 0 24px 40px;
 }
 
 /* Cards (Landing style) */
 .card {
   position: relative;
-  padding: 28px 28px 32px;
+  padding: 24px 24px 28px;
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
   background: var(--surface);
-  box-shadow: var(--shadow-card);
   overflow: hidden;
-  transition: transform 380ms var(--ease-out),
-              border-color 380ms var(--ease-out),
-              background-color 380ms var(--ease-out),
-              box-shadow 380ms var(--ease-out);
+  transition: border-color 200ms var(--ease), box-shadow 200ms var(--ease);
 }
 
 .card::before {
@@ -3235,25 +3232,23 @@ table.data td.mono { font-family: var(--font-mono); font-size: var(--text-xs); }
   top: 0; left: 0; right: 0;
   height: 1px;
   background: linear-gradient(90deg, transparent, var(--primary), var(--accent-2), transparent);
-  opacity: 0.6;
+  opacity: 0.5;
 }
 
 .card--elevated:hover {
-  transform: translateY(-6px);
-  border-color: var(--border-2);
-  background: var(--surface-2);
-  box-shadow: 0 20px 50px -16px rgba(255, 60, 0, 0.25);
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-2);
 }
 
 .card__header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 20px;
+  margin-bottom: 18px;
 }
 
 .card__title {
-  font-size: 19px;
+  font-size: 17px;
   font-weight: 620;
   letter-spacing: -0.02em;
 }
@@ -3287,14 +3282,14 @@ table.data td.mono { font-family: var(--font-mono); font-size: var(--text-xs); }
   display: flex;
   flex-direction: column;
   gap: 4px;
-  padding: 12px;
+  padding: 10px;
   background: var(--surface-2);
   border-radius: var(--r-sm);
   border: 1px solid var(--border);
 }
 
 .tech-item__label {
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -3303,7 +3298,7 @@ table.data td.mono { font-family: var(--font-mono); font-size: var(--text-xs); }
 
 .tech-item__value {
   font-family: var(--font-mono);
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 550;
   color: var(--text);
   font-variant-numeric: tabular-nums;

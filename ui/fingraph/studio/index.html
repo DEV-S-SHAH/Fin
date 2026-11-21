@@ -40,14 +40,6 @@
       <span class="brand__env" id="schema-chip" hidden></span>
     </div>
 
-    <div class="topbar__stats" id="topbar-stats" aria-live="off">
-      <span><b id="stat-nodes">—</b> entities</span>
-      <span class="dot" aria-hidden="true"></span>
-      <span><b id="stat-edges">—</b> relationships</span>
-      <span class="dot" aria-hidden="true"></span>
-      <span><b id="stat-issuers">—</b> issuers</span>
-    </div>
-
     <div class="topbar__spacer"></div>
 
     <div class="topbar__actions">
@@ -98,7 +90,7 @@
       <div class="graph-inspector" id="graph-inspector" hidden></div>
 
       <!-- Right-Side Floating Filter & Control Panel with Integrated Search -->
-      <aside class="graph-side-panel" id="graph-side-panel" aria-label="Graph filters and controls">
+      <aside class="graph-side-panel is-collapsed" id="graph-side-panel" aria-label="Graph filters and controls">
         <div class="side-panel-head">
           <div class="side-panel-title">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 6h16M7 12h10M10 18h4"/></svg>
@@ -204,7 +196,7 @@
       </aside>
 
       <!-- Persistent Re-open Filters Button (shown when side panel is closed) -->
-      <button class="graph-filter-fab" id="graph-filter-fab" type="button" title="Open graph filters & controls" hidden>
+      <button class="graph-filter-fab" id="graph-filter-fab" type="button" title="Open graph filters & controls">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 6h16M7 12h10M10 18h4"/></svg>
         <span>Filters</span>
       </button>
