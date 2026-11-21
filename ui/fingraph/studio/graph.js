@@ -318,6 +318,22 @@ export class GraphView {
     this.fitted = false;
     this.disposed = false;
 
+    // Physics configuration — exposed to the UI for live tuning.
+    // These mirror the d3 force parameters and are applied on every (re)layout.
+    this.physics = {
+      repulsion: -240,      // charge strength (negative = repel)
+      repulsionRadius: 260, // max distance charge acts over
+      gravity: 0.06,        // centre gravity pull
+      linkDistance: 70,     // ideal link length
+      linkStrength: 0.18,   // link elasticity
+      collision: 1.1,       // node collision radius multiplier
+      cooling: 0.992,       // alpha decay per tick (<1 = cool, =1 = never settle)
+      velocityDecay: 0.4,   // velocity damping (0 = none, 1 = full stop)
+    };
+
+    // Track direct neighbours for drag-follow behaviour.
+    this._neighbourCache = new Map();
+
     this.#buildSkeleton();
     this.#buildBehaviours();
     this.#buildUIOverlays();
@@ -398,16 +414,12 @@ export class GraphView {
         }
       });
 
-    // Dragging moves one node and nothing else.
+    // Dragging moves one node and pulls its direct neighbours along with it,
+    // giving the organic, "sticky" feel of Obsidian's graph. Connected nodes
+    // follow with damping so the cluster stretches but doesn't tear apart.
     //
-    // The layout is settled before it is drawn and is not running afterwards, so
-    // a drag has to place the node itself. The simulation is deliberately not
-    // reheated here: letting the forces resolve the move is what made a drag
-    // shuffle its neighbours around, and what previously let a node be pushed
-    // on top of another. Overlap is refused outright instead.
-    //
-    // Enhanced with query_ui.py's collision prevention: when dragging a company
-    // node, actively push other company nodes away to maintain separation.
+    // The simulation stays warm while dragging and cools back down after release,
+    // so the graph keeps settling naturally instead of freezing in place.
     this.drag = d3.drag()
       .on("start", (event, d) => {
         this.nodeDragging = true;
@@ -416,25 +428,31 @@ export class GraphView {
         this.dragOrigin = { x: event.x, y: event.y };
         d.fx = d.x;
         d.fy = d.y;
-        if (this.simulation) this.simulation.alpha(Math.max(this.simulation.alpha(), 0.7));
+        // Reheat the simulation so dragging feels fluid and the graph settles
+        // naturally after release instead of locking into a rigid layout.
+        if (this.simulation) {
+          this.simulation.alpha(Math.max(this.simulation.alpha(), 0.6));
+          this.simulation.restart();
+        }
         this.canvas.classList.add("dragging");
         this.#hideTooltip();
+
+        // Pre-compute direct neighbours so we can pull them during the drag.
+        this._rebuildNeighbourCache();
       })
       .on("drag", (event, d) => {
         let targetX = event.x;
         let targetY = event.y;
 
-        // Enhanced collision prevention for Company nodes during drag (from query_ui.py)
-        // Push other companies away if they get too close
+        // Collision prevention for Company nodes during drag
         if (d.type === "Company" && this.nodes) {
-          const minDist = (d.r || 9) * 3.5; // larger buffer for companies
+          const minDist = (d.r || 9) * 3.5;
           for (const other of this.nodes) {
             if (other === d || other.type !== "Company") continue;
             const dx = other.x - targetX;
             const dy = other.y - targetY;
             const dist = Math.hypot(dx, dy);
             if (dist < minDist && dist > 0.001) {
-              // Push the other node away
               const pushStrength = 0.3;
               const pushX = (dx / dist) * (minDist - dist) * pushStrength;
               const pushY = (dy / dist) * (minDist - dist) * pushStrength;
@@ -442,21 +460,15 @@ export class GraphView {
               other.y += pushY;
               other.vx += pushX * 0.5;
               other.vy += pushY * 0.5;
-              // Also push the dragged node slightly away
               targetX -= pushX * 0.3;
               targetY -= pushY * 0.3;
             }
           }
         }
 
-        // A move that would put this circle on top of another is not taken, so
-        // the node simply stops at the last clear spot. The drag stays alive and
-        // keeps working the moment the pointer moves clear again.
         if (this.#positionIsClear(d, targetX, targetY)) {
           d.fx = targetX;
           d.fy = targetY;
-          // The layout is not running, so the position is applied here rather
-          // than being picked up by a tick that will never come.
           d.x = targetX;
           d.y = targetY;
         }
@@ -465,6 +477,22 @@ export class GraphView {
           Math.hypot(event.x - this.dragOrigin.x, event.y - this.dragOrigin.y)
         );
         if (this.simulation) this.simulation.alpha(Math.max(this.simulation.alpha(), 0.35));
+
+        // Pull direct neighbours along with the dragged node (damped).
+        const neighbours = this._neighbourCache.get(d.id) || [];
+        const follow = 0.25; // how strongly neighbours follow (0 = none, 1 = lockstep)
+        for (const nb of neighbours) {
+          if (nb.fx !== null || nb.fy !== null) continue; // don't fight another drag
+          const dx = d.x - nb.x;
+          const dy = d.y - nb.y;
+          const dist = Math.hypot(dx, dy) || 1;
+          const pull = Math.min(dist * follow, (d.r || 8) + (nb.r || 8) + 12);
+          nb.x += (dx / dist) * pull;
+          nb.y += (dy / dist) * pull;
+          nb.vx = 0;
+          nb.vy = 0;
+        }
+
         this.#updatePositions();
         this.#computeLabelPlacements();
       })
@@ -480,14 +508,12 @@ export class GraphView {
         if (this.suppressClick) {
           setTimeout(() => { this.suppressClick = false; }, 0);
         }
-        // Reheat simulation after drag to let forces settle nodes into non-overlapping positions
+        // Let the warm simulation settle naturally after release.
         if (this.simulation) this.simulation.alpha(0.5);
         this.#computeLabelPlacements();
 
         // Spring-back: animate the dragged node back toward its cluster slot
-        // so a quick drag reads as a peek, not a permanent move. Only applies
-        // when the node hasn't been dragged far (under ~60px) — further drags
-        // are treated as intentional repositioning.
+        // so a quick drag reads as a peek, not a permanent move.
         if (!d.isCompany && this.dragTravel < 60 && this.dragTravel > 4) {
           const targetX = d.slotX ?? d.x;
           const targetY = d.slotY ?? d.y;
@@ -498,7 +524,6 @@ export class GraphView {
           const spring = (now) => {
             const elapsed = now - startTime;
             const t = Math.min(1, elapsed / duration);
-            // Ease-out back: overshoots slightly then settles
             const ease = 1 - Math.pow(1 - t, 3);
             d.x = startX + (targetX - startX) * ease;
             d.y = startY + (targetY - startY) * ease;
@@ -534,6 +559,17 @@ export class GraphView {
       if (dx * dx + dy * dy < need * need) return false;
     }
     return true;
+  }
+
+  /** Build a lookup of each node's direct neighbours for drag-follow behaviour. */
+  _rebuildNeighbourCache() {
+    this._neighbourCache.clear();
+    for (const n of this.nodes) this._neighbourCache.set(n.id, []);
+    for (const l of this.links) {
+      if (!l.source || !l.target) continue;
+      this._neighbourCache.get(l.source.id)?.push(l.target);
+      this._neighbourCache.get(l.target.id)?.push(l.source);
+    }
   }
 
   /* ── Overlays: Inspector and Side Control Panel ─────────────────────────── */
@@ -1308,16 +1344,16 @@ export class GraphView {
     const { width, height } = this.#size();
     const cx = width / 2;
     const cy = height / 2;
-    const radius = Math.min(width, height) * 0.35;
+    const p = this.physics;
 
-    // Globe initialization: place uninitialized nodes on a sphere surface projected to 2D
+    // Give uninitialized nodes a starting spread so the first ticks don't
+    // all start from the centre and explode outward.
     this.nodes.forEach((d, i) => {
       if (!d._initialized) {
-        const phi = Math.acos(1 - 2 * (i + 0.5) / this.nodes.length);
-        const theta = Math.PI * (1 + Math.sqrt(5)) * (i + 0.5);
-        const r = radius * Math.sqrt(Math.random());
-        d.x = cx + r * Math.sin(phi) * Math.cos(theta);
-        d.y = cy + r * Math.sin(phi) * Math.sin(theta);
+        const angle = (i / Math.max(1, this.nodes.length)) * Math.PI * 2;
+        const radius = Math.min(width, height) * 0.3 * Math.sqrt(i / this.nodes.length);
+        d.x = cx + Math.cos(angle) * radius;
+        d.y = cy + Math.sin(angle) * radius;
         d._initialized = true;
       }
       d.vx = 0;
@@ -1325,29 +1361,36 @@ export class GraphView {
     });
 
     const answering = !!(this.answerPathNodes && this.answerPathNodes.size > 0);
-    const labelHalf = answering ? estimateLabelWidth(this.nodes) * 0.5 : 0;
-    const pad = answering ? Math.max(26, Math.min(56, labelHalf * 0.6)) : 15;
+    const pad = answering ? 26 : 15;
 
     this.simulation = d3.forceSimulation(this.nodes)
-      .force("link", d3.forceLink(this.links).id(d => d.id).distance(90).strength(0.15))
-      .force("charge", d3.forceManyBody().strength(d => 
-        d.type === "Company" ? -360 - 12 * (d.r || 9) : -120 - 4 * (d.r || 9)
-      ))
-      .force("x", d3.forceX(cx).strength(0.02))
-      .force("y", d3.forceY(cy).strength(0.02))
-      .force("center", d3.forceCenter(cx, cy))
-      .force("radial", d3.forceRadial(radius * 0.9, cx, cy).strength(0.08))
-      .force("collide", d3.forceCollide(d => {
-        const base = (d.r || 9) + 8;
-        return d.type === "Company" ? base * 2.5 : base;
-      }).iterations(4).strength(1))
+      // Elastic links: connected nodes pull toward each other at linkDistance.
+      .force("link", d3.forceLink(this.links)
+        .id(d => d.id)
+        .distance(d => linkDistance(l.relation) * this.linkScale)
+        .strength(p.linkStrength))
+      // Repulsion: nodes push each other away (charge force).
+      .force("charge", d3.forceManyBody()
+        .strength(p.repulsion)
+        .radiusMax(p.repulsionRadius))
+      // Collision: nodes behave like circles that can't overlap.
+      .force("collide", d3.forceCollide()
+        .radius(d => (d.r || 9) * p.collision + pad)
+        .iterations(3)
+        .strength(1))
+      // Centre gravity: gentle pull toward canvas centre so the graph doesn't drift away.
+      .force("center", d3.forceCenter(cx, cy).strength(p.gravity))
+      // X/Y gravity: keep the graph roughly centred.
+      .force("x", d3.forceX(cx).strength(p.gravity * 0.5))
+      .force("y", d3.forceY(cy).strength(p.gravity * 0.5))
+      // Angular/radial clustering: pull members toward their company hub's slot.
+      .force("cluster", (alpha) => this.#applyClusterForces(alpha))
       .stop();
 
-    // Run the forces to convergence before first paint
+    // Run the forces to convergence before first paint (settled off-screen).
     for (let i = 0; i < SETTLE_TICKS; i++) {
       if (this.simulation.alpha() <= this.simulation.alphaMin()) break;
       this.simulation.tick();
-      // Company collision prevention
       this.#preventCompanyCollision(cx, cy);
     }
 
@@ -1362,6 +1405,10 @@ export class GraphView {
     const loop = () => {
       if (this.disposed) return;
       if (this.simulation) {
+        // Continuous cooling: the simulation never fully stops. alpha decays
+        // toward zero but the cooling factor keeps it alive, giving the
+        // organic, always-slightly-moving feel of Obsidian's graph. When the
+        // user interacts (drag/zoom) the alpha is reheated elsewhere.
         this.simulation.tick();
         this.#updatePositions();
 
@@ -1369,6 +1416,13 @@ export class GraphView {
         // things are still moving.
         if ((this.tickCount = (this.tickCount || 0) + 1) % 8 === 0) {
           this.#computeLabelPlacements();
+        }
+
+        // Apply cooling: if alpha is very low, nudge it up slightly so the
+        // graph keeps breathing but never settles into a frozen state.
+        const a = this.simulation.alpha();
+        if (a > 0 && a < 0.005) {
+          this.simulation.alpha(0.005);
         }
       }
 
@@ -1406,6 +1460,45 @@ export class GraphView {
     if (distance <= soft) return base;
     const over = (distance - soft) / (limit - soft);
     return Math.min(2.4, base * (1 + 14 * over));
+  }
+
+  /**
+   * Angular/radial clustering force applied each tick.
+   *
+   * Pulls non-company nodes toward their company hub's slot on a gentle spiral
+   * so connected child nodes sit naturally around their parent without forming
+   * a rigid ring. Company hubs are pulled toward their grid slot so each
+   * company stays stable and its cluster remains separated from neighbours.
+   * This is what gives the graph its organic, Obsidian-like neighbourhoods
+   * instead of a flat radial burst.
+   */
+  #applyClusterForces(alpha) {
+    for (const d of this.nodes) {
+      if (!Number.isFinite(d.x) || !Number.isFinite(d.y)) continue;
+      const slotX = d.slotX ?? 0;
+      const slotY = d.slotY ?? 0;
+      if (!Number.isFinite(slotX) || !Number.isFinite(slotY)) continue;
+
+      const dx = slotX - d.x;
+      const dy = slotY - d.y;
+      const dist = Math.hypot(dx, dy);
+      if (dist < 0.001) continue;
+
+      if (d.isCompany) {
+        // Company hubs: strong pull toward their grid slot, so they stay put.
+        const k = 0.15 * alpha;
+        d.vx += (dx / dist) * Math.min(dist, 40) * k;
+        d.vy += (dy / dist) * Math.min(dist, 40) * k;
+      } else {
+        // Members: gentle radial pull toward their bench, stronger near the edge.
+        const cluster = this.companyClusters.get(d.clusterId);
+        const limit = cluster?.benchRadius || 0;
+        const pull = limit > 0 ? Math.min(dist / Math.max(limit, 1), 1) : 0.5;
+        const k = 0.08 * alpha * pull;
+        d.vx += (dx / dist) * dist * k;
+        d.vy += (dy / dist) * dist * k;
+      }
+    }
   }
 
   /**
@@ -2308,6 +2401,38 @@ export class GraphView {
         this.setShowArrows(e.target.checked);
       });
 
+      // Physics controls
+      const physDefaults = { repulsion: -240, gravity: 0.06, "link distance": 70, collision: 1.1 };
+      const physMap = {
+        repulsion: "side-phys-repulsion",
+        gravity: "side-phys-gravity",
+        "link distance": "side-phys-link",
+        collision: "side-phys-collision",
+      };
+      for (const [key, inputId] of Object.entries(physMap)) {
+        const input = this.sidePanelEl.querySelector(`#${inputId}`);
+        const valId = `phys-${key.replace(" ", "-")}-val`;
+        const valEl = this.sidePanelEl.querySelector(`#${valId}`);
+        if (input && valEl) {
+          input.value = this.physics[key];
+          valEl.textContent = this.physics[key];
+          input.addEventListener("input", (e) => {
+            const v = Number(e.target.value);
+            valEl.textContent = v;
+            this.setPhysics({ [key]: v });
+          });
+        }
+      }
+      this.sidePanelEl.querySelector("#side-phys-reset-btn")?.addEventListener("click", () => {
+        for (const [key, v] of Object.entries(physDefaults)) {
+          const input = this.sidePanelEl.querySelector(`#side-phys-${key.replace(" ", "-")}`);
+          const valEl = this.sidePanelEl.querySelector(`#phys-${key.replace(" ", "-")}-val`);
+          if (input) input.value = v;
+          if (valEl) valEl.textContent = v;
+        }
+        this.setPhysics(physDefaults);
+      });
+
       this.sidePanelEl.querySelector("#side-fit-btn")?.addEventListener("click", () => this.fit());
       this.sidePanelEl.querySelector("#side-relayout-btn")?.addEventListener("click", () => this.relayout());
       this.sidePanelEl.querySelector("#side-reset-btn")?.addEventListener("click", () => this.reset());
@@ -2359,6 +2484,26 @@ export class GraphView {
     this.maxHops = Number(hops) || 3;
     this.#computeHopDistances();
     this.#draw();
+  }
+
+  /** Update live physics parameters and rebuild the simulation. */
+  setPhysics(updates) {
+    if (!updates || typeof updates !== "object") return;
+    for (const [key, value] of Object.entries(updates)) {
+      if (key in this.physics && value !== undefined) {
+        this.physics[key] = Number(value);
+      }
+    }
+    // Rebuild the simulation with the new physics so forces take effect immediately.
+    if (this.nodes.length) {
+      this.#buildSimulation();
+      this.#draw();
+      this.#run();
+    }
+  }
+
+  getPhysics() {
+    return { ...this.physics };
   }
 
   setLabels(on) {
@@ -2655,6 +2800,7 @@ export class GraphView {
     clearTimeout(this.flashTimer);
     clearTimeout(this.flowTimer);
     clearTimeout(this._entranceTimer);
+    this._neighbourCache?.clear();
     this.observer?.disconnect();
     this.root?.remove();
   }
