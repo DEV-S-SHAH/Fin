@@ -94,6 +94,7 @@ class SessionGraph:
         fiscal_period: str = "",
         cin: str = "",
         ticker: str = "",
+        source: str = "",
     ) -> str:
         node_id = self._next_id("Metric")
         self.graph.add_node(
@@ -109,6 +110,7 @@ class SessionGraph:
             fiscal_period=fiscal_period,
             cin=cin,
             ticker=ticker,
+            source=source,
             label=metric_name,
         )
         return node_id

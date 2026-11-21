@@ -42,3 +42,8 @@ streamlit>=1.40.0
 
 # FastAPI backend for the TypeScript frontend.
 fastapi>=0.115.0
+
+# India Company Graph: optional live price fallback when NSE is blocked
+# (yfinance / Yahoo Finance is unofficial but reliable for end-of-day prices).
+# Install separately:  pip install yfinance
+# yfinance>=0.2.40
