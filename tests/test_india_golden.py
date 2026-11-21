@@ -6,6 +6,7 @@ the full flow: resolve CIN -> build graph -> gather evidence -> grade answer.
 
 from india_graph.config import IndiaConfig
 from india_graph.graph import SessionGraph
+from india_graph.orchestrator import IndiaOrchestrator
 from india_graph.provenance import REFUSED, SUPPORTED, build_evidence, grade_answer
 from india_graph.resolver import TickerCINResolver
 
@@ -45,3 +46,38 @@ def test_golden_no_data_gap():
     evidence = build_evidence(graph.as_nodes(), graph.as_edges(), graph.tag_map())
     graded = grade_answer("Revenue was 100 [E1]", evidence, question="What was revenue?")
     assert graded.verdict == REFUSED
+
+
+def test_golden_fixture_graph_build():
+    """Offline fixture build yields a graph with Company + announcements + metrics."""
+    config = IndiaConfig()
+    resolver = TickerCINResolver(config)
+    resolver.register("RELIANCE", "L17110MH1973PLC019786")
+    orch = IndiaOrchestrator(config=config, resolver=resolver, use_fixtures=True)
+    graph = orch.build_for_cin("L17110MH1973PLC019786", "Reliance Industries Ltd")
+
+    nodes = graph.as_nodes()
+    edges = graph.as_edges()
+    types = {n["type"] for n in nodes}
+    assert "Company" in types
+    assert "Announcement" in types
+    assert "FinancialMetric" in types
+    assert len(edges) >= 1
+    # Company node carries the CIN
+    comp = next(n for n in nodes if n["type"] == "Company")
+    assert comp["cin"] == "L17110MH1973PLC019786"
+
+
+def test_golden_fixture_qa_supported():
+    """Fixture-based Q&A returns a grounded, SUPPORTED answer."""
+    config = IndiaConfig()
+    resolver = TickerCINResolver(config)
+    resolver.register("RELIANCE", "L17110MH1973PLC019786")
+    orch = IndiaOrchestrator(config=config, resolver=resolver, use_fixtures=True)
+    graph = orch.build_for_cin("L17110MH1973PLC019786", "Reliance Industries Ltd")
+
+    result = orch.answer(graph, "What is RELIANCE price?")
+    assert result["verdict"] == SUPPORTED
+    assert "2950.50" in result["answer"]
+    assert result["violations"] == []
+

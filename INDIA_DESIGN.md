@@ -39,7 +39,7 @@
 | Company isolation | One company (one CIN) per session graph; cross-company questions → GAP / refused |
 | JIT build trigger | Lazily on the user's first question |
 | Company resolution flow | User picks a company first → system resolves to CIN → Q&A over that company's graph |
-| Chat UI | Streamlit |
+| Chat UI | TypeScript + React + Vite frontend + FastAPI backend (localhost:5173 frontend, localhost:8000 API) |
 | Initial scraping targets | NSE corporate announcements + financial results; BSE announcements; MCA master via CIN. Skip annual reports & SEBI PDFs (Phase 2). |
 
 ---
@@ -53,7 +53,7 @@
 | Ticker→CIN build | Build once at setup, cache as local lookup, refresh weekly; MCA live fallback for unresolved |
 | Session management | In-memory dict keyed by session ID with last-accessed timestamp; background sweeper destroys after TTL |
 | Synthesis + grading | Reuse FinGraph's build_evidence() + grade_answer() pattern; GAP → REFUSED; misattribution → GAP |
-| Tech stack | Python throughout (scrapers + NetworkX graph + Streamlit UI) |
+| Tech stack | Python backend (FastAPI + scrapers + NetworkX graph) + TypeScript frontend (React + Vite + Tailwind) |
 
 ---
 
@@ -61,7 +61,7 @@
 
 | Decision | Value |
 |---|---|
-| Deployment | localhost for now (python -m streamlit run); move to Railway/Render later |
+| Deployment | Backend: FastAPI on localhost:8000 (`uvicorn india_graph.api.main:app --reload --port 8000`). Frontend: React/Vite on localhost:5173 (`npm run dev`). Move to Railway/Render later. |
 | Persistence boundary | Per-session graph = ephemeral (nothing persists between sessions); ticker→CIN resolver cache = small persistent file (metadata only, refreshed weekly) |
 | Security | SSRF allow-list (nseindia.com, bseindia.com, mca.gov.in, sebi.gov.in only); env-based secrets; per-IP rate limiting |
 | Testing | Mocked scraper unit tests + golden-queries test suite on every deploy; provenance/grading tests added later |
@@ -73,45 +73,60 @@
 ## 6. Data Flow
 
 ```
-User picks company (ticker/name)
+TypeScript frontend (localhost:5173)
+    │
+    ▼ (REST JSON API)
+FastAPI backend (localhost:8000)
+    │
+    ▼
+User picks company (ticker/name) → POST /api/session/{id}/bind
     │
     ▼
 Resolve ticker → CIN (cached resolver; MCA fallback)
     │
     ▼ (first question triggers JIT build)
-Scrape NSE/BSE announcements + financials + MCA master (deterministic, per-source provenance)
+POST /api/session/{id}/ask → scrape NSE/BSE announcements + financials + MCA master
     │
     ▼
 Normalize to common records → in-memory NetworkX graph (one company, one session)
     │
     ▼
-LLM synthesizes answer from graph evidence, tagged STATED / DERIVED / INFERRED / EXTERNAL / GAP
+Deterministic answer from graph evidence, tagged STATED / DERIVED / INFERRED / EXTERNAL / GAP
     │
     ▼
 grade_answer() checks figures against cited evidence only; GAP → REFUSED; misattribution → GAP
     │
     ▼
-Streamlit UI returns answer with citations
+Frontend renders answer + citations + verdict badge + graph visualization
     │
-    ▼ (30 min inactivity or logout)
+    ▼ (30 min inactivity or logout / DELETE /api/session/{id})
 Session graph destroyed; nothing persists
 ```
 
 ---
 
-## 7. Files to Create Next (Implementation Order)
+## 7. Files Created
 
-1. `india_graph/scrapers/nse.py` — NSE announcements + financials scraper
-2. `india_graph/scrapers/bse.py` — BSE announcements scraper
-3. `india_graph/scrapers/mca.py` — MCA master data via CIN
-4. `india_graph/resolver.py` — ticker → CIN resolver (cached)
-5. `india_graph/graph.py` — in-memory NetworkX session graph builder
-6. `india_graph/session.py` — session dict + TTL sweeper
-7. `india_graph/provenance.py` — build_evidence + grade_answer (adapted from FinGraph)
-8. `india_graph/ui.py` — Streamlit chat UI
-9. `india_graph/config.py` — SSRF allow-list, FYE defaults, TTL, NIFTY 50 list
-10. `tests/` — mocked scraper tests + golden queries
+Backend (`india_graph/`):
+- `config.py` — SSRF allow-list, FYE defaults, TTL, NIFTY 50 list
+- `resolver.py` — ticker → CIN resolver (cached)
+- `graph.py` — in-memory NetworkX session graph builder
+- `session.py` — session dict + TTL sweeper
+- `provenance.py` — build_evidence + grade_answer (adapted from FinGraph)
+- `orchestrator.py` — scrape → graph build pipeline
+- `api/__init__.py`, `api/main.py`, `api/routes.py` — FastAPI REST backend
+- `ui.py` — Streamlit prototype (kept for reference)
+
+Frontend (`frontend/`):
+- `package.json`, `vite.config.ts`, `tsconfig.json`, `tailwind.config.js`, `postcss.config.js`, `index.html`
+- `src/main.tsx`, `src/App.tsx`, `src/index.css`
+- `src/types/index.ts` — TypeScript types
+- `src/services/api.ts` — API client
+- `src/components/` — VerdictBadge, CitationItem, EvidencePanel, CompanySelector, Message, Chat, GraphView
+
+Tests (`tests/`):
+- `test_india_config.py`, `test_india_resolver.py`, `test_india_graph.py`, `test_india_provenance.py`, `test_india_scrapers.py`, `test_india_golden.py`, `test_india_api.py`
 
 ---
 
-**Next step:** Pick a deployment platform (Railway vs Render) and begin implementing `india_graph/scrapers/nse.py`. Want me to start on any specific module?
+**Next step:** Start the backend (`uvicorn india_graph.api.main:app --reload --port 8000`) and frontend (`cd frontend && npm run dev`), then test the full flow end-to-end.

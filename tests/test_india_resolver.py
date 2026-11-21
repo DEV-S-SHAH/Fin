@@ -40,3 +40,30 @@ def test_stats():
     s = r.stats()
     assert s["symbols_cached"] >= 2
     assert s["cins_cached"] >= 2
+
+
+def test_reverse_resolve():
+    cfg = IndiaConfig()
+    r = TickerCINResolver(cfg)
+    r.register("RELIANCE", "L17110MH1973PLC019786")
+    assert r.reverse_resolve("L17110MH1973PLC019786") == "RELIANCE"
+    assert r.reverse_resolve("L17110MH1973PLC019786".lower()) == "RELIANCE"
+    assert r.reverse_resolve("L99999") is None
+
+
+def test_load_seed(tmp_path):
+    import json
+    from datetime import datetime, timezone
+
+    from india_graph.resolver import TickerCINResolver
+
+    cache = tmp_path / "seed.json"
+    cache.write_text(json.dumps({
+        "loaded_at": datetime.now(timezone.utc).isoformat(),
+        "symbol_to_cin": {"RELIANCE": "L17110MH1973PLC019786", "TCS": "L22210MH1995PLC084781"},
+        "cin_to_symbol": {"L17110MH1973PLC019786": "RELIANCE", "L22210MH1995PLC084781": "TCS"},
+    }))
+    r = TickerCINResolver.load_seed(cache)
+    assert r.resolve("RELIANCE") == "L17110MH1973PLC019786"
+    assert r.resolve("TCS") == "L22210MH1995PLC084781"
+    assert r.reverse_resolve("L17110MH1973PLC019786") == "RELIANCE"

@@ -97,15 +97,64 @@ python -m sandbox_engine --backup restore --backup-id <id> --confirm
 python -m unittest discover -s tests -p "test_*.py"
 python -m unittest discover -s sandbox_engine -p "test_*.py"
 
+# India Company Graph (offline — no network, no key)
+PYTHONPATH=. python -m pytest tests/test_india_*.py -q
+
 # Frontend
 cd web && npm run build
 ```
+
+## India Company Graph
+
+A localhost-first, India-only financial GraphRAG product that sits alongside
+FinGraph's US SEC pipeline. It gathers NSE/BSE announcements + financials and
+MCA company-master data into a just-in-time, per-session in-memory graph
+(NetworkX), answers natural-language questions with provenance-tagged evidence
+(STATED / DERIVED / INFERRED / EXTERNAL / GAP), then destroys the graph when
+the session ends (30-min TTL). Nothing persists between sessions.
+
+**Stack:** Python backend (FastAPI + scrapers + NetworkX) + TypeScript frontend
+(React + Vite + Tailwind). Open source, no API key required.
+
+```bash
+# Backend (localhost:8000)
+uvicorn india_graph.api.main:app --reload --port 8000
+
+# Frontend (localhost:5173, proxies /api to :8000)
+cd frontend && npm install && npm run dev
+```
+
+**Flow:**
+1. Open `http://localhost:5173`, create a session
+2. Bind a company (NSE/BSE ticker → MCA CIN via the resolver cache)
+3. First question builds the graph just-in-time from NSE/BSE/MCA (offline
+   sample fixtures are bundled for RELIANCE so the flow works with no network)
+4. Ask questions — answers come back with evidence citations and a
+   SUPPORTED / QUALIFIED / REFUSED verdict
+5. Session graph is destroyed after 30 min of inactivity or on logout
+
+**Security:** SSRF allow-list permits only `nseindia.com`, `bseindia.com`,
+`mca.gov.in`, `sebi.gov.in`. No US SEC hosts. Graph construction is
+deterministic (scraper → structured records → graph); the model only phrases
+answers over retrieved, provenance-tagged evidence.
 
 ## Repository Layout
 
 ```
 Fin/
-├── sandbox_engine/       # Ingestion pipeline + query backend
+├── india_graph/          # India Company Graph backend (FastAPI + scrapers)
+│   ├── scrapers/         # NSE, BSE, MCA scrapers (SSRF-guarded)
+│   ├── fixtures/         # Bundled offline sample data (RELIANCE)
+│   ├── api/              # FastAPI routes (/session, /bind, /ask, /graph)
+│   ├── config.py         # SSRF allow-list, FYE March 31, TTL, NIFTY 50
+│   ├── resolver.py       # Ticker -> CIN resolver (disk cache)
+│   ├── graph.py          # In-memory NetworkX session graph
+│   ├── provenance.py     # build_evidence + grade_answer (5 tags, 3 verdicts)
+│   ├── retrieval.py      # Deterministic keyword evidence retrieval
+│   ├── session.py        # Session dict + TTL sweeper
+│   └── orchestrator.py   # Scrape -> graph -> Q&A pipeline
+├── frontend/             # React + Vite + Tailwind UI (port 5173)
+├── sandbox_engine/       # Ingestion pipeline + query backend (US SEC)
 │   ├── _run/sandbox.lbug     # Authoritative LadybugDB (build output)
 │   ├── data/                 # SEC filings (committed)
 │   └── tests/                # 112 unit tests
