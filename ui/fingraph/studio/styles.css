@@ -4032,3 +4032,85 @@ table.data td.mono { font-family: var(--font-mono); font-size: var(--text-xs); }
   font-family: var(--font-mono, inherit);
   pointer-events: none;
 }
+
+/* ========================================================================
+   Graph: physics controls (side panel sliders)
+   ======================================================================== */
+
+.side-slider-val {
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+  font-family: var(--font-mono, inherit);
+  min-width: 32px;
+  text-align: right;
+}
+
+.side-panel-section input[type="range"] {
+  width: 100%;
+  accent-color: var(--primary);
+  cursor: pointer;
+  margin-top: 4px;
+}
+
+/* ========================================================================
+   Graph: enhanced node visuals (Obsidian-like polish)
+   ======================================================================== */
+
+/* Node glow when selected */
+.g-node.is-selected circle.core {
+  filter: drop-shadow(0 0 12px var(--primary));
+  transition: filter var(--dur) var(--ease);
+}
+
+/* Node hover lift */
+.g-node.is-hovered circle.core {
+  filter: drop-shadow(0 0 10px var(--primary));
+  transition: filter var(--dur-fast) var(--ease);
+}
+
+/* Answer-path nodes: stronger presence */
+.g-node.is-answer-path circle.core {
+  filter: drop-shadow(0 0 14px var(--accent));
+  transition: filter var(--dur) var(--ease);
+}
+
+/* Subtle node pulse when idle (organic feel) */
+@keyframes node-idle-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.92; }
+}
+.g-node.is-idle circle.core {
+  animation: node-idle-pulse 3s var(--ease-in-out) infinite;
+}
+
+/* ========================================================================
+   Graph: zoom-dependent label visibility (smooth transitions)
+   ======================================================================== */
+
+/* Labels fade in/out smoothly with zoom instead of snapping */
+text.g-node-label {
+  transition: opacity var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+}
+
+/* Edge labels fade out at low zoom */
+.g-edge-label {
+  transition: opacity var(--dur-fast) var(--ease);
+}
+
+/* ========================================================================
+   Graph: smoother edge transitions
+   ======================================================================== */
+
+.g-edge {
+  transition: stroke var(--dur) var(--ease), stroke-width var(--dur) var(--ease),
+              opacity var(--dur) var(--ease), filter var(--dur) var(--ease);
+}
+
+.g-edge.is-hot {
+  filter: drop-shadow(0 0 6px var(--primary));
+}
+
+.g-edge.is-answer-path {
+  filter: drop-shadow(0 0 8px var(--accent));
+}
