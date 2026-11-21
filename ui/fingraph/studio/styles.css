@@ -1174,6 +1174,8 @@ mark.hit {
 .g-node.is-dim { 
   opacity: 0.22 !important; 
 }
+.g-node.dim text.g-node-label,
+.g-node.is-dim text.g-node-label { opacity: 0.22 !important; }
 .g-node.dim.is-selected,
 .g-node.dim.is-hovered,
 .g-node.is-dim.is-selected,

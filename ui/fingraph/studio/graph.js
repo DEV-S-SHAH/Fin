@@ -1661,8 +1661,13 @@ export class GraphView {
         const slotX = d.slotX;
         const slotY = d.slotY;
         if (!Number.isFinite(slotX) || !Number.isFinite(slotY)) continue;
-        d.vx += (slotX - d.x) * 0.035 * alpha;
-        d.vy += (slotY - d.y) * 0.035 * alpha;
+        // Stronger hub spring: keeps company hubs stable on their grid slots
+        // even as alpha decays, so clusters don't drift apart over long runs.
+        // Dragged companies are exempt (d.fx/fy set during the gesture).
+        if (d.fx == null && d.fy == null) {
+          d.vx += (slotX - d.x) * 0.09 * alpha;
+          d.vy += (slotY - d.y) * 0.09 * alpha;
+        }
         continue;
       }
 
@@ -1740,23 +1745,46 @@ export class GraphView {
   }
 
   /**
-   * Keep a member from defecting to another company.
+   * Keep nodes from drifting out of their own company's neighbourhood.
    *
-   * The forces hold nodes in the right neighbourhood; this is only a generous
-   * safety boundary. It is deliberately much wider than the seeded bench, so
-   * the cluster keeps its organic shape while a stray node cannot end up in a
-   * different company's blob. Company hubs are not pinned: they move with the
-   * force simulation (and with the pointer while dragging).
+   * Members are clamped to a generous boundary around their cluster centre.
+   * Company hubs are clamped back toward their slot if they drift too far --
+   * strong enough to keep hubs stable, weak enough to let a drag override it.
+   * The boundary is deliberately wider than the seeded bench so the cluster
+   * keeps its organic shape while a stray node cannot end up in another
+   * company's blob.
    */
   #constrainToBenches() {
     for (const n of this.nodes) {
       if (n === this._draggedNode || n.fx != null || n.fy != null) continue;
-      if (n.isCompany) continue;
       if (!Number.isFinite(n.x) || !Number.isFinite(n.y)) continue;
 
       const cluster = this.companyClusters.get(n.clusterId);
       const limit = cluster?.benchRadius;
       if (!limit || !Number.isFinite(cluster.cx) || !Number.isFinite(cluster.cy)) continue;
+
+      // Company hubs: clamp back toward their slot if they drift too far.
+      // Generous boundary so the hub can still move with the simulation, but
+      // it never wanders far enough to decouple from its own cluster.
+      if (n.isCompany) {
+        const maxR = limit * 1.6;
+        const dx = n.x - cluster.cx;
+        const dy = n.y - cluster.cy;
+        const d = Math.hypot(dx, dy);
+        if (d > maxR && d !== 0) {
+          const k = maxR / d;
+          n.x = cluster.cx + dx * k;
+          n.y = cluster.cy + dy * k;
+          const nx = dx / d;
+          const ny = dy / d;
+          const outward = n.vx * nx + n.vy * ny;
+          if (outward > 0) {
+            n.vx -= outward * nx;
+            n.vy -= outward * ny;
+          }
+        }
+        continue;
+      }
 
       const maxR = limit * 2.1;
       const dx = n.x - cluster.cx;
