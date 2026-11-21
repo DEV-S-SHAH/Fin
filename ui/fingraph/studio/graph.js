@@ -32,6 +32,28 @@ export const FLOW_MS = 2000;
 const EDGE_KEY = (l) => `${l.source?.id || l.source}|${l.target?.id || l.target}|${l.relation || ""}`;
 const BEND = 0.06;
 
+/** Default physics values, restored by the "Reset Physics" control. */
+const PHYSICS_DEFAULTS = Object.freeze({
+  repulsion: -240,
+  gravity: 0.06,
+  linkDistance: 70,
+  collision: 1.1,
+});
+
+/** Slider/value-element ids for the physics controls. */
+const PHYSICS_CONTROLS = Object.freeze({
+  repulsion: { input: "side-phys-repulsion", value: "phys-repulsion-val" },
+  gravity: { input: "side-phys-gravity", value: "phys-gravity-val" },
+  linkDistance: { input: "side-phys-link", value: "phys-link-val" },
+  collision: { input: "side-phys-collision", value: "phys-collision-val" },
+});
+
+function formatPhysicsValue(key, value) {
+  if (key === "gravity") return Number(value).toFixed(2);
+  if (key === "collision") return Number(value).toFixed(1);
+  return String(Math.round(value));
+}
+
 // How many degree-1 leaf labels get drawn when nothing is hovered. A filing
 // reports enough metrics that labelling every one of them is the fastest way to
 // destroy an otherwise clean layout, so the tail competes for a fixed budget.
@@ -327,12 +349,13 @@ export class GraphView {
       linkDistance: 70,     // ideal link length
       linkStrength: 0.18,   // link elasticity
       collision: 1.1,       // node collision radius multiplier
-      cooling: 0.992,       // alpha decay per tick (<1 = cool, =1 = never settle)
+      cooling: 0.978,       // alpha decay per tick (<1 = cool, =1 = never settle)
       velocityDecay: 0.4,   // velocity damping (0 = none, 1 = full stop)
     };
 
     // Track direct neighbours for drag-follow behaviour.
     this._neighbourCache = new Map();
+    this._draggedNode = null;
 
     this.#buildSkeleton();
     this.#buildBehaviours();
@@ -423,17 +446,17 @@ export class GraphView {
     this.drag = d3.drag()
       .on("start", (event, d) => {
         this.nodeDragging = true;
+        this._draggedNode = d;
         this.suppressClick = false;
         this.dragTravel = 0;
         this.dragOrigin = { x: event.x, y: event.y };
         d.fx = d.x;
         d.fy = d.y;
-        // Reheat the simulation so dragging feels fluid and the graph settles
-        // naturally after release instead of locking into a rigid layout.
-        if (this.simulation) {
-          this.simulation.alpha(Math.max(this.simulation.alpha(), 0.6));
-          this.simulation.restart();
-        }
+        // Keep the simulation warm for the whole gesture. `alphaTarget` holds
+        // the temperature while the pointer is down; the manual render loop is
+        // the only ticker, so d3's own timer is never started.
+        if (this.simulation) this.simulation.alphaTarget(0.25);
+        this.#reheat(0.6);
         this.canvas.classList.add("dragging");
         this.#hideTooltip();
 
@@ -476,13 +499,13 @@ export class GraphView {
           this.dragTravel,
           Math.hypot(event.x - this.dragOrigin.x, event.y - this.dragOrigin.y)
         );
-        if (this.simulation) this.simulation.alpha(Math.max(this.simulation.alpha(), 0.35));
+        this.#reheat(0.4);
 
         // Pull direct neighbours along with the dragged node (damped).
         const neighbours = this._neighbourCache.get(d.id) || [];
-        const follow = 0.25; // how strongly neighbours follow (0 = none, 1 = lockstep)
+        const follow = 0.18; // how strongly neighbours follow (0 = none, 1 = lockstep)
         for (const nb of neighbours) {
-          if (nb.fx !== null || nb.fy !== null) continue; // don't fight another drag
+          if (nb.fx != null || nb.fy != null) continue; // don't fight another drag
           const dx = d.x - nb.x;
           const dy = d.y - nb.y;
           const dist = Math.hypot(dx, dy) || 1;
@@ -497,26 +520,53 @@ export class GraphView {
         this.#computeLabelPlacements();
       })
       .on("end", (event, d) => {
-        if (!event.active && this.simulation) {
-          this.simulation.alphaTarget(0);
-        }
+        if (this.simulation) this.simulation.alphaTarget(0);
         d.fx = null;
         d.fy = null;
+        this._draggedNode = null;
         this.nodeDragging = false;
         this.canvas.classList.remove("dragging");
         this.suppressClick = this.dragTravel > 4;
         if (this.suppressClick) {
           setTimeout(() => { this.suppressClick = false; }, 0);
         }
+
+        // A company that was dragged has genuinely moved: adopt the new spot
+        // as its slot so the layout does not yank it back on the next tick.
+        if (d.isCompany) {
+          const dx = (d.x || 0) - (Number.isFinite(d.slotX) ? d.slotX : d.x || 0);
+          const dy = (d.y || 0) - (Number.isFinite(d.slotY) ? d.slotY : d.y || 0);
+          d.slotX = d.x;
+          d.slotY = d.y;
+          const cluster = this.companyClusters.get(d.clusterId);
+          if (cluster) {
+            cluster.cx = d.x;
+            cluster.cy = d.y;
+            for (const id of cluster.nodes) {
+              const member = this.byId.get(id);
+              if (!member || member === d || member.parentId) continue;
+              if (Number.isFinite(member.slotX)) member.slotX += dx;
+              if (Number.isFinite(member.slotY)) member.slotY += dy;
+            }
+          }
+        }
+
         // Let the warm simulation settle naturally after release.
-        if (this.simulation) this.simulation.alpha(0.5);
+        this.#reheat(0.5);
         this.#computeLabelPlacements();
 
-        // Spring-back: animate the dragged node back toward its cluster slot
-        // so a quick drag reads as a peek, not a permanent move.
+        // Spring-back: animate a quick peek back toward the node's anchor so a
+        // short drag reads as a peek, not a permanent move.
         if (!d.isCompany && this.dragTravel < 60 && this.dragTravel > 4) {
-          const targetX = d.slotX ?? d.x;
-          const targetY = d.slotY ?? d.y;
+          const parent = d.parentId ? this.byId.get(d.parentId) : null;
+          let targetX = d.slotX ?? d.x;
+          let targetY = d.slotY ?? d.y;
+          if (parent && Number.isFinite(parent.x) && Number.isFinite(parent.y)) {
+            const angle = Number.isFinite(d.parentAngle) ? d.parentAngle : 0;
+            const radius = d.parentRadius || 40;
+            targetX = parent.x + Math.cos(angle) * radius;
+            targetY = parent.y + Math.sin(angle) * radius;
+          }
           const startX = d.x;
           const startY = d.y;
           const duration = 450;
@@ -666,7 +716,7 @@ export class GraphView {
   setData(payload, { cited = [], fresh = false } = {}) {
     const rawNodes = payload?.nodes || [];
     const rawEdges = payload?.edges || [];
-    const prev = new Map(this.allNodes.map((n) => [n.id, { x: n.x, y: n.y }]));
+    const prev = new Map(this.allNodes.map((n) => [n.id, n]));
 
     this.allNodes = rawNodes
       .filter((n) => n && n.id !== undefined && n.id !== null)
@@ -675,6 +725,7 @@ export class GraphView {
         const name = n.name || String(n.id);
         const before = prev.get(String(n.id));
         const baseRadius = getNodeBaseRadius(name);
+        const hadPosition = Number.isFinite(before?.x) && Number.isFinite(before?.y);
 
         return {
           ...n,
@@ -683,8 +734,8 @@ export class GraphView {
           name,
           baseRadius,
           r: baseRadius,
-          x: Number.isFinite(before?.x) ? before.x : null,
-          y: Number.isFinite(before?.y) ? before.y : null,
+          x: hadPosition ? before.x : null,
+          y: hadPosition ? before.y : null,
           vx: 0,
           vy: 0,
           degree: 0,
@@ -692,6 +743,14 @@ export class GraphView {
           companyColor: null,
           nodeColor: null,
           isCompany: type === "Company",
+          // Layout anchors survive a data refresh, so a re-fetch does not
+          // rearrange a graph the reader is already looking at.
+          slotX: before?.slotX ?? null,
+          slotY: before?.slotY ?? null,
+          parentId: before?.parentId ?? null,
+          parentAngle: before?.parentAngle ?? null,
+          parentRadius: before?.parentRadius ?? null,
+          _initialized: hadPosition,
         };
       });
 
@@ -742,6 +801,9 @@ export class GraphView {
     this.#computeHopDistances();
     this.#filterAndApply();
 
+    // Let a fresh graph breathe into place instead of appearing frozen. This
+    // is a short, gentle reheat; the layout is already settled off-screen.
+    if (fresh) this.#reheat(0.22);
     if (fresh || !this.fitted) {
       setTimeout(() => this.fit(), 450);
     }
@@ -777,6 +839,12 @@ export class GraphView {
           degree: 0,
           clusterId: null,
           isCompany: type === "Company",
+          slotX: null,
+          slotY: null,
+          parentId: null,
+          parentAngle: null,
+          parentRadius: null,
+          _initialized: false,
         };
         this.allNodes.push(nodeObj);
         this.byId.set(idStr, nodeObj);
@@ -1225,27 +1293,33 @@ export class GraphView {
       }
     }
 
-    // Only run cluster seeding for exploration view (not answer view)
-    // Answer view uses globe layout from #buildSimulation
-    if (!answering) {
-      this.#seedClusters();
-    }
+    // Seed any node that does not have a position yet. Existing nodes keep
+    // theirs, so filtering to an answer does not re-arrange the layout.
+    this.#seedClusters();
     this.#buildSimulation();
     this.#draw();
     this.#run();
   }
 
-  /* ── 2D Cluster Seeding (Exploration View Only) ─────────────────────────────── */
+  /* ── Angular Cluster Seeding ────────────────────────────────────────────── */
 
   /**
-   * Give every company a slot on a grid, then scatter its members on a small
-   * disc around that slot. Only used for exploration view (not answer view).
+   * Give every company a slot on a grid, then place its members in rings around
+   * the node they actually connect to.
+   *
+   * A child is not scattered randomly: siblings are spread at even angular
+   * intervals around their parent, and each ring sits on the outward side of
+   * the cluster. That gives the organic, hand-arranged look of Obsidian's graph
+   * while keeping a company's membership unmistakably together.
+   *
+   * Existing positions are never overwritten. A re-fetch, a filter change or an
+   * answer overlay therefore keeps the layout the reader is already looking at
+   * and only seeds the nodes that are genuinely new.
    */
   #seedClusters() {
     const { width, height } = this.#size();
     const cx = width / 2;
     const cy = height / 2;
-    const answering = !!(this.answerPathNodes && this.answerPathNodes.size > 0);
 
     const groups = new Map();
     for (const n of this.nodes) {
@@ -1266,61 +1340,153 @@ export class GraphView {
     const stepY = rows === 1 ? 0 : (height / (rows + 0.4)) * 0.88;
 
     // A cluster may not be wider than the gap between slots, or two companies
-    // would overlap before the collision force ever ran. The 46 covers the 30px
-    // bench ring plus a gap, so two neighbouring rings never touch.
+    // would overlap before the collision force ever ran.
     const radiusCap = Math.max(46, 0.5 * Math.min(stepX || width, stepY || height) - 46);
+
+    const slots = new Map();
 
     ordered.forEach((key, i) => {
       const cluster = this.companyClusters.get(key);
       const members = groups.get(key) || [];
+      const hub = members.find((n) => n.isCompany) || this.byId.get(key);
       const col = i % cols;
       const row = Math.floor(i / cols);
 
-      const gx = cx + (cols === 1 ? 0 : (col / Math.max(1, cols - 1) - 0.5)) * stepX;
-      const gy = cy + (rows === 1 ? 0 : (row / Math.max(1, rows - 1) - 0.5)) * stepY;
+      // A company that already has a position keeps it. Only a brand-new
+      // company is given a fresh grid slot.
+      const hasHubPosition = hub && Number.isFinite(hub.x) && Number.isFinite(hub.y);
+      const gx = hasHubPosition
+        ? hub.x
+        : cx + (cols === 1 ? 0 : (col / Math.max(1, cols - 1) - 0.5)) * stepX;
+      const gy = hasHubPosition
+        ? hub.y
+        : cy + (rows === 1 ? 0 : (row / Math.max(1, rows - 1) - 0.5)) * stepY;
 
       // Cluster radius grows with membership, so a big company gets room and a
       // small one stays a tight knot — up to the cap above.
-      //
-      // An answer shows a handful of nodes per company, so it gets the same
-      // formula evaluated against what is actually on screen. Sizing it from the
-      // company's full membership left a wide empty bench with a few nodes
-      // stranded out at the collision radius.
-      const fanout = answering ? members.length : Math.max(members.length, cluster.nodes.size);
+      const fanout = Math.max(members.length, cluster.nodes.size);
       cluster.radiusCap = radiusCap;
       cluster.radius = Math.min(radiusCap, 54 + 24 * Math.sqrt(fanout));
+      cluster.benchRadius = cluster.radius;
       cluster.cx = gx;
       cluster.cy = gy;
-      const R = cluster.radius;
 
-      members.forEach((n, j) => {
+      slots.set(key, { x: gx, y: gy, radius: cluster.radius, members });
+
+      if (hub) {
+        hub.slotX = gx;
+        hub.slotY = gy;
+        if (!Number.isFinite(hub.x) || !Number.isFinite(hub.y)) {
+          hub.x = gx;
+          hub.y = gy;
+          hub._initialized = true;
+        }
+      }
+      for (const n of members) {
         n.slotX = gx;
         n.slotY = gy;
-        if (Number.isFinite(n.x)) return;
+      }
+    });
 
-        if (n.isCompany) {
-          n.x = gx;
-          n.y = gy;
-          return;
+    // Place the members of each company, one depth at a time, so a child can
+    // be positioned relative to a parent that has already been placed.
+    for (const [key, slot] of slots) {
+      const members = slot.members;
+      if (!members.length) continue;
+
+      const hub = members.find((n) => n.isCompany) || this.byId.get(key);
+      const inCluster = new Map(members.map((n) => [n.id, n]));
+      const adj = new Map(members.map((n) => [n.id, []]));
+      for (const l of this.links) {
+        const s = l.source.id;
+        const t = l.target.id;
+        if (!inCluster.has(s) || !inCluster.has(t)) continue;
+        adj.get(s).push(t);
+        adj.get(t).push(s);
+      }
+
+      // Breadth-first from the company: hub → filing → metric/event → segment.
+      const depth = new Map();
+      const parentOf = new Map();
+      const queue = [];
+      if (hub) {
+        depth.set(hub.id, 0);
+        queue.push(hub.id);
+      }
+      while (queue.length) {
+        const id = queue.shift();
+        const d = depth.get(id);
+        for (const nb of adj.get(id) || []) {
+          if (depth.has(nb)) continue;
+          depth.set(nb, d + 1);
+          parentOf.set(nb, id);
+          queue.push(nb);
+        }
+      }
+
+      // Anything the visible links did not reach still belongs to the company;
+      // hang it directly off the hub rather than leaving it unanchored.
+      for (const n of members) {
+        if (n === hub || depth.has(n.id)) continue;
+        depth.set(n.id, 1);
+        if (hub) parentOf.set(n.id, hub.id);
+      }
+
+      const maxDepth = Math.max(1, ...depth.values());
+      for (let d = 1; d <= maxDepth; d++) {
+        const atDepth = members.filter((n) => depth.get(n.id) === d);
+        if (!atDepth.length) continue;
+
+        const byParent = new Map();
+        for (const n of atDepth) {
+          const pid = parentOf.get(n.id) || hub?.id || "__none__";
+          if (!byParent.has(pid)) byParent.set(pid, []);
+          byParent.get(pid).push(n);
         }
 
-        // Sunflower spiral: even area coverage, no visible ring structure.
-        //
-        // Radius scales with the square root of the member count, which is what
-        // keeps two nodes from sitting at the same distance and reading as a
-        // symmetric burst. The `j + 0.6` numerator biases the first node
-        // inward rather than dropping it on the outer edge.
-        const others = Math.max(1, members.length - 1);
-        const t = (j + 0.6) / (others + 0.4);
-        const golden = Math.PI * (3 - Math.sqrt(5));
-        const angle = j * golden + hashUnit(n.id) * 0.9;
-        const radius = R * 0.62 * Math.sqrt(t);
-        const jitter = (hashUnit(`${n.id}:j`) - 0.5) * 7;
+        for (const [pid, kids] of byParent) {
+          const parent = inCluster.get(pid) || hub;
+          const px = Number.isFinite(parent?.x) ? parent.x : slot.x;
+          const py = Number.isFinite(parent?.y) ? parent.y : slot.y;
 
-        n.x = gx + Math.cos(angle) * radius + jitter;
-        n.y = gy + Math.sin(angle) * radius + jitter * 0.7;
-      });
-    });
+          // Children fan outward from the company, never back across it.
+          const baseAngle = parent && parent !== hub
+            ? Math.atan2(py - slot.y, px - slot.x)
+            : -Math.PI / 2 + hashUnit(key) * 0.35;
+
+          kids.sort((a, b) => a.id.localeCompare(b.id));
+          const n = kids.length;
+          const ring = d === 1
+            ? Math.max(34, slot.radius * 0.52)
+            : Math.min(104, 26 + 8 * Math.sqrt(n));
+
+          // Small families get an arc on the outward side; large ones use the
+          // full circle so no two labels are forced into the same wedge.
+          const fullCircle = n > 5;
+          const spread = fullCircle
+            ? Math.PI * 2
+            : Math.min(Math.PI * 1.5, Math.PI * 0.55 + n * 0.24);
+          const start = fullCircle
+            ? baseAngle + hashUnit(`${pid}:a`) * 0.3
+            : baseAngle - spread / 2;
+
+          kids.forEach((kid, j) => {
+            const angle = n === 1 ? baseAngle : start + (j / (n - 1)) * spread;
+            kid.parentId = pid;
+            kid.parentAngle = angle;
+            kid.parentRadius = ring;
+            kid.slotX = px;
+            kid.slotY = py;
+
+            if (Number.isFinite(kid.x) && Number.isFinite(kid.y)) return;
+            const jitter = (hashUnit(`${kid.id}:j`) - 0.5) * 3;
+            kid.x = px + Math.cos(angle) * ring + jitter;
+            kid.y = py + Math.sin(angle) * ring + jitter;
+            kid._initialized = true;
+          });
+        }
+      }
+    }
 
     // Shared entities have no company to belong to. They get the middle of the
     // canvas with no anchor of their own, so collision keeps them out of the
@@ -1328,11 +1494,12 @@ export class GraphView {
     for (const n of groups.get("__shared__") || []) {
       n.slotX = cx;
       n.slotY = cy;
-      if (Number.isFinite(n.x)) continue;
+      if (Number.isFinite(n.x) && Number.isFinite(n.y)) continue;
       const angle = hashUnit(n.id) * Math.PI * 2;
       const radius = 30 + hashUnit(`${n.id}:s`) * 90;
       n.x = cx + Math.cos(angle) * radius;
       n.y = cy + Math.sin(angle) * radius;
+      n._initialized = true;
     }
   }
 
@@ -1346,224 +1513,263 @@ export class GraphView {
     const cy = height / 2;
     const p = this.physics;
 
-    // Give uninitialized nodes a starting spread so the first ticks don't
-    // all start from the centre and explode outward.
-    this.nodes.forEach((d, i) => {
-      if (!d._initialized) {
-        const angle = (i / Math.max(1, this.nodes.length)) * Math.PI * 2;
-        const radius = Math.min(width, height) * 0.3 * Math.sqrt(i / this.nodes.length);
+    // Any node that still has no position (a brand-new shared entity, say)
+    // gets a deterministic starting point. Nodes that were seeded keep it.
+    this.nodes.forEach((d) => {
+      if (!Number.isFinite(d.x) || !Number.isFinite(d.y)) {
+        const angle = hashUnit(d.id) * Math.PI * 2;
+        const radius = 24 + hashUnit(`${d.id}:r`) * Math.min(width, height) * 0.22;
         d.x = cx + Math.cos(angle) * radius;
         d.y = cy + Math.sin(angle) * radius;
-        d._initialized = true;
       }
       d.vx = 0;
       d.vy = 0;
+      d._initialized = true;
     });
 
     const answering = !!(this.answerPathNodes && this.answerPathNodes.size > 0);
-    const pad = answering ? 26 : 15;
+    const pad = answering ? 26 : 12;
+
+    const linkForce = d3.forceLink(this.links)
+      .id((d) => d.id)
+      .distance((l) => this.#linkLength(l))
+      .strength((l) => this.#linkStrength(l));
+
+    const chargeForce = d3.forceManyBody()
+      .strength((d) => (d.isCompany ? p.repulsion * 1.6 : p.repulsion))
+      .distanceMax(p.repulsionRadius)
+      .theta(0.9);
+
+    const collideForce = d3.forceCollide()
+      .radius((d) => this.#collisionRadius(d, pad))
+      .iterations(2)
+      .strength(0.95);
 
     this.simulation = d3.forceSimulation(this.nodes)
       // Elastic links: connected nodes pull toward each other at linkDistance.
-      .force("link", d3.forceLink(this.links)
-        .id(d => d.id)
-        .distance(d => linkDistance(l.relation) * this.linkScale)
-        .strength(p.linkStrength))
+      .force("link", linkForce)
       // Repulsion: nodes push each other away (charge force).
-      .force("charge", d3.forceManyBody()
-        .strength(p.repulsion)
-        .radiusMax(p.repulsionRadius))
-      // Collision: nodes behave like circles that can't overlap.
-      .force("collide", d3.forceCollide()
-        .radius(d => (d.r || 9) * p.collision + pad)
-        .iterations(3)
-        .strength(1))
-      // Centre gravity: gentle pull toward canvas centre so the graph doesn't drift away.
+      .force("charge", chargeForce)
+      // Collision: nodes behave like circles that cannot overlap.
+      .force("collide", collideForce)
+      // Centre gravity: gentle pull toward the canvas centre so the graph does
+      // not drift away.
       .force("center", d3.forceCenter(cx, cy).strength(p.gravity))
-      // X/Y gravity: keep the graph roughly centred.
-      .force("x", d3.forceX(cx).strength(p.gravity * 0.5))
-      .force("y", d3.forceY(cy).strength(p.gravity * 0.5))
-      // Angular/radial clustering: pull members toward their company hub's slot.
+      .force("x", d3.forceX(cx).strength(p.gravity * 0.55))
+      .force("y", d3.forceY(cy).strength(p.gravity * 0.55))
+      // Angular/radial clustering: children orbit the parent they connect to.
       .force("cluster", (alpha) => this.#applyClusterForces(alpha))
+      // Company hubs repel each other, so two neighbourhoods never fuse.
+      .force("company", (alpha) => this.#separateCompanyHubs(alpha))
+      .alphaDecay(Math.max(0.005, Math.min(0.1, 1 - p.cooling)))
+      .velocityDecay(p.velocityDecay)
       .stop();
 
-    // Run the forces to convergence before first paint (settled off-screen).
-    for (let i = 0; i < SETTLE_TICKS; i++) {
+    // Run the forces toward convergence before the first paint. Large graphs
+    // get a smaller synchronous budget and finish settling in the animation
+    // loop, so a filter change never blocks the main thread for long.
+    const settleTicks = this.nodes.length > 220 ? 200 : SETTLE_TICKS;
+    for (let i = 0; i < settleTicks; i++) {
       if (this.simulation.alpha() <= this.simulation.alphaMin()) break;
       this.simulation.tick();
-      this.#preventCompanyCollision(cx, cy);
     }
 
-    this.simulation.alpha(0);
+    if (this.simulation.alpha() <= this.simulation.alphaMin()) this.simulation.alpha(0);
     this.simulation.stop();
+  }
+
+  /** Ideal length of one relationship, honouring the live physics slider. */
+  #linkLength(link) {
+    const base = linkDistance(link.relation);
+    const scale = Math.max(0.2, (this.physics.linkDistance || 70) / 70);
+    return Math.max(18, base * scale * this.linkScale);
+  }
+
+  /** Elasticity of one relationship. Structural edges hold their cluster. */
+  #linkStrength(link) {
+    const base = this.physics.linkStrength;
+    const structural = link.relation === "SUBMITTED" || link.relation === "FILED";
+    return structural ? Math.min(0.9, base * 2.2) : base;
+  }
+
+  /** Collision radius for one node, with a little extra breathing room. */
+  #collisionRadius(node, pad) {
+    const base = (node.r || 9) * this.physics.collision + pad;
+    return node.isCompany ? base + 6 : base;
   }
 
   /* ── Render Loop ───────────────────────────────────────────────────────── */
 
   #run() {
     if (this.frame) cancelAnimationFrame(this.frame);
+    if (!this.simulation) {
+      this.frame = null;
+      return;
+    }
+
     const loop = () => {
-      if (this.disposed) return;
-      if (this.simulation) {
-        // Continuous cooling: the simulation never fully stops. alpha decays
-        // toward zero but the cooling factor keeps it alive, giving the
-        // organic, always-slightly-moving feel of Obsidian's graph. When the
-        // user interacts (drag/zoom) the alpha is reheated elsewhere.
-        this.simulation.tick();
-        this.#updatePositions();
-
-        // Labels are the expensive part; a few times a second is plenty while
-        // things are still moving.
-        if ((this.tickCount = (this.tickCount || 0) + 1) % 8 === 0) {
-          this.#computeLabelPlacements();
-        }
-
-        // Apply cooling: if alpha is very low, nudge it up slightly so the
-        // graph keeps breathing but never settles into a frozen state.
-        const a = this.simulation.alpha();
-        if (a > 0 && a < 0.005) {
-          this.simulation.alpha(0.005);
-        }
+      if (this.disposed || !this.simulation) {
+        this.frame = null;
+        return;
       }
 
-      const settled = !this.simulation || this.simulation.alpha() <= this.simulation.alphaMin();
-      if (settled) {
+      this.simulation.tick();
+      this.#updatePositions();
+
+      // Labels are the expensive part; a few times a second is plenty while
+      // things are still moving.
+      if ((this.tickCount = (this.tickCount || 0) + 1) % 8 === 0) {
+        this.#computeLabelPlacements();
+      }
+
+      // Natural cooling: alpha decays every tick. Once it falls below the
+      // threshold the graph is at rest and the render loop shuts itself down.
+      if (this.simulation.alpha() <= this.simulation.alphaMin()) {
+        this.simulation.alpha(0);
         this.#computeLabelPlacements();
         this.frame = null;
-      } else {
-        this.frame = requestAnimationFrame(loop);
+        return;
       }
+
+      this.frame = requestAnimationFrame(loop);
     };
+
     this.frame = requestAnimationFrame(loop);
   }
 
-  /**
-   * How firmly a node is held to the centre of its own bench.
-   *
-   * The pull is gentle while a node is comfortably inside its bench and ramps up
-   * sharply once it nears the edge. A flat pull collapses everything onto the
-   * centre point, while a flat *hard* boundary makes every node settle at an
-   * identical radius -- which is precisely the ring/starburst this layout is
-   * meant to avoid. Grading it leaves the interior free for collision to fill,
-   * and still guarantees nothing escapes its company.
-   */
-  #benchHold(d) {
-    if (d.isCompany) return 0.95;
-
-    const base = 0.22;
-    const cluster = this.companyClusters.get(d.clusterId);
-    const limit = cluster?.benchRadius || 0;
-    if (!limit || !Number.isFinite(d.x) || !Number.isFinite(d.y)) return base;
-
-    const distance = Math.hypot(d.x - d.slotX, d.y - d.slotY);
-    const soft = limit * 0.7;
-    if (distance <= soft) return base;
-    const over = (distance - soft) / (limit - soft);
-    return Math.min(2.4, base * (1 + 14 * over));
+  /** Warm the simulation back up and make sure the render loop is running. */
+  #reheat(alpha = 0.5) {
+    if (!this.simulation) return;
+    this.simulation.alpha(Math.max(this.simulation.alpha(), alpha));
+    if (!this.frame) this.#run();
   }
 
   /**
    * Angular/radial clustering force applied each tick.
    *
-   * Pulls non-company nodes toward their company hub's slot on a gentle spiral
-   * so connected child nodes sit naturally around their parent without forming
-   * a rigid ring. Company hubs are pulled toward their grid slot so each
-   * company stays stable and its cluster remains separated from neighbours.
-   * This is what gives the graph its organic, Obsidian-like neighbourhoods
-   * instead of a flat radial burst.
+   * Companies are held near their grid slot, which keeps a neighbourhood
+   * stable. Every other node is anchored to the node it actually connects to:
+   * a radial spring holds the sibling ring at its seeded radius, and a small
+   * tangential force keeps siblings evenly spaced as the parent moves. The
+   * result is organic rather than a rigid starburst.
    */
   #applyClusterForces(alpha) {
     for (const d of this.nodes) {
       if (!Number.isFinite(d.x) || !Number.isFinite(d.y)) continue;
-      const slotX = d.slotX ?? 0;
-      const slotY = d.slotY ?? 0;
-      if (!Number.isFinite(slotX) || !Number.isFinite(slotY)) continue;
-
-      const dx = slotX - d.x;
-      const dy = slotY - d.y;
-      const dist = Math.hypot(dx, dy);
-      if (dist < 0.001) continue;
 
       if (d.isCompany) {
-        // Company hubs: strong pull toward their grid slot, so they stay put.
-        const k = 0.15 * alpha;
-        d.vx += (dx / dist) * Math.min(dist, 40) * k;
-        d.vy += (dy / dist) * Math.min(dist, 40) * k;
-      } else {
-        // Members: gentle radial pull toward their bench, stronger near the edge.
-        const cluster = this.companyClusters.get(d.clusterId);
-        const limit = cluster?.benchRadius || 0;
-        const pull = limit > 0 ? Math.min(dist / Math.max(limit, 1), 1) : 0.5;
-        const k = 0.08 * alpha * pull;
-        d.vx += (dx / dist) * dist * k;
-        d.vy += (dy / dist) * dist * k;
-      }
-    }
-  }
-
-  /**
-   * Prevent company nodes from overlapping each other during simulation.
-   * Pushes other companies away when a company node is dragged or moves.
-   */
-  #preventCompanyCollision(cx, cy) {
-    const companies = this.nodes.filter(d => d.type === "Company");
-    for (const d of companies) {
-      const minDist = (d.r || 9) * 3.5;
-      for (const other of companies) {
-        if (other === d) continue;
-        const dx = other.x - d.x;
-        const dy = other.y - d.y;
-        const dist = Math.hypot(dx, dy);
-        if (dist < minDist && dist > 0.001) {
-          const push = (minDist - dist) * 0.3;
-          other.x += (dx / dist) * push;
-          other.y += (dy / dist) * push;
-          d.x -= (dx / dist) * push * 0.3;
-          d.y -= (dy / dist) * push * 0.3;
-        }
-      }
-    }
-    this.simulation.alpha(0.5);
-  }
-
-  /**
-   * Keep every node on the bench it belongs to.
-   *
-   * The forces hold nodes in the right neighbourhood; this makes it a hard
-   * guarantee. Without it, members drift between companies as alpha decays and
-   * the ring drawn around a company ends up containing somebody else's nodes.
-   *
-   * A company is pinned outright: it is the centre of its own bench, so it must
-   * not drift inside the ring drawn around it.
-   */
-  #constrainToBenches() {
-    for (const n of this.nodes) {
-      if (!Number.isFinite(n.x) || !Number.isFinite(n.y)) continue;
-      const slotX = n.slotX, slotY = n.slotY;
-      if (!Number.isFinite(slotX) || !Number.isFinite(slotY)) continue;
-
-      if (n.isCompany) {
-        n.x = slotX;
-        n.y = slotY;
-        n.vx = 0;
-        n.vy = 0;
+        const slotX = d.slotX;
+        const slotY = d.slotY;
+        if (!Number.isFinite(slotX) || !Number.isFinite(slotY)) continue;
+        d.vx += (slotX - d.x) * 0.035 * alpha;
+        d.vy += (slotY - d.y) * 0.035 * alpha;
         continue;
       }
 
-      const limit = this.companyClusters.get(n.clusterId)?.benchRadius || 0;
-      if (!limit) continue;
+      const parent = d.parentId ? this.byId.get(d.parentId) : null;
+      const hasParent = parent && Number.isFinite(parent.x) && Number.isFinite(parent.y);
 
-      const dx = n.x - slotX;
-      const dy = n.y - slotY;
+      if (hasParent) {
+        const dx = parent.x - d.x;
+        const dy = parent.y - d.y;
+        const dist = Math.hypot(dx, dy);
+        if (dist < 0.001) continue;
+
+        const rest = d.parentRadius || 48;
+        const radial = ((dist - rest) / Math.max(rest, 1)) * 0.045 * alpha;
+        d.vx += (dx / dist) * dist * radial;
+        d.vy += (dy / dist) * dist * radial;
+
+        // Tangential alignment: ease the node toward its seeded angle.
+        if (Number.isFinite(d.parentAngle) && dist > 6) {
+          const current = Math.atan2(d.y - parent.y, d.x - parent.x);
+          let delta = d.parentAngle - current;
+          while (delta > Math.PI) delta -= Math.PI * 2;
+          while (delta < -Math.PI) delta += Math.PI * 2;
+          const tx = -(d.y - parent.y) / dist;
+          const ty = (d.x - parent.x) / dist;
+          const angular = delta * dist * 0.02 * alpha;
+          d.vx += tx * angular;
+          d.vy += ty * angular;
+        }
+        continue;
+      }
+
+      // A shared entity has no parent: hold it near its own soft anchor.
+      const slotX = d.slotX;
+      const slotY = d.slotY;
+      if (!Number.isFinite(slotX) || !Number.isFinite(slotY)) continue;
+      d.vx += (slotX - d.x) * 0.02 * alpha;
+      d.vy += (slotY - d.y) * 0.02 * alpha;
+    }
+  }
+
+  /**
+   * Keep company hubs apart.
+   *
+   * Collision handles the dots, but two large neighbourhoods can still drift
+   * into each other. This pushes the hubs apart along the line between them
+   * without moving any individual member, so clusters stay recognisably
+   * separate while their shapes remain free to settle.
+   */
+  #separateCompanyHubs(alpha) {
+    const companies = this.nodes.filter(
+      (d) => d.isCompany && Number.isFinite(d.x) && Number.isFinite(d.y)
+    );
+    for (let i = 0; i < companies.length; i++) {
+      const a = companies[i];
+      for (let j = i + 1; j < companies.length; j++) {
+        const b = companies[j];
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const dist = Math.hypot(dx, dy);
+        if (dist < 0.001) continue;
+
+        const minDist = (a.r || 9) * 2.6 + (b.r || 9) * 2.6 + 48;
+        if (dist >= minDist) continue;
+
+        const push = ((minDist - dist) / minDist) * 0.9 * alpha;
+        const nx = dx / dist;
+        const ny = dy / dist;
+        a.vx -= nx * push * dist * 0.5;
+        a.vy -= ny * push * dist * 0.5;
+        b.vx += nx * push * dist * 0.5;
+        b.vy += ny * push * dist * 0.5;
+      }
+    }
+  }
+
+  /**
+   * Keep a member from defecting to another company.
+   *
+   * The forces hold nodes in the right neighbourhood; this is only a generous
+   * safety boundary. It is deliberately much wider than the seeded bench, so
+   * the cluster keeps its organic shape while a stray node cannot end up in a
+   * different company's blob. Company hubs are not pinned: they move with the
+   * force simulation (and with the pointer while dragging).
+   */
+  #constrainToBenches() {
+    for (const n of this.nodes) {
+      if (n === this._draggedNode || n.fx != null || n.fy != null) continue;
+      if (n.isCompany) continue;
+      if (!Number.isFinite(n.x) || !Number.isFinite(n.y)) continue;
+
+      const cluster = this.companyClusters.get(n.clusterId);
+      const limit = cluster?.benchRadius;
+      if (!limit || !Number.isFinite(cluster.cx) || !Number.isFinite(cluster.cy)) continue;
+
+      const maxR = limit * 2.1;
+      const dx = n.x - cluster.cx;
+      const dy = n.y - cluster.cy;
       const d = Math.hypot(dx, dy);
-      if (d <= limit || d === 0) continue;
+      if (d <= maxR || d === 0) continue;
 
-      const k = limit / d;
-      n.x = slotX + dx * k;
-      n.y = slotY + dy * k;
-      // Drop the outward component of velocity, so a node that reached the edge
-      // stops grinding along it and is free to be pulled back inward.
-      const nx = dx / d, ny = dy / d;
+      const k = maxR / d;
+      n.x = cluster.cx + dx * k;
+      n.y = cluster.cy + dy * k;
+
+      const nx = dx / d;
+      const ny = dy / d;
       const outward = n.vx * nx + n.vy * ny;
       if (outward > 0) {
         n.vx -= outward * nx;
@@ -2082,7 +2288,10 @@ export class GraphView {
       .attr("x", (d) => d.labelX ?? 0)
       .attr("y", (d) => d.labelY ?? ((d.r || 7) + 14))
       .attr("text-anchor", (d) => d.labelAnchor ?? "middle")
-      .style("display", (d) => (d.labelVisible ? null : "none"));
+      // Fade rather than snap. The label stays in the DOM so the CSS opacity
+      // transition can run; pointer-events are already disabled.
+      .style("display", null)
+      .style("opacity", (d) => (d.labelVisible ? null : 0));
   }
 
   #applyView() {
@@ -2286,6 +2495,18 @@ export class GraphView {
 
   /* ── Right-Side Control & Filter Panel ─────────────────────────────────── */
 
+  /** Push the current physics values into the side-panel sliders. */
+  #syncPhysicsControls() {
+    if (!this.sidePanelEl) return;
+    for (const [key, ids] of Object.entries(PHYSICS_CONTROLS)) {
+      const input = this.sidePanelEl.querySelector(`#${ids.input}`);
+      const valEl = this.sidePanelEl.querySelector(`#${ids.value}`);
+      const value = this.physics[key];
+      if (input) input.value = String(value);
+      if (valEl) valEl.textContent = formatPhysicsValue(key, value);
+    }
+  }
+
   #renderSidePanel() {
     if (!this.sidePanelEl) return;
 
@@ -2367,6 +2588,7 @@ export class GraphView {
     if (labelsModeSelect) labelsModeSelect.value = this.labelsMode;
     const arrowsToggle = this.sidePanelEl.querySelector("#side-arrows-toggle");
     if (arrowsToggle) arrowsToggle.checked = this.showArrows;
+    this.#syncPhysicsControls();
 
     if (!this._sidePanelStaticWired) {
       this._sidePanelStaticWired = true;
@@ -2402,35 +2624,20 @@ export class GraphView {
       });
 
       // Physics controls
-      const physDefaults = { repulsion: -240, gravity: 0.06, "link distance": 70, collision: 1.1 };
-      const physMap = {
-        repulsion: "side-phys-repulsion",
-        gravity: "side-phys-gravity",
-        "link distance": "side-phys-link",
-        collision: "side-phys-collision",
-      };
-      for (const [key, inputId] of Object.entries(physMap)) {
-        const input = this.sidePanelEl.querySelector(`#${inputId}`);
-        const valId = `phys-${key.replace(" ", "-")}-val`;
-        const valEl = this.sidePanelEl.querySelector(`#${valId}`);
-        if (input && valEl) {
-          input.value = this.physics[key];
-          valEl.textContent = this.physics[key];
-          input.addEventListener("input", (e) => {
-            const v = Number(e.target.value);
-            valEl.textContent = v;
-            this.setPhysics({ [key]: v });
-          });
-        }
+      for (const [key, ids] of Object.entries(PHYSICS_CONTROLS)) {
+        const input = this.sidePanelEl.querySelector(`#${ids.input}`);
+        const valEl = this.sidePanelEl.querySelector(`#${ids.value}`);
+        if (!input) continue;
+        input.value = String(this.physics[key]);
+        if (valEl) valEl.textContent = formatPhysicsValue(key, this.physics[key]);
+        input.addEventListener("input", (e) => {
+          const v = Number(e.target.value);
+          if (valEl) valEl.textContent = formatPhysicsValue(key, v);
+          this.setPhysics({ [key]: v });
+        });
       }
       this.sidePanelEl.querySelector("#side-phys-reset-btn")?.addEventListener("click", () => {
-        for (const [key, v] of Object.entries(physDefaults)) {
-          const input = this.sidePanelEl.querySelector(`#side-phys-${key.replace(" ", "-")}`);
-          const valEl = this.sidePanelEl.querySelector(`#phys-${key.replace(" ", "-")}-val`);
-          if (input) input.value = v;
-          if (valEl) valEl.textContent = v;
-        }
-        this.setPhysics(physDefaults);
+        this.setPhysics(PHYSICS_DEFAULTS);
       });
 
       this.sidePanelEl.querySelector("#side-fit-btn")?.addEventListener("click", () => this.fit());
@@ -2456,11 +2663,22 @@ export class GraphView {
       const extra = Math.min(4, Math.sqrt(n.degree) * 0.9);
       n.r = (n.baseRadius + extra) * this.nodeScale;
     }
+    const collide = this.simulation?.force("collide");
+    if (collide) {
+      const pad = this.answerPathNodes?.size ? 26 : 12;
+      collide.radius((d) => this.#collisionRadius(d, pad));
+      this.#reheat(0.3);
+    }
     this.#draw();
   }
 
   setLinkScale(scale) {
     this.linkScale = Math.max(0.3, Math.min(3, scale));
+    const link = this.simulation?.force("link");
+    if (link) {
+      link.distance((l) => this.#linkLength(l));
+      this.#reheat(0.4);
+    }
     this.#draw();
   }
 
@@ -2486,20 +2704,63 @@ export class GraphView {
     this.#draw();
   }
 
-  /** Update live physics parameters and rebuild the simulation. */
+  /**
+   * Update live physics parameters.
+   *
+   * The force objects are re-tuned in place and the simulation is reheated,
+   * rather than rebuilt: dragging a slider should feel like turning a dial, not
+   * like re-running the layout from scratch.
+   */
   setPhysics(updates) {
     if (!updates || typeof updates !== "object") return;
-    for (const [key, value] of Object.entries(updates)) {
-      if (key in this.physics && value !== undefined) {
-        this.physics[key] = Number(value);
+
+    const aliases = { "link distance": "linkDistance", link_distance: "linkDistance" };
+    for (const [rawKey, value] of Object.entries(updates)) {
+      const key = aliases[rawKey] || rawKey;
+      const numeric = Number(value);
+      if (key in this.physics && Number.isFinite(numeric)) {
+        this.physics[key] = numeric;
       }
     }
-    // Rebuild the simulation with the new physics so forces take effect immediately.
-    if (this.nodes.length) {
-      this.#buildSimulation();
-      this.#draw();
-      this.#run();
+
+    const sim = this.simulation;
+    if (sim) {
+      const p = this.physics;
+
+      const charge = sim.force("charge");
+      if (charge) {
+        charge
+          .strength((d) => (d.isCompany ? p.repulsion * 1.6 : p.repulsion))
+          .distanceMax(p.repulsionRadius);
+      }
+
+      const link = sim.force("link");
+      if (link) {
+        link
+          .distance((l) => this.#linkLength(l))
+          .strength((l) => this.#linkStrength(l));
+      }
+
+      const collide = sim.force("collide");
+      if (collide) {
+        const pad = this.answerPathNodes?.size ? 26 : 12;
+        collide.radius((d) => this.#collisionRadius(d, pad));
+      }
+
+      const center = sim.force("center");
+      if (center && typeof center.strength === "function") center.strength(p.gravity);
+
+      const fx = sim.force("x");
+      if (fx) fx.strength(p.gravity * 0.55);
+      const fy = sim.force("y");
+      if (fy) fy.strength(p.gravity * 0.55);
+
+      sim.velocityDecay(p.velocityDecay);
+      sim.alphaDecay(Math.max(0.005, Math.min(0.1, 1 - p.cooling)));
+      this.#reheat(0.65);
     }
+
+    this.#syncPhysicsControls();
   }
 
   getPhysics() {
@@ -2591,14 +2852,23 @@ export class GraphView {
   }
 
   relayout() {
-    for (const n of this.nodes) {
+    for (const n of this.allNodes) {
       n.x = null;
       n.y = null;
       n.vx = 0;
       n.vy = 0;
+      n._initialized = false;
+      n.slotX = null;
+      n.slotY = null;
+      n.parentId = null;
+      n.parentAngle = null;
+      n.parentRadius = null;
     }
     this.#seedClusters();
     this.#buildSimulation();
+    this.#draw();
+    this.#run();
+    this.#reheat(0.2);
     setTimeout(() => this.fit(), 500);
   }
 
@@ -2610,6 +2880,7 @@ export class GraphView {
     this.linkScale = 1.0;
     this.labelsMode = "smart";
     this.showArrows = true;
+    Object.assign(this.physics, PHYSICS_DEFAULTS);
     this.clearSelection();
     this.relayout();
     this.#renderSidePanel();
@@ -2785,11 +3056,15 @@ export class GraphView {
 
   #onResize() {
     if (this.disposed) return;
-    if (this.nodes.length && !this.answerPathNodes?.size) {
-      this.fit();
-    } else {
-      this.#draw();
-    }
+    clearTimeout(this._resizeTimer);
+    this._resizeTimer = setTimeout(() => {
+      if (this.disposed) return;
+      if (this.nodes.length && !this.answerPathNodes?.size) {
+        this.fit();
+      } else {
+        this.#draw();
+      }
+    }, 80);
   }
 
   destroy() {
@@ -2800,6 +3075,7 @@ export class GraphView {
     clearTimeout(this.flashTimer);
     clearTimeout(this.flowTimer);
     clearTimeout(this._entranceTimer);
+    clearTimeout(this._resizeTimer);
     this._neighbourCache?.clear();
     this.observer?.disconnect();
     this.root?.remove();

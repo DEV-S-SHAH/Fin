@@ -69,6 +69,14 @@
     <section class="panel panel--graph graph-panel" id="graph-panel" aria-label="Knowledge graph">
       <svg id="graph-canvas" role="img" aria-label="Force-directed graph of the knowledge graph entities"></svg>
 
+      <div class="graph-toolbar" role="toolbar" aria-label="Graph view controls">
+        <button id="g-zoom-out" class="graph-toolbar__btn" type="button" title="Zoom out" aria-label="Zoom out">−</button>
+        <button id="g-zoom-in" class="graph-toolbar__btn" type="button" title="Zoom in" aria-label="Zoom in">+</button>
+        <button id="g-fit" class="graph-toolbar__btn" type="button" title="Fit the graph to the screen">Fit to screen</button>
+        <button id="g-relayout" class="graph-toolbar__btn" type="button" title="Reset the graph layout">Reset layout</button>
+        <button id="g-labels" class="graph-toolbar__btn" type="button" title="Toggle node labels" aria-pressed="true">Labels</button>
+      </div>
+
       <div id="legend" hidden></div>
       <p class="graph-hint" id="graph-hint">Drag a node to move it · click to focus · scroll to zoom · drag the background to pan</p>
       <span class="chip graph-count" id="graph-count">0 nodes</span>
@@ -229,8 +237,8 @@
           <!-- Actions -->
           <div class="side-panel-section">
             <div class="side-panel-actions">
-              <button class="btn btn--ghost btn--sm" id="side-fit-btn">Fit to View</button>
-              <button class="btn btn--ghost btn--sm" id="side-relayout-btn">Re-Layout</button>
+              <button class="btn btn--ghost btn--sm" id="side-fit-btn">Fit to Screen</button>
+              <button class="btn btn--ghost btn--sm" id="side-relayout-btn">Reset Layout</button>
               <button class="btn btn--ghost btn--sm" id="side-reset-btn">Reset</button>
             </div>
           </div>

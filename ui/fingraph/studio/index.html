@@ -79,6 +79,14 @@
     <section class="panel panel--graph graph-panel" id="graph-panel" aria-label="Knowledge graph">
       <svg id="graph-canvas" role="img" aria-label="Force-directed graph of the retrieved entities"></svg>
 
+      <div class="graph-toolbar" role="toolbar" aria-label="Graph view controls">
+        <button id="g-zoom-out" class="graph-toolbar__btn" type="button" title="Zoom out" aria-label="Zoom out">−</button>
+        <button id="g-zoom-in" class="graph-toolbar__btn" type="button" title="Zoom in" aria-label="Zoom in">+</button>
+        <button id="g-fit" class="graph-toolbar__btn" type="button" title="Fit the graph to the screen">Fit to screen</button>
+        <button id="g-relayout" class="graph-toolbar__btn" type="button" title="Reset the graph layout">Reset layout</button>
+        <button id="g-labels" class="graph-toolbar__btn" type="button" title="Toggle node labels" aria-pressed="true">Labels</button>
+      </div>
+
       <div id="legend" hidden></div>
       <p class="graph-hint" id="graph-hint">Drag a node to move it · click to focus · scroll to zoom · drag the background to pan</p>
       <span class="chip chip--primary chip--dot graph-cited" id="graph-cited" hidden
@@ -184,11 +192,42 @@
             </label>
           </div>
 
+          <!-- Physics Controls -->
+          <div class="side-panel-section">
+            <div class="side-panel-section-title">Physics</div>
+
+            <div class="side-slider-row">
+              <span>Repulsion</span>
+              <span class="side-slider-val" id="phys-repulsion-val">-240</span>
+            </div>
+            <input type="range" id="side-phys-repulsion" min="-600" max="0" step="10" value="-240">
+
+            <div class="side-slider-row">
+              <span>Gravity</span>
+              <span class="side-slider-val" id="phys-gravity-val">0.06</span>
+            </div>
+            <input type="range" id="side-phys-gravity" min="0" max="0.5" step="0.01" value="0.06">
+
+            <div class="side-slider-row">
+              <span>Link Distance</span>
+              <span class="side-slider-val" id="phys-link-val">70</span>
+            </div>
+            <input type="range" id="side-phys-link" min="30" max="200" step="5" value="70">
+
+            <div class="side-slider-row">
+              <span>Collision</span>
+              <span class="side-slider-val" id="phys-collision-val">1.1</span>
+            </div>
+            <input type="range" id="side-phys-collision" min="0.5" max="2.5" step="0.1" value="1.1">
+
+            <button class="btn btn--ghost btn--sm" id="side-phys-reset-btn">Reset Physics</button>
+          </div>
+
           <!-- Actions -->
           <div class="side-panel-section">
             <div class="side-panel-actions">
-              <button class="btn btn--ghost btn--sm" id="side-fit-btn">Fit to View</button>
-              <button class="btn btn--ghost btn--sm" id="side-relayout-btn">Re-Layout</button>
+              <button class="btn btn--ghost btn--sm" id="side-fit-btn">Fit to Screen</button>
+              <button class="btn btn--ghost btn--sm" id="side-relayout-btn">Reset Layout</button>
               <button class="btn btn--ghost btn--sm" id="side-reset-btn">Reset</button>
             </div>
           </div>
