@@ -129,6 +129,19 @@
   --graph-bg: #0f1115;
   --graph-grid: rgba(110, 168, 254, 0.025);
   --label-stroke: #0f1115;
+
+  /* Graph node depth & glow */
+  --graph-node-glow: 0 0 14px -2px rgba(110, 168, 254, 0.35);
+  --graph-node-glow-accent: 0 0 14px -2px rgba(126, 224, 184, 0.35);
+  --graph-node-inner: rgba(255, 255, 255, 0.06);
+  --graph-node-border-dim: rgba(255, 255, 255, 0.12);
+  --graph-edge-glow-dim: rgba(110, 168, 254, 0.18);
+  --graph-edge-glow-hot: rgba(110, 168, 254, 0.55);
+
+  /* Entrance & spring animations */
+  --graph-entrance: node-entrance 0.55s var(--ease-out) both;
+  --graph-spring: spring-snap 0.5s var(--ease-out) both;
+  --graph-pulse: node-pulse 2.5s var(--ease-in-out) infinite;
 }
 
 /* Light theme */
@@ -185,6 +198,17 @@
   --graph-bg: #ffffff;
   --graph-grid: rgba(110, 168, 254, 0.035);
   --label-stroke: #1d2939;
+
+  --graph-node-glow: 0 0 14px -2px rgba(110, 168, 254, 0.25);
+  --graph-node-glow-accent: 0 0 14px -2px rgba(126, 224, 184, 0.25);
+  --graph-node-inner: rgba(255, 255, 255, 0.5);
+  --graph-node-border-dim: rgba(0, 0, 0, 0.08);
+  --graph-edge-glow-dim: rgba(110, 168, 254, 0.14);
+  --graph-edge-glow-hot: rgba(110, 168, 254, 0.45);
+
+  --graph-entrance: node-entrance 0.55s var(--ease-out) both;
+  --graph-spring: spring-snap 0.5s var(--ease-out) both;
+  --graph-pulse: node-pulse 2.5s var(--ease-in-out) infinite;
 }
 
 /* ── 2. primitives ───────────────────────────────────────────────────────── */
@@ -3835,4 +3859,176 @@ table.data td.mono { font-family: var(--font-mono); font-size: var(--text-xs); }
   .card { padding: 20px; }
   .kg-visualization { height: 220px; }
   .peers-grid { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* ========================================================================
+   Graph: entrance, spring, pulse animations
+   ======================================================================== */
+
+@keyframes node-entrance {
+  from {
+    opacity: 0;
+    transform: translate(0, 6px) scale(0.85);
+  }
+  to {
+    opacity: 1;
+    transform: translate(0, 0) scale(1);
+  }
+}
+
+@keyframes spring-snap {
+  0%   { transform: scale(1); }
+  40%  { transform: scale(1.12); }
+  70%  { transform: scale(0.96); }
+  100% { transform: scale(1); }
+}
+
+@keyframes node-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(110, 168, 254, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(110, 168, 254, 0);
+  }
+}
+
+/* ========================================================================
+   Graph: enhanced node rendering
+   ======================================================================== */
+
+/* Entrance animation on new nodes */
+.g-node.is-fresh circle.core {
+  animation: var(--graph-entrance);
+}
+
+/* Node glow pulse when selected */
+.g-node.is-selected circle.core {
+  animation: var(--graph-pulse);
+}
+
+/* Hover lift effect */
+.g-node.is-hovered circle.core {
+  filter: drop-shadow(0 0 10px var(--primary));
+  transition: filter var(--dur-fast) var(--ease);
+}
+
+/* Answer-path nodes: stronger presence */
+.g-node.is-answer-path circle.core {
+  filter: drop-shadow(0 0 14px var(--accent));
+  transition: filter var(--dur) var(--ease);
+}
+
+/* Node inner highlight for depth */
+.g-node circle.core::after {
+  content: "";
+  position: absolute;
+  /* pseudo on circle doesn't work in SVG; handled via JS fill instead */
+}
+
+/* ========================================================================
+   Graph: enhanced edges
+   ======================================================================== */
+
+/* Edge glow on focus/hot */
+.g-edge.is-hot {
+  filter: drop-shadow(0 0 6px var(--primary));
+  transition: filter var(--dur-fast) var(--ease);
+}
+
+/* Edge gradient: company-colored at ends, muted in middle */
+.g-edge.is-answer-path {
+  filter: drop-shadow(0 0 8px var(--accent));
+  transition: filter var(--dur) var(--ease);
+}
+
+/* ========================================================================
+   Graph: empty state
+   ======================================================================== */
+
+.graph-empty {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-3);
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  line-height: 1.6;
+  text-align: center;
+  max-width: 320px;
+  padding: var(--sp-6);
+  background: var(--surface-glass);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-2);
+  pointer-events: none;
+}
+
+.graph-empty__icon {
+  width: 48px;
+  height: 48px;
+  color: var(--text-faint);
+}
+
+.graph-empty__title {
+  color: var(--text);
+  font-size: var(--text-md);
+  font-weight: 600;
+  margin: 0;
+}
+
+.graph-empty__hint {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+/* ========================================================================
+   Graph: keyboard shortcuts hint (bottom right)
+   ======================================================================== */
+
+.graph-kb-hint {
+  position: absolute;
+  right: var(--sp-3);
+  bottom: calc(var(--sp-3) + 90px);
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--surface-glass);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  box-shadow: var(--shadow-1);
+}
+
+.graph-kb-hint__row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+
+.graph-kb-hint__kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: var(--r-xs);
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 10px;
+  font-weight: 600;
+  font-family: var(--font-mono, inherit);
+  pointer-events: none;
 }
