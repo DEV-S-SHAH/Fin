@@ -74,12 +74,19 @@ class GoogleFinanceScraper(BaseScraper):
         """Fetch price and financials for a company.
 
         *cin* is expected to be a ticker symbol (e.g. "HDFCBANK"). The
-        exchange is detected by trying NSE first, then BOM.
+        exchange is detected by trying NSE first, then BOM, preferring the
+        endpoint that has historically responded fastest while falling back
+        to the other when the first is unavailable or rate-limited.
         """
         symbol = cin.strip().upper()
-
-        for exchange in ("NSE", "BOM"):
-            result = self._fetch_quote(symbol, exchange)
+        candidates = [
+            (exchange, self.QUOTE_URL.format(symbol=symbol, exchange=exchange))
+            for exchange in ("NSE", "BOM")
+        ]
+        ordered_urls = self.select_endpoint([url for _, url in candidates])
+        exchange_by_url = {url: exchange for exchange, url in candidates}
+        for url in ordered_urls:
+            result = self._fetch_quote(symbol, exchange_by_url[url])
             if result.ok and result.records:
                 return result
 

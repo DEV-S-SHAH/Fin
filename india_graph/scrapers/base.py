@@ -68,6 +68,15 @@ class BaseScraper(ABC):
         ]
         self._last_request_time: float = 0.0
         self._min_delay_seconds: float = 1.0
+        # Per-host fetch latency (seconds) observed across responses. Used to
+        # observe which endpoint is fastest and (via select_endpoint) to prefer
+        # faster, non-rate-limited endpoints. Bounded to the most recent samples.
+        self._endpoint_latencies: dict[str, list[float]] = {}
+        self._max_latency_samples = 50
+        # Hosts that returned 429 and their cool-down expiry (monotonic time).
+        # While a host is cooling down it is deprioritized so we don't hammer a
+        # rate-limited endpoint.
+        self._rate_limited_until: dict[str, float] = {}
 
     # -- HTTP ---------------------------------------------------------------
 
@@ -96,19 +105,80 @@ class BaseScraper(ABC):
         self._last_request_time = time.monotonic()
 
     def _get(self, url: str, timeout: float = 10.0) -> requests.Response:
-        """GET with SSRF check, UA rotation, jitter, and one jittered retry on 429."""
+        """GET with SSRF check, UA rotation, jitter, and one jittered retry on 429.
+
+        Records per-host fetch latency so callers can observe (and optionally
+        prefer) the fastest endpoint, and enforces a short cool-down for hosts
+        that returned 429 so a rate-limited host is not hammered on retry.
+        """
         self._validate_url(url)
+        host = urlparse(url).hostname or ""
         self._jitter_delay()
         attempt = 0
         while True:
             attempt += 1
-            resp = self._session.get(url, headers=self._headers(), timeout=timeout)
+            start = time.monotonic()
+            try:
+                resp = self._session.get(url, headers=self._headers(), timeout=timeout)
+            finally:
+                self._record_latency(host, time.monotonic() - start)
             if resp.status_code == 429 and attempt == 1:
                 retry_after = resp.headers.get("Retry-After")
                 delay = float(retry_after) if retry_after and retry_after.isdigit() else random.uniform(2, 5)
+                self._rate_limited_until[host] = time.monotonic() + delay
                 time.sleep(delay)
                 continue
             return resp
+
+    def _record_latency(self, host: str, duration: float) -> None:
+        """Record an observed fetch latency for *host* (bounded sample list)."""
+        samples = self._endpoint_latencies.setdefault(host, [])
+        samples.append(duration)
+        if len(samples) > self._max_latency_samples:
+            del samples[: len(samples) - self._max_latency_samples]
+
+    # -- endpoint selection -------------------------------------------------
+
+    def endpoint_latencies(self) -> dict[str, list[float]]:
+        """Snapshot of observed per-host fetch latencies (seconds)."""
+        return {host: list(samples) for host, samples in self._endpoint_latencies.items()}
+
+    def rate_limited_hosts(self) -> dict[str, float]:
+        """Hosts currently in rate-limit cool-down: {host: expiry (monotonic time)}."""
+        now = time.monotonic()
+        return {
+            host: expiry
+            for host, expiry in self._rate_limited_until.items()
+            if expiry > now
+        }
+
+    def select_endpoint(self, urls: list[str]) -> list[str]:
+        """Return *urls* ordered for fetching: fastest non-rate-limited host first.
+
+        Hosts with observed latency are sorted by average latency (lowest first);
+        hosts currently in rate-limit cool-down are moved to the end. Hosts with
+        no latency data keep their relative order after measured hosts, so the
+        first call is deterministic (fixed URL order). This is a pure helper --
+        it performs no I/O. Callers remain free to ignore the ordering and keep
+        a fixed, deterministic preference.
+        """
+        now = time.monotonic()
+        limited = {
+            host for host, expiry in self._rate_limited_until.items() if expiry > now
+        }
+
+        def avg_latency(url: str) -> float:
+            host = urlparse(url).hostname or ""
+            samples = self._endpoint_latencies.get(host)
+            if not samples:
+                return float("inf")
+            return sum(samples) / len(samples)
+
+        def sort_key(url: str) -> tuple[bool, float]:
+            host = urlparse(url).hostname or ""
+            return (host in limited, avg_latency(url))
+
+        return sorted(urls, key=sort_key)
 
     # -- abstract interface -------------------------------------------------
 
