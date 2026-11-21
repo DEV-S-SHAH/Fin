@@ -21,6 +21,8 @@ SSRF_ALLOWED_HOSTS = {
     "mca.gov.in",
     "www.sebi.gov.in",
     "sebi.gov.in",
+    "www.google.com",
+    "google.com",
 }
 
 #: Default fiscal year end for Indian companies (March 31).
