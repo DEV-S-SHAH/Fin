@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<meta name="description" content="FinGraph — GraphRAG financial intelligence. Explore financial data, company relationships, filings and market signals through an intelligent knowledge graph.">
+<meta name="theme-color" content="#030303">
+<title>FinGraph — Financial intelligence, connected.</title>
+
+<link rel="icon" href="/favicon.png" type="image/png">
+  <link rel="stylesheet" href="/landing/styles.css">
+
+<script>
+  /* Theme applied before first paint (see the studio page for the rationale). */
+  try {
+    var saved = localStorage.getItem("fin.landing.theme");
+    if (saved === "light" || saved === "dark") {
+      document.documentElement.dataset.theme = saved;
+    } else if (window.matchMedia("(prefers-color-scheme: light)").matches) {
+      document.documentElement.dataset.theme = "light";
+    }
+  } catch (e) { /* private mode — the dark default stands */ }
+</script>
+</head>
+
+<body class="landing">
+<a class="skip-link" href="#intro">Skip to content</a>
+
+<div class="page" id="page">
+
+  <!-- ambient gradient-bar floor; every section sits on it -->
+  <div class="gradient-bars" id="gradient-bars" aria-hidden="true"></div>
+
+  <!-- ── floating navigation ─────────────────────────────────────────────── -->
+  <header class="nav-wrap" id="nav-wrap">
+    <nav class="nav" id="nav" aria-label="Primary">
+
+      <a class="nav__brand" href="#top" aria-label="FinGraph — home">
+        <img class="logo" data-logo src="/landing/fingraph-logo.png" alt="FinGraph" width="28" height="28" style="border-radius: 6px;">
+        <span class="nav__brand-name">FinGraph</span>
+      </a>
+
+      <div class="nav__links" id="nav-links" role="list">
+        <a role="listitem" class="nav__link" href="#features" data-scroll>Features</a>
+        <a role="listitem" class="nav__link" href="#how-it-works" data-scroll>How it works</a>
+      </div>
+
+      <div class="nav__actions">
+        <a class="btn btn--ghost btn--sm" href="/auth">Sign in</a>
+      </div>
+
+      <button class="nav__toggle" id="nav-toggle" type="button" aria-expanded="false" aria-controls="nav-panel" aria-label="Open the menu">
+        <span class="nav__toggle-bar"></span>
+        <span class="nav__toggle-bar"></span>
+        <span class="nav__toggle-bar"></span>
+      </button>
+    </nav>
+
+    <!-- mobile panel -->
+    <div class="nav-panel" id="nav-panel" hidden>
+      <div class="nav-panel__links" role="list">
+        <a role="listitem" class="nav-panel__link" href="#features" data-scroll>Features</a>
+        <a role="listitem" class="nav-panel__link" href="#how-it-works" data-scroll>How it works</a>
+      </div>
+      <div class="nav-panel__actions">
+        <a class="btn btn--ghost" href="/auth">Sign in</a>
+      </div>
+    </div>
+  </header>
+
+<main id="top">
+
+    <!-- ── hero ──────────────────────────────────────────────────────────── -->
+    <section class="hero" id="hero" aria-labelledby="hero-title">
+      <div class="hero__bg" aria-hidden="true"></div>
+
+      <div class="hero__content">
+        <p class="eyebrow">Financial intelligence&nbsp;/&nbsp;GraphRAG</p>
+
+        <h1 class="hero__title" id="hero-title" aria-label="See the connections behind the numbers.">
+          <span class="hero__title-line hero__title-line--top">
+            <span class="hero__title-prefix">See the</span>
+            <span class="text-loop" data-text-loop aria-hidden="true"><span class="text-loop__spacer">relationships</span><span class="text-loop__inner"><span class="text-loop__word">connections</span></span></span>
+          </span>
+          <span class="hero__title-line hero__title-line--bottom">behind the numbers.</span>
+        </h1>
+
+        <p class="hero__lede">
+          Explore financial data, company relationships, filings, and market
+          signals through an intelligent knowledge graph.
+        </p>
+
+        <div class="hero__cta">
+          <a class="btn btn--primary btn--lg" href="/app">
+            <span class="btn__label">Start asking →</span>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M5 12h13M13 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </a>
+          <a class="btn btn--ghost btn--lg" href="#how-it-works" data-scroll>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M8 5l10 7-10 7V5Z" stroke-linejoin="round"/></svg>
+            <span class="btn__label">See how it works</span>
+          </a>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── features ────────────────────────────────────────────────────────── -->
+    <section class="features" id="features" aria-labelledby="features-title">
+      <div class="section-head">
+        <h2 class="section-head__title" id="features-title">
+          Built for how<br>analysts think.
+        </h2>
+        <p class="section-head__sub">
+          Every feature serves the workflow: question → evidence → answer → insight.
+        </p>
+      </div>
+
+      <div class="features__grid">
+        <article class="feature">
+          <div class="feature__icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+          </div>
+          <h3 class="feature__title">GraphRAG answers</h3>
+          <p class="feature__desc">Ask in natural language. Get answers grounded in SEC filings, with every sentence traced to its source document and figure.</p>
+          <a href="/app" class="feature__link">Try in Studio →</a>
+        </article>
+
+        <article class="feature">
+          <div class="feature__icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+          </div>
+          <h3 class="feature__title">Knowledge graph</h3>
+          <p class="feature__desc">Explore 48K+ entities and 57K+ relationships — companies, filings, metrics, segments, events — all connected by real SEC data.</p>
+          <a href="/graph" class="feature__link">Explore graph →</a>
+        </article>
+
+        <article class="feature">
+          <div class="feature__icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+          </div>
+          <h3 class="feature__title">Provenance & grading</h3>
+          <p class="feature__desc">Every answer is graded sentence-by-sentence: Supported, Qualified, or Refused. See the exact rule that judged each claim.</p>
+          <a href="/app" class="feature__link">See grading →</a>
+        </article>
+
+        <article class="feature">
+          <div class="feature__icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+          </div>
+          <h3 class="feature__title">Company deep-dives</h3>
+          <p class="feature__desc">Dedicated pages per issuer: technicals, fundamentals, news, filings, and the entity graph — all in one view.</p>
+          <a href="/company/AAPL" class="feature__link">Open AAPL →</a>
+        </article>
+      </div>
+    </section>
+
+    <!-- ── how it works ────────────────────────────────────────────────────── -->
+    <section class="how-it-works" id="how-it-works" aria-labelledby="how-title">
+      <div class="section-head">
+        <h2 class="section-head__title" id="how-title">
+          How it works<br>in three steps.
+        </h2>
+        <p class="section-head__sub">
+          From question to verified insight — no black boxes.
+        </p>
+      </div>
+
+      <ol class="steps">
+        <li class="step">
+          <span class="step__number" aria-hidden="true">01</span>
+          <div class="step__content">
+            <h3 class="step__title">Ask</h3>
+            <p class="step__desc">Type any financial question — <em>"What was Apple's Services revenue in FY25?"</em> or <em>"Compare NVDA vs AMD gross margins."</em> The router classifies intent and identifies the relevant issuer(s).</p>
+          </div>
+        </li>
+        <li class="step">
+          <span class="step__number" aria-hidden="true">02</span>
+          <div class="step__content">
+            <h3 class="step__title">Retrieve</h3>
+            <p class="step__desc">The graph engine traverses the knowledge graph: Company → Filings → Metrics → Segments → Evidence chunks. Only real relationships from SEC filings are used — no hallucinated connections.</p>
+          </div>
+        </li>
+        <li class="step">
+          <span class="step__number" aria-hidden="true">03</span>
+          <div class="step__content">
+            <h3 class="step__title">Verify</h3>
+            <p class="step__desc">The grader checks every sentence against the retrieved evidence. Each claim gets a verdict: <strong>Supported</strong>, <strong>Qualified</strong>, or <strong>Refused</strong>. The full provenance trail — tags, rules, figures — is always visible.</p>
+          </div>
+        </li>
+      </ol>
+
+      <div class="how__cta">
+        <a class="btn btn--primary btn--lg" href="/auth">
+          <span class="btn__label">Try it now</span>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M5 12h13M13 6l6 6-6 6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </a>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="footer">
+    <div class="footer__card">
+      <div class="footer__glow" aria-hidden="true"></div>
+
+      <div class="footer__content">
+        <div class="footer__left">
+          <div class="footer__brand">
+            <img class="logo logo--sm" data-logo src="/landing/fingraph-logo.png" alt="FinGraph" width="20" height="20" style="border-radius: 4px;">
+            <span class="footer__brand-name">FinGraph</span>
+            <p class="footer__tag">Financial intelligence, connected.</p>
+          </div>
+
+          <nav class="footer__nav" aria-label="Product">
+            <a href="#features">Features</a>
+            <a href="#how-it-works">How it works</a>
+          </nav>
+        </div>
+
+        <div class="footer__right">
+          <nav class="footer__nav-legal" aria-label="Legal & Company">
+            <a href="#privacy">Privacy</a>
+            <a href="#terms">Terms</a>
+            <a href="#disclaimer">Disclaimer</a>
+          </nav>
+          <div class="footer__social">
+            <a href="#" aria-label="X">
+              <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M4 4l7.2 9.3L4.4 20h2.5l5.4-5.4L16.8 20H20l-7.5-9.7L18.9 4h-2.5l-4.8 4.9L8.2 4H4z"/></svg>
+            </a>
+            <a href="#" aria-label="LinkedIn">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 8a6 6 0 0 1 6 6v7h-4v-7a2 2 0 0 0-2-2 2 2 0 0 0-2 2v7h-4v-7a6 6 0 0 1 6-6z"/><rect width="4" height="12" x="2" y="9"/><circle cx="4" cy="4" r="2"/></svg>
+            </a>
+            <a href="#" aria-label="GitHub">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4"/><path d="M9 18c-4.51 2-5-2-7-2"/></svg>
+            </a>
+          </div>
+          <a class="footer__contact" href="mailto:hello@fingraph.com">hello@fingraph.com</a>
+        </div>
+      </div>
+
+      <div class="footer__wordmark" aria-hidden="true">
+        <span class="footer__wordmark-blur">FinGraph</span>
+        <span class="footer__wordmark-fade">FinGraph</span>
+      </div>
+
+      <p class="footer__disclaimer">
+        FinGraph is an information tool. It helps you understand what the data
+        shows; it does not tell you what to buy or sell.
+      </p>
+    </div>
+  </footer>
+</div>
+
+<p class="sr-only" id="announcer" role="status" aria-live="polite"></p>
+
+<script type="module" src="/landing/app.js"></script>
+</body>
+</html><!-- deploy trigger Sun Oct  4 16:53:10 IST 2026 -->
