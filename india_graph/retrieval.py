@@ -85,7 +85,8 @@ def retrieve(
     """Return the top-*top_k* Evidence nodes most relevant to *question*.
 
     Nodes are scored by keyword overlap with their labels/titles/metric
-    names. When the question is generic (no keywords match), all nodes are
+    names. Only nodes with a positive score are returned when keywords match.
+    When the question is generic (no keywords match), all nodes are
     returned in graph order up to *top_k* so the user still gets a picture
     of what's available.
     """
@@ -98,7 +99,8 @@ def retrieve(
     scored.sort(key=lambda t: (-t[0], t[1]))
 
     if keywords and scored and scored[0][0] > 0:
-        selected = [n for _, _, n in scored[:top_k]]
+        # Only include nodes with positive relevance scores
+        selected = [n for score, _, n in scored[:top_k] if score > 0]
     else:
         selected = nodes[:top_k]
 

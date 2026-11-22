@@ -1,0 +1,1 @@
+{"ticker": "JPM", "status": "failed", "error": "Request timed out after 6.07s fetching https://data.sec.gov/submissions/CIK0000019617.json: <urlopen error timed out>", "request_id": "bb3172dbefc24e03"}

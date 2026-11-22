@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Menu, X, Phone, Watch, Globe, Monitor } from 'lucide-react'
 import { createSession, bindCompany, listCompanies } from '@/services/api'
-import type { Company, Session } from '@/types'
+import type { Company, Session, AskResponse } from '@/types'
 import { CompanySelector } from './components/CompanySelector'
 import { Chat } from './components/Chat'
 import { GraphView } from './components/GraphView'
@@ -41,6 +41,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [view, setView] = useState<'chat' | 'graph'>('chat')
+  const [lastResponse, setLastResponse] = useState<AskResponse | null>(null)
 
   useEffect(() => {
     ;(async () => {
@@ -74,6 +75,7 @@ export default function App() {
             prev ? { ...prev, cin: res.cin ?? null, company_name: res.company_name ?? null } : prev,
           )
           setView('chat')
+          setLastResponse(null) // Clear last response when switching companies
         } else {
           setError(res.error || `Could not bind ${ticker}`)
         }
@@ -235,13 +237,14 @@ export default function App() {
               cin={session.cin}
               companyName={session.company_name}
               onBindCompany={handleSelectCompany}
+              onResponse={setLastResponse}
             />
           )}
           {view === 'graph' && (
             <div className="space-y-4">
               <h2 className="text-xl font-bold text-slate-900">Company Graph</h2>
               {session.cin ? (
-                <GraphView sessionId={session.session_id} cin={session.cin} />
+                <GraphView sessionId={session.session_id} cin={session.cin} lastResponse={lastResponse} />
               ) : (
                 <div className="p-6 rounded-lg bg-slate-50 border border-slate-100 text-center text-slate-400">
                   Select a company to view its graph.

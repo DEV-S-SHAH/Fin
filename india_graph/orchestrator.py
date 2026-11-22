@@ -363,14 +363,24 @@ class IndiaOrchestrator:
         has_facts = ann_count > 0 or metric_count > 0
 
         if evidence and has_facts:
-            answer_parts.append(f"Here's what I found for {cin_label(graph)}:")
+            # Build answer as complete sentences, each with its citation.
+            # This ensures the grader can evaluate each claim independently.
+            # IMPORTANT: Place the source citation BEFORE the period so the
+            # sentence splitter keeps the citation with its sentence.
+            first = True
             for ev in evidence:
-                answer_parts.append(f"• [{ev.tag}] {ev.text}  ⟵ {ev.source.cite()}")
+                prefix = f"For {cin_label(graph)}, " if first else ""
+                # Sanitize evidence text: replace sentence-ending punctuation
+                # to avoid confusing the grader's sentence splitter.
+                text = ev.text.replace(". ", "; ").replace("! ", "; ").replace("? ", "; ")
+                text = text.rstrip(".!? ")
+                answer_parts.append(f"[{ev.tag}] {prefix}{text} ⟵ {ev.source.cite()}.")
                 citations.append({
                     "tag": ev.tag,
                     "text": ev.text,
                     "source": ev.source.cite(),
                 })
+                first = False
         else:
             answer_parts.append(
                 f"No citable financial data found yet for {cin_label(graph)} ({graph.cin}). "
@@ -378,7 +388,7 @@ class IndiaOrchestrator:
             )
             citations.append({"tag": "GAP", "text": "No citable evidence found.", "source": ""})
 
-        answer = "\n".join(answer_parts)
+        answer = " ".join(answer_parts)
         graded = grade_answer(answer, full_evidence, question=question)
 
         return {

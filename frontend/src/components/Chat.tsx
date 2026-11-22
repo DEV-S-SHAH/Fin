@@ -10,9 +10,10 @@ type ChatProps = {
   cin: string | null
   companyName: string | null
   onBindCompany: (ticker: string, name: string) => void
+  onResponse?: (response: AskResponse) => void
 }
 
-export function Chat({ sessionId, cin, companyName, onBindCompany }: ChatProps) {
+export function Chat({ sessionId, cin, companyName, onBindCompany, onResponse }: ChatProps) {
   const [messages, setMessages] = useState<{ role: 'user' | 'assistant'; content: string; verdict?: Verdict; time: string }[]>([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
@@ -45,6 +46,7 @@ export function Chat({ sessionId, cin, companyName, onBindCompany }: ChatProps) 
       }
       setMessages((prev) => [...prev, botMsg])
       setLastResponse(res)
+      onResponse?.(res)
     } catch (err) {
       setMessages((prev) => [
         ...prev,
